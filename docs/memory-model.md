@@ -23,8 +23,11 @@ content: Chose PostgreSQL over MongoDB for the events table (decided 2026-09-20)
 ```
 
 ### `role`
-Standing instructions and roles. **Roles always surface in search results** — they are
-treated as instructions, not suggestions.
+Standing instructions and roles. **Roles always surface in search results —
+within their scope** (a `global` or current-project role can never be
+ outranked or filtered out) — they are treated as instructions, not
+suggestions. Roles stored under a *different* project's scope stay gated with
+everything else: isolation beats instructions (enforced since 3.6.0).
 
 ```
 type: role
@@ -73,7 +76,10 @@ in `/repo/b`. Global memories are always visible.
 
 When `memory_search` runs, memories are scored in layers:
 
-1. **Roles always pass** (+1000) — instructions never get filtered out.
+1. **Roles always pass** (+1000) — instructions never get filtered out *of
+   their scope*: a `global` or current-scope role always surfaces first, but
+   roles stored under another project's scope stay gated with everything
+   else (isolation beats instructions).
 2. **Scope gate** — other projects' memories are excluded entirely;
    the current scope scores highest (+150), `global` always passes (+100).
 3. **Provenance** — deliberately stored memories +10 over auto-extracted ones.

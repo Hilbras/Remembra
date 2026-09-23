@@ -55,7 +55,10 @@ Lock rules:
   whole;
 - **stale steal**: a lock whose pid is dead (or older than
   `REMEMBRA_LOCK_STALE_MS`, default 10 s) is removed; the `O_EXCL` re-create
-  decides the winner;
+  decides the winner. A *fresh* lock carrying this process's own pid is **not**
+  stale — a sibling store instance in the same process may hold it live (the
+  in-process FIFO only serializes within one instance); abandoned own-pid
+  files are still recovered by the age rule;
 - **timeout**: waiting longer than `REMEMBRA_LOCK_TIMEOUT_MS` (default 5 s)
   fails with the typed `LOCK_TIMEOUT` error (HTTP 423);
 - released in a `finally`, verified by pid before unlinking.

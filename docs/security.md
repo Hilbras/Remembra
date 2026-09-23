@@ -23,13 +23,16 @@ and how to deploy safely.
 
 ### Role memories are instructions — the prompt-injection surface
 
-`role` memories always surface (+1000) and are meant to be **followed**, not
-merely recalled. That is the feature — and the risk:
+`role` memories always surface (+1000) **within their scope** and are meant
+to be **followed**, not merely recalled. That is the feature — and the risk:
 
 - **Via MCP**: whoever can call `memory_store` in your session is already the
   agent you're running. No additional boundary is crossed.
 - **Via HTTP**: anyone with your API key can plant a global `role` that every
   future session will receive as an instruction.
+- **Cross-project**: roles scoped to another project do *not* surface in your
+  searches (isolation, enforced since 3.6.0) — the residual vector is a
+  `global` role, which reaches every scope by design.
 
 **Rules:**
 1. Never expose HTTP without `REMEMBRA_API_KEY` (enforced — see below).
@@ -52,7 +55,7 @@ Retrieved memories should be treated as **data with provenance**, not commands
 | **Body size limit** | 10 MiB default (`REMEMBRA_MAX_BODY`), `413` on excess — pre-checks `Content-Length` and enforces while streaming |
 | **Digest validation** | `DigestInput` Zod schema on both MCP and HTTP paths |
 | **Atomic writes** | temp file + `rename()` (POSIX-atomic) — no half-written memories after a crash |
-| **Advisory locking** | `<root>/.remembra.lock` (`O_EXCL`) + in-process FIFO — cross-process writes serialize; stale locks (dead pid / older than `REMEMBRA_LOCK_STALE_MS`) are stolen; waiters fail with typed `LOCK_TIMEOUT` (HTTP 423) |
+| **Advisory locking** | `<root>/.remembra.lock` (`O_EXCL`) + in-process FIFO — cross-process writes serialize; stale locks (dead pid / older than `REMEMBRA_LOCK_STALE_MS`) are stolen; a fresh lock with this process's own pid is treated as a live sibling instance and waited on; waiters fail with typed `LOCK_TIMEOUT` (HTTP 423) |
 | **Crash recovery** | one-time pass on first access: removes orphaned `*.tmp`, reconciles ids left in both active+archived trees by an interrupted archive/revive |
 | **Structured errors** | every actionable failure has a stable code (`INVALID_INPUT`, `LOCK_TIMEOUT`, `LLM_ERROR`, …) mapped to HTTP statuses / MCP `[CODE]` prefixes |
 | **ID collisions** | 12-hex IDs (2⁴⁸) + existence check on store |

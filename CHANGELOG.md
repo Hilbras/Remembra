@@ -7,6 +7,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3). Earlier releases used independent semver: 0.1.0 = v1,
 > 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [3.6.0] — 2026-09-23
+
+**Phase 6 of the deep audit** — testing depth. All six roadmap items now
+covered (traversal pen test, 413, and content-length checks already shipped in
+earlier phases). The new tests found **three live production bugs**, fixed
+here:
+
+### Fixed
+- **Cross-scope role leak (isolation, security-relevant)** — `search()`'s
+  filter included `m.type === "role" || score > 0`, so a role scoped to
+  *another project* (score 0 from the scope gate) was re-included and surfaced
+  in **every** project's searches — a cross-project prompt-injection vector.
+  No existing test pinned it; a Phase 6 property test caught it on round 1.
+  Roles now surface within their scope (global or current), foreign-scope
+  roles are gated like everything else — code now matches what
+  `docs/providers.md` already promised ("memories from other scopes are never
+  returned"). Trust-model + role docs updated in four places.
+- **Sibling lock steal** — a fresh `.remembra.lock` carrying this process's
+  own pid was treated as stale and stolen instantly: a second `MemoryStore`
+  instance in the same process broke mutual exclusion. Own-pid + fresh now
+  waits (a live sibling may hold it); abandoned own-pid files are still
+  recovered by the age rule (`REMEMBRA_LOCK_STALE_MS`).
+- **Poisoned recovery** — if the first-ever access failed (e.g.
+  `LOCK_TIMEOUT`), the rejected recovery promise stayed cached and *every*
+  later operation re-threw it forever. Failures now clear the promise so
+  recovery is retryable.
+
+### Added (tests — 15 new, **119 total**)
+- **Concurrency stress**: the lock regression above (wait-not-steal +
+  age-rescue + retryable recovery); two store instances hammering one root
+  (51 interleaved store/all/get/update/archive/revive ops — no dual-homed
+  ids, exact file counts); concurrent reads while writing (no throws, no torn
+  data).
+- **Traversal angles**: digest path with the caller skipping validation —
+  both inherited and per-item evil scopes rejected as `INVALID_INPUT`, nothing
+  written outside the root.
+- **Large payloads**: 2 MiB content round-trip over HTTP + searchable;
+  declared overflow → 413 with the server proven still alive; mid-body
+  overflow with *no* content-length (streaming counter path).
+- **Malformed recovery**: four corruption shapes (empty, binary,
+  unterminated frontmatter, no frontmatter) skipped-but-*preserved*,
+  idempotent across repeated passes, list/search survive.
+- **Cross-scope under load**: 4 scopes × (10 stores + 1 digest) written
+  concurrently with globals — exact per-scope totals, zero sibling leakage in
+  list and search.
+- **Property-based scoring** (seeded LCG, zero new deps, both modes): roles
+  rank first & scopes never leak; determinism + input-order independence;
+  importance/recency/provenance monotonicity (raising any never lowers rank);
+  limit bounds → unique subset of input. ~200 random rounds per run.
+
+### Docs
+`memory-model`, `security` (trust model now notes the cross-project rule),
+`providers`, `clients`: "roles always surface" qualified with scope.
+
 ## [3.5.0] — 2026-09-23
 
 **Phase 5 of the deep audit** — performance & scalability.

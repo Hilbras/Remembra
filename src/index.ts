@@ -83,7 +83,7 @@ if (argv[0] === "export") {
 }
 
 async function startMcp(): Promise<void> {
-  const server = new McpServer({ name: "remembra", version: "3.5.0" });
+  const server = new McpServer({ name: "remembra", version: "3.6.0" });
 
   server.registerTool(
     "memory_store",

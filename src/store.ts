@@ -376,7 +376,10 @@ export class MemoryStore implements MemoryBackend {
         pid = undefined;
       }
       if (typeof pid !== "number") return false; // fresh but unwritten: writer in progress
-      if (pid === process.pid) return true; // our own leftover (queue prevents live self-holds)
+      // Our own pid + fresh = a SIBLING store instance in this process holds it
+      // live (the in-process FIFO only serializes within one instance). The age
+      // check above still rescues abandoned own-pid files after lockStaleMs.
+      if (pid === process.pid) return false;
       try {
         process.kill(pid, 0);
         return false; // alive
@@ -395,9 +398,16 @@ export class MemoryStore implements MemoryBackend {
   private async ensureRecovered(): Promise<void> {
     if (this.recovered) return;
     if (!this.recovery) {
-      this.recovery = this.withLock(() => this.recover()).then(() => {
-        this.recovered = true;
-      });
+      const run = this.withLock(() => this.recover());
+      this.recovery = run.then(
+        () => {
+          this.recovered = true;
+        },
+        (err) => {
+          this.recovery = null; // a failed recovery (e.g. LOCK_TIMEOUT) must be retryable
+          throw err;
+        },
+      );
     }
     await this.recovery;
   }

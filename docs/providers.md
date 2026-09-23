@@ -84,8 +84,8 @@ With `REMEMBRA_EMBEDDINGS=openai|ollama`:
   frontmatter (`embedding: [...]`) — computed once, never re-embedded.
 - **On search**: the query is embedded and **cosine similarity becomes the
   primary ranking signal**. Importance and recency remain small modifiers.
-- **Gates stay absolute**: `role` memories always surface, and memories from
-  other scopes are never returned, no matter how similar.
+- **Gates stay absolute**: in-scope `role` memories always surface, and
+  memories from other scopes are never returned, no matter how similar.
 - **Memories without vectors** (stored while embeddings were off) fall back
   to keyword matching.
 

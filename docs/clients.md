@@ -104,6 +104,7 @@ LLM/embedding key setup: see **[providers.md](providers.md)**.
 - **Pass `scope`** — every client should give Remembra its current project path when
   calling `memory_search`, so project memories don't mix across repos.
 - **Roles are always injected** — put standing instructions in `type: "role"` and they'll
-  never be filtered out by ranking.
+  never be filtered out by ranking (store them `global` or in the scopes where
+  you want them followed — other projects' roles stay out).
 - **One server, shared brain** — all clients write to the same storage, so a decision made
   in Claude Code is visible in OpenCode.

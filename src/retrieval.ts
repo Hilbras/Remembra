@@ -5,7 +5,8 @@ import { cosine } from "./embeddings.js";
  * Layered retrieval (decisions Q4 + v2-Q3, Phase 4 quality pass):
  *
  * Hard gates (never bypassed by scores):
- *   - roles always pass (+1000)
+ *   - roles always pass (+1000) — within their scope; foreign-scope roles
+ *     are gated like every other memory (isolation beats instructions)
  *   - other scopes' memories are excluded entirely
  *
  * Ranking (additive terms are identical in keyword and semantic mode so a
@@ -25,7 +26,11 @@ export function search(memories: Memory[], q: SearchQuery, queryVec?: number[] |
   const scored = memories
     .filter((m) => (q.type ? m.type === q.type : true))
     .map((m) => ({ m, score: score(m, terms, q.scope, now, queryVec) }))
-    .filter(({ m, score }) => m.type === "role" || score > 0)
+    // score() already gates roles too: an in-scope role scores ≥1000 while a
+    // foreign-scope role scores 0. Re-including roles here (the old
+    // `m.type === "role" ||` clause) leaked other projects' role instructions
+    // into every search — Phase 6 isolation property caught it.
+    .filter(({ score }) => score > 0)
     .sort((a, b) => b.score - a.score || b.m.updatedAt.localeCompare(a.m.updatedAt));
 
   return scored.slice(0, q.limit ?? 10).map(({ m }) => m);
