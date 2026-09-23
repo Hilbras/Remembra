@@ -86,6 +86,10 @@ REMEMBRA_API_KEY="your-secret" remembra --http
 | `REMEMBRA_HOME` | `~/.remembra` | Where memory files live |
 | `REMEMBRA_API_KEY` | *(unset)* | Enables auth on the HTTP API |
 | `REMEMBRA_PORT` | `8787` | HTTP API port (`--port` overrides) |
+| `REMEMBRA_LLM` | `openai` | Digest LLM: `openai` \| `anthropic` \| `ollama` |
+| `REMEMBRA_EMBEDDINGS` | `none` | Semantic search: `openai` \| `ollama` \| `none` |
+
+LLM/embedding key setup: see **[providers.md](providers.md)**.
 
 ## Tips
 

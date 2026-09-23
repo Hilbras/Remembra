@@ -31,6 +31,20 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return send(res, 401, { error: "Unauthorized: missing or invalid API key" });
       }
 
+      // POST /memories/digest — must be checked before /memories/:id DELETE patterns
+      if (req.method === "POST" && path === "/memories/digest") {
+        const body = await readBody(req);
+        if (typeof body.transcript !== "string" || !body.transcript.trim()) {
+          return send(res, 400, { error: "Body must include a non-empty `transcript` string" });
+        }
+        const result = await service.digest({
+          transcript: body.transcript,
+          scope: body.scope,
+          source: body.source,
+        });
+        return send(res, 200, result);
+      }
+
       // POST /memories
       if (req.method === "POST" && path === "/memories") {
         const body = await readBody(req);

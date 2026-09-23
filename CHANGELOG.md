@@ -3,6 +3,25 @@
 All notable changes to Remembra will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] — 2026-09-23
+
+### Added
+- **Session digest**: `memory_digest` tool + `POST /memories/digest` — LLM extracts
+  facts/decisions/roles/history from a transcript and stores them.
+- **Pluggable LLM provider**: `REMEMBRA_LLM=openai|anthropic|ollama` (+ `REMEMBRA_LLM_MODEL`).
+- **Pluggable embeddings**: `REMEMBRA_EMBEDDINGS=openai|ollama|none` (default `none`).
+- **Semantic search**: cosine similarity becomes the primary ranking signal when enabled;
+  vectors cached in memory frontmatter (computed once on write).
+- Scope and role rules remain hard gates in both ranking modes.
+- Keyword fallback: memories without vectors, and any embedding API failure, degrade
+  gracefully to keyword scoring (writes never blocked by embedding errors).
+- Exact-match dedup in digest (type + scope + normalized content) — digests are idempotent.
+- `docs/providers.md` — configuration guide for digest + embeddings.
+- 18 new tests (digest, embeddings, retrieval modes, LLM output parsing).
+
+### Changed
+- `MemoryService` now accepts optional injected deps (embed/extract) for testing.
+
 ## [0.2.0] — 2026-09-23
 
 ### Added

@@ -64,12 +64,26 @@ Permanently delete a memory.
 
 Returns an error result if no memory matches the id.
 
+## `memory_digest`
+
+Extract memories from a conversation transcript using the configured LLM and
+store them, skipping exact duplicates. See [providers.md](providers.md).
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `transcript` | string | ✅ | Full transcript or a detailed session summary |
+| `scope` | string | no | Scope for extracted memories (default `global`) |
+| `source` | string | no | Originating session/client |
+
+Requires `REMEMBRA_LLM` + its API key (or Ollama). Returns counts:
+extracted / stored / duplicates skipped, plus stored ids.
+
 ---
 
 ## Suggested session flow
 
 ```
-1. memory_search { scope: <current project> }     → recover roles, facts, decisions
+1. memory_search { scope: <current project> }   → recover roles, facts, decisions
 2. ... work happens; model calls memory_store when something worth keeping emerges ...
-3. (v2) automatic session digest sweeps anything missed
+3. memory_digest { transcript, scope }           → end-of-session sweep (v2, LLM extracts)
 ```

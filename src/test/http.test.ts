@@ -68,3 +68,12 @@ test("unknown route returns 404", async () => {
   const res = await fetch(`${base}/nope`, { headers: { "x-api-key": "test-key" } });
   assert.equal(res.status, 404);
 });
+
+test("digest without transcript returns 400", async () => {
+  const res = await fetch(`${base}/memories/digest`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": "test-key" },
+    body: JSON.stringify({ scope: "global" }),
+  });
+  assert.equal(res.status, 400);
+});

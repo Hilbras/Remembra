@@ -70,6 +70,17 @@ curl -X DELETE http://localhost:8787/memories/<id> \
   -H "x-api-key: $REMEMBRA_API_KEY"
 ```
 
+### Digest a session (LLM extraction)
+
+```bash
+curl -X POST http://localhost:8787/memories/digest \
+  -H "content-type: application/json" \
+  -H "x-api-key: $REMEMBRA_API_KEY" \
+  -d '{"transcript":"<conversation text>","scope":"chatgpt"}'
+```
+
+Requires `REMEMBRA_LLM` + key — see [providers.md](providers.md).
+
 ## 3. Create the Custom GPT
 
 1. Go to **chatgpt.com → Explore GPTs → Create a GPT**.

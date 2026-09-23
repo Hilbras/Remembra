@@ -21,6 +21,8 @@ export interface Memory {
   createdAt: string; // ISO date
   updatedAt: string; // ISO date
   source?: string; // originating session/client
+  /** Cached embedding vector (REMEMBRA_EMBEDDINGS≠none); serialized in frontmatter. */
+  embedding?: number[];
 }
 
 export const StoreInput = z.object({

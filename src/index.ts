@@ -25,7 +25,7 @@ if (httpFlag) {
 }
 
 async function startMcp(): Promise<void> {
-  const server = new McpServer({ name: "remembra", version: "0.2.0" });
+  const server = new McpServer({ name: "remembra", version: "0.3.0" });
 
   server.registerTool(
     "memory_store",
@@ -50,6 +50,32 @@ async function startMcp(): Promise<void> {
     async (args) => {
       const result = await service.store(args);
       return { content: [{ type: "text", text: result.message }] };
+    },
+  );
+
+  server.registerTool(
+    "memory_digest",
+    {
+      title: "Digest a session",
+      description:
+        "Extract facts, decisions, roles and history from a conversation transcript and store " +
+        "them automatically (exact duplicates are skipped). Call at the end of a session with " +
+        "the transcript or a detailed summary of it. Requires REMEMBRA_LLM + an API key.",
+      inputSchema: {
+        transcript: z
+          .string()
+          .describe("Conversation transcript or a detailed summary of the session"),
+        scope: z.string().optional().describe("Scope for extracted memories (default: global)"),
+        source: z.string().optional().describe("Originating session/client"),
+      },
+    },
+    async ({ transcript, scope, source }) => {
+      const result = await service.digest({ transcript, scope, source });
+      const text =
+        `Digest complete: ${result.extracted} extracted, ${result.stored.length} stored, ` +
+        `${result.skippedDuplicates} duplicates skipped.` +
+        (result.ids.length ? `\nStored ids: ${result.ids.join(", ")}` : "");
+      return { content: [{ type: "text", text }] };
     },
   );
 

@@ -29,7 +29,7 @@ export class MemoryStore {
     return path.join(this.root, "scopes", safeScope, `${m.id}.md`);
   }
 
-  async store(input: StoreInput): Promise<Memory> {
+  async store(input: StoreInput, embedding?: number[]): Promise<Memory> {
     const now = new Date().toISOString();
     const memory: Memory = {
       id: randomUUID().slice(0, 8),
@@ -41,6 +41,7 @@ export class MemoryStore {
       createdAt: now,
       updatedAt: now,
       source: input.source,
+      embedding,
     };
     const file = this.fileFor(memory);
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -106,6 +107,7 @@ function render(m: Memory): string {
     `created: ${m.createdAt}`,
     `updated: ${m.updatedAt}`,
     m.source ? `source: ${m.source}` : undefined,
+    m.embedding && m.embedding.length > 0 ? `embedding: [${m.embedding.join(",")}]` : undefined,
     "---",
     "",
     m.content,
@@ -126,6 +128,11 @@ async function parse(file: string): Promise<Memory | null> {
       meta[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
     }
     const tagsRaw = (meta.tags ?? "[]").replace(/^\[|\]$/g, "");
+    let embedding: number[] | undefined;
+    if (meta.embedding) {
+      const nums = meta.embedding.replace(/^\[|\]$/g, "").split(",").map(Number);
+      if (nums.length > 0 && nums.every((n) => Number.isFinite(n))) embedding = nums;
+    }
     return {
       id: meta.id ?? path.basename(file, ".md"),
       type: (meta.type ?? "fact") as Memory["type"],
@@ -136,6 +143,7 @@ async function parse(file: string): Promise<Memory | null> {
       createdAt: meta.created ?? new Date(0).toISOString(),
       updatedAt: meta.updated ?? meta.created ?? new Date(0).toISOString(),
       source: meta.source,
+      embedding,
     };
   } catch {
     return null;
