@@ -3,6 +3,15 @@
 All notable changes to Remembra will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+> **Versioning:** from 3.0.0 on, package versions match roadmap milestones
+> (3.0.0 = v3). Earlier releases used independent semver: 0.1.0 = v1,
+> 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
+
+## [3.0.0] — 2026-09-23
+
+**Same content as 0.4.0** — version renumbered so the package version equals the
+roadmap milestone (v3). No behavior changes.
+
 ## [0.4.0] — 2026-09-23
 
 ### Added

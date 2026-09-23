@@ -31,7 +31,7 @@ if (maintainFlag) {
 }
 
 async function startMcp(): Promise<void> {
-  const server = new McpServer({ name: "remembra", version: "0.4.0" });
+  const server = new McpServer({ name: "remembra", version: "3.0.0" });
 
   server.registerTool(
     "memory_store",

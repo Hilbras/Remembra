@@ -152,6 +152,8 @@ npm test        # run tests
 - **v2** — automatic session-digest extraction, embeddings behind `memory_search` ✅
 - **v3** *(current)* — memory lifecycle (archive/decay), contradiction merging, maintenance CLI ✅
 
+> Package versions match milestones: `3.0.0` = v3, next ships as `4.0.0`.
+
 ## License
 
 [MIT](LICENSE) © Hilbras

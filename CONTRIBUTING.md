@@ -28,6 +28,20 @@ printf '%s\n' \
   | node dist/index.js
 ```
 
+## Versioning
+
+Package versions match roadmap milestones: **3.0.0 = v3**, next milestone ships as **4.0.0**.
+(Earlier releases: 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.)
+
+To cut a release:
+
+```bash
+npm version 4.0.0        # bumps package.json + creates the tag
+git push origin main --tags
+gh release create v4.0.0 --title "Remembra v4.0.0 — <headline>" --notes "<see CHANGELOG>"
+npm publish              # prepublishOnly runs build + tests
+```
+
 ## Guidelines
 
 - **Keep storage human-readable** — memories are markdown files users may open, edit, or
@@ -46,5 +60,5 @@ Open an issue with:
 
 ## Roadmap context
 
-See the README roadmap before picking up work: v1.5 is the HTTP/ChatGPT layer,
-v2 is session-digest extraction and embeddings, v3 is storage scaling.
+See the README roadmap before picking up work: v3 (lifecycle, merging,
+maintenance) is current; the next milestone is v4.
