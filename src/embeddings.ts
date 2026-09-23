@@ -23,6 +23,19 @@ export interface EmbedCallOptions {
   signal?: AbortSignal;
 }
 
+export interface BatchEmbedOptions extends EmbedCallOptions {
+  /** Maximum number of inputs sent in one logical batch. */
+  maxBatchSize?: number;
+  /** Maximum provider calls running at once. */
+  concurrency?: number;
+  /** Injectable provider function for deterministic tests and adapters. */
+  embedder?: (
+    text: string,
+    provider: EmbeddingProvider,
+    opts?: EmbedCallOptions,
+  ) => Promise<number[]>;
+}
+
 export async function embedText(
   text: string,
   provider: EmbeddingProvider = resolveEmbeddingProvider(),
@@ -57,6 +70,60 @@ export async function embedText(
   });
   return toVector(data?.embedding, "ollama");
 }
+
+/**
+ * Embed a bounded collection with deterministic per-item failure isolation.
+ * Provider calls are chunked and concurrently limited; callers receive null
+ * for failed/disabled items just like embedCached's fail-open contract.
+ */
+export async function embedTexts(
+  texts: readonly string[],
+  provider: EmbeddingProvider = resolveEmbeddingProvider(),
+  opts: BatchEmbedOptions = {},
+): Promise<Array<number[] | null>> {
+  if (!Array.isArray(texts) || texts.some((text) => typeof text !== "string")) {
+    throw new RemembraError("INVALID_INPUT", "texts must be an array of strings");
+  }
+  const maxBatchSize = positiveLimit(
+    opts.maxBatchSize ?? Number(process.env.REMEMBRA_MAX_BATCH_SIZE ?? 32),
+    "maxBatchSize",
+  );
+  const concurrency = positiveLimit(
+    opts.concurrency ?? Number(process.env.REMEMBRA_MAX_CONCURRENT_EMBEDDINGS ?? 4),
+    "concurrency",
+  );
+  const embed = opts.embedder ?? embedCached;
+  const results = new Array<number[] | null>(texts.length).fill(null);
+
+  for (let start = 0; start < texts.length; start += maxBatchSize) {
+    const end = Math.min(texts.length, start + maxBatchSize);
+    let cursor = start;
+    const worker = async (): Promise<void> => {
+      while (true) {
+        if (opts.signal?.aborted) return;
+        const index = cursor++;
+        if (index >= end) return;
+        try {
+          results[index] = await embed(texts[index], provider, { signal: opts.signal });
+        } catch {
+          results[index] = null;
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(concurrency, end - start) }, () => worker()),
+    );
+  }
+  return results;
+}
+
+function positiveLimit(value: number, name: string): number {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new RemembraError("INVALID_INPUT", `${name} must be a positive integer`);
+  }
+  return value;
+}
+
 
 /** Validate the provider's answer: a non-empty array of finite numbers. */
 function toVector(v: unknown, provider: string): number[] {
