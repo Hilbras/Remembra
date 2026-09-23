@@ -770,7 +770,7 @@ async function walk(...dirs: string[]): Promise<string[]> {
   return walkGeneric(dirs, (name) => name.endsWith(".md"));
 }
 
-function render(m: Memory): string {
+export function render(m: Memory): string {
   // Spec-parsed YAML frontmatter (plan §3.4): the serializer quotes/escapes
   // values, so scopes/tags/sources with YAML-ambiguous characters round-trip.
   // `version` = schema version (§3.4 guard), `revision` = the memory's own

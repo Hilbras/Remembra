@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 import { promises as fs } from "node:fs";
+import path from "node:path";
+import { createHash } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { parse as parseYaml } from "yaml";
 import { VERSION } from "./version.js";
 import { logEvent } from "./log.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { MemoryStore } from "./store.js";
+import { SqliteBackend } from "./sqlite-backend.js";
+import { render } from "./store.js";
 import { MemoryService } from "./service.js";
 import { createHttpServer } from "./http.js";
 import {
@@ -18,10 +23,25 @@ import {
   relateInputShape,
   historyInputShape,
   updateInputShape,
+  MemoryType,
+  TrustLevel,
+  RetentionMode,
+  ProvenanceSchema,
+  RelationKind,
+  type Memory,
+  type Provenance,
+  type Relation,
 } from "./types.js";
 import { toolFail } from "./errors.js";
 
-const store = new MemoryStore(MemoryStore.defaultRoot());
+const root = MemoryStore.defaultRoot();
+// Use SQLite backend (V4.3.0) if available; fall back to file backend.
+let store: MemoryStore | SqliteBackend;
+try {
+  store = new SqliteBackend({ root });
+} catch {
+  store = new MemoryStore(root);
+}
 const service = new MemoryService(store);
 
 const argv = process.argv.slice(2);
@@ -64,7 +84,82 @@ if (argv[0] === "export") {
     console.error(`Import rejected (nothing written): ${err instanceof Error ? err.message : err}`);
     process.exit(1);
   }
-} else if (maintainFlag) {
+} else if (argv[0] === "export-markdown") {
+    // V4.3.0: dump active memories as human-readable .md files.
+    const outDir = argv[1];
+    if (!outDir) {
+      console.error("Usage: remembra export-markdown <directory>");
+      process.exit(1);
+    }
+    const memories = await store.all();
+    await fs.mkdir(outDir, { recursive: true });
+    for (const m of memories) {
+      const scopeDir = m.scope === "global" ? outDir : path.join(outDir, m.scope);
+      await fs.mkdir(scopeDir, { recursive: true });
+      await fs.writeFile(path.join(scopeDir, `${m.id}.md`), render(m), "utf8");
+    }
+    console.log(`Exported ${memories.length} memories to ${outDir}`);
+    process.exit(0);
+  } else if (argv[0] === "import-markdown") {
+    // V4.3.0: import .md files into the SQLite store.
+    const inDir = argv[1];
+    if (!inDir) {
+      console.error("Usage: remembra import-markdown <directory>");
+      process.exit(1);
+    }
+    const files = await globMdFiles(inDir);
+    let imported = 0, skipped = 0;
+    for (const file of files) {
+      try {
+        const mem = await parseMarkdownFile(file);
+        if (!mem) { skipped++; continue; }
+        const ok = await store.importMemory(mem);
+        if (ok) imported++; else skipped++;
+      } catch { skipped++; }
+    }
+    console.log(`Imported ${imported}, skipped ${skipped}`);
+    process.exit(0);
+  } else if (argv[0] === "backup") {
+    // V4.3.0: copy DB + write SHA-256 sidecar.
+    const outFile = argv[1];
+    if (!outFile) {
+      console.error("Usage: remembra backup <file.sqlite>");
+      process.exit(1);
+    }
+    if (!(store instanceof SqliteBackend)) {
+      console.error("backup requires SQLite backend");
+      process.exit(1);
+    }
+    const src = (store as SqliteBackend).getDbPath();
+    await fs.copyFile(src, outFile);
+    const hash = createHash("sha256").update(await fs.readFile(outFile)).digest("hex");
+    await fs.writeFile(`${outFile}.sha256`, hash, "utf8");
+    console.log(`Backup: ${outFile} (${hash.slice(0, 16)}…)`);
+    process.exit(0);
+  } else if (argv[0] === "restore") {
+    // V4.3.0: verify SHA-256 and atomically replace DB.
+    const inFile = argv[1];
+    if (!inFile) {
+      console.error("Usage: remembra restore <file.sqlite>");
+      process.exit(1);
+    }
+    const expected = (await fs.readFile(`${inFile}.sha256`, "utf8")).trim();
+    const actual = createHash("sha256").update(await fs.readFile(inFile)).digest("hex");
+    if (actual !== expected) {
+      console.error("Checksum mismatch — restore aborted");
+      process.exit(1);
+    }
+    if (!(store instanceof SqliteBackend)) {
+      console.error("restore requires SQLite backend");
+      process.exit(1);
+    }
+    const dst = (store as SqliteBackend).getDbPath();
+    const tmp = dst + ".tmp.restore";
+    await fs.copyFile(inFile, tmp);
+    await fs.rename(tmp, dst);
+    console.log(`Restored from ${inFile}`);
+    process.exit(0);
+  } else if (maintainFlag) {
   // CLI maintenance: `remembra maintain` — one-shot, prints JSON, exits.
   const result = await service.maintain();
   console.log(JSON.stringify(result, null, 2));
@@ -75,8 +170,13 @@ if (argv[0] === "export") {
   //   remembra encrypt   → plain files become AES-256-GCM ciphertext
   //   remembra decrypt   → ciphertext becomes plain markdown again
   try {
-    const result = await store.migrateEncryption(argv[0]);
-    console.log(`${argv[0]}: ${result.converted} converted, ${result.skipped} already in target state`);
+    if ("migrateEncryption" in store) {
+      const result = await store.migrateEncryption(argv[0]);
+      console.log(`${argv[0]}: ${result.converted} converted, ${result.skipped} already in target state`);
+    } else {
+      console.error(`${argv[0]} not supported on SQLite backend`);
+      process.exit(1);
+    }
     process.exit(0);
   } catch (err) {
     console.error(`${argv[0]} failed: ${err instanceof Error ? err.message : err}`);
@@ -349,6 +449,109 @@ async function startMcp(): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // Log hygiene (audit #7): filesystem paths only under REMEMBRA_DEBUG.
-  const rootNote = process.env.REMEMBRA_DEBUG ? ` (root: ${MemoryStore.defaultRoot()})` : "";
+  const rootNote = process.env.REMEMBRA_DEBUG ? ` (root: MemoryStore.defaultRoot())` : "";
   logEvent("info", "mcp_listening", { ...(rootNote ? { root: MemoryStore.defaultRoot() } : {}) }, `Remembra MCP server running${rootNote}`);
+}
+
+// -------------------------------------------------------------------------
+//  Markdown helpers (V4.3.0 export/import)
+// -------------------------------------------------------------------------
+
+async function globMdFiles(dir: string): Promise<string[]> {
+  const result: string[] = [];
+  async function walk(d: string): Promise<void> {
+    const entries = await fs.readdir(d, { recursive: true, withFileTypes: true });
+    for (const e of entries) {
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) await walk(full);
+      else if (e.name.endsWith(".md")) result.push(full);
+    }
+  }
+  await walk(dir);
+  return result;
+}
+
+async function parseMarkdownFile(file: string): Promise<Memory | null> {
+  const raw = (await fs.readFile(file)).toString("utf8");
+  const match = raw.match(/^---\n([\s\S]*?)\n---\n\n?([\s\S]*)$/);
+  if (!match) return null;
+  let meta: Record<string, unknown>;
+  try {
+    const doc = parseYaml(match[1]);
+    if (doc !== null && typeof doc === "object" && !Array.isArray(doc)) {
+      meta = doc as Record<string, unknown>;
+    } else if (match[1].trim() === "") {
+      meta = {};
+    } else {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  const baseId = path.basename(file, ".md");
+  const id = (meta.id ? String(meta.id) : baseId) as string;
+  const type = (meta.type ? String(meta.type) : "fact") as MemoryType;
+  if (!MemoryType.options.includes(type)) return null;
+  const scope = (meta.scope ? String(meta.scope) : "global") as string;
+  if (!scope || /\/|\.\./.test(scope)) return null;
+  const content = match[2].trim();
+  if (!content) return null;
+  const tags: string[] = Array.isArray(meta.tags)
+    ? (meta.tags as unknown[]).map((t) => String(t)).filter(Boolean)
+    : typeof meta.tags === "string"
+      ? (meta.tags as string).replace(/^\[|\]$/g, "").split(",").map((t) => t.trim()).filter(Boolean)
+      : [];
+  const impNum = Number(meta.importance ?? 3);
+  const importance = Number.isFinite(impNum) ? Math.min(5, Math.max(1, Math.round(impNum))) : 3;
+  const confFallback = (() => {
+    const p = meta.provenance;
+    if (typeof p === "object" && p !== null && "sourceType" in p) {
+      return (p as { sourceType: string }).sourceType === "conversation" ? 0.7 : 1;
+    }
+    return 1;
+  })();
+  const confNum = Number(meta.confidence);
+  const confidence = Number.isFinite(confNum) ? Math.min(1, Math.max(0, confNum)) : confFallback;
+  const trustRaw = meta.trust ? String(meta.trust) : undefined;
+  const trust = TrustLevel.options.includes(trustRaw as TrustLevel) ? (trustRaw as TrustLevel) : "trusted";
+  let provenance: Provenance = { sourceType: "manual" };
+  if (meta.provenance) {
+    if (typeof meta.provenance === "object" && !Array.isArray(meta.provenance)) {
+      const parsed = ProvenanceSchema.safeParse(meta.provenance);
+      if (parsed.success) provenance = parsed.data;
+    }
+  }
+  const retentionRaw = meta.retention ? String(meta.retention) : undefined;
+  const retention = RetentionMode.options.includes(retentionRaw as RetentionMode) ? (retentionRaw as RetentionMode) : undefined;
+  const relationsRaw = meta.relations;
+  let relations: Relation[] | undefined = undefined;
+  if (Array.isArray(relationsRaw)) {
+    relations = (relationsRaw as Array<unknown>)
+      .map((e: unknown) => {
+        if (typeof e === "object" && e !== null) {
+          const o = e as Record<string, unknown>;
+          return { id: String(o.id ?? o[0] ?? ""), kind: String(o.kind ?? o[1] ?? "related") as RelationKind };
+        }
+        return null;
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null && r.id.length > 0);
+    if (relations.length === 0) relations = undefined;
+  }
+  const createdAt = meta.created ? String(meta.created) : new Date().toISOString();
+  const updatedAt = meta.updated ? String(meta.updated) : createdAt;
+  const lastSeen = meta.lastSeen ? String(meta.lastSeen) : undefined;
+  const archivedAt = meta.archivedAt ? String(meta.archivedAt) : undefined;
+  const embeddingRaw = meta.embedding;
+  const embedding: number[] | undefined =
+    typeof embeddingRaw === "string" && embeddingRaw.length > 0
+      ? embeddingRaw.split(",").map((s) => parseFloat(s)).filter((n) => Number.isFinite(n))
+      : undefined;
+  const revision = meta.revision !== undefined ? Math.max(1, Math.round(Number(meta.revision))) : 1;
+  return {
+    id, type, content, scope, tags, importance, confidence, trust, provenance,
+    retention, relations, version: revision, createdAt, updatedAt,
+    ...(lastSeen ? { lastSeen } : {}),
+    ...(archivedAt ? { archivedAt } : {}),
+    ...(embedding ? { embedding } : {}),
+  } as Memory;
 }

@@ -7,6 +7,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [4.3.0] — 2026-09-23
+
+**Storage & Index Architecture** — plan §6 of the Master Development Plan.
+The flat-file backend is replaced by a SQLite-backed runtime while keeping
+Markdown as the human-readable export format. Public APIs are unchanged.
+
+### Added
+- **SQLite backend** (`src/sqlite-backend.ts`): new `SqliteBackend` class
+  implementing `MemoryBackend` with WAL mode, optimistic concurrency via
+  `expectedVersion`, and full-text search backed by FTS5.
+- **Schema**: `memories`, `memory_versions`, `memory_audit` tables with
+  foreign-key relationships and indexes on scope, type, archived_at,
+  updated_at, last_seen.
+- **FTS5 full-text search**: keyword queries now use an FTS5 virtual table
+  when available; graceful fallback to keyword-only scoring when the
+  SQLite build lacks FTS5 support.
+- **Embedding BLOB storage**: vectors are stored as raw `Float32Array` bytes
+  in a `BLOB` column instead of comma-separated text in Markdown frontmatter.
+- **CLI commands**:
+  - `remembra export-markdown <dir>` — dump active memories as `.md` files
+  - `remembra import-markdown <dir>` — import `.md` files into SQLite
+  - `remembra backup <file>` — copy DB + write SHA-256 sidecar
+  - `remembra restore <file>` — verify checksum and atomically replace DB
+- **Auto-migration**: on first launch, legacy flat files are read and
+  imported into SQLite; the old tree is moved to `<root>/.legacy/`.
+- **10 new tests** covering SQLite CRUD, FTS search, embedding round-trip,
+  history snapshots, and archive/revive lifecycle.
+
+### Changed
+- Default runtime backend switched from `MemoryStore` (flat files) to
+  `SqliteBackend`. The file backend remains available for backward compat
+  and export; existing `MemoryStore` tests continue to pass unchanged.
+
+### Notes
+- The `MemoryBackend` interface is unchanged — all HTTP endpoints, MCP
+  tools, and dashboard behavior are identical.
+- If FTS5 is unavailable on your SQLite build, retrieval degrades to
+  keyword-only scoring without error.
+
+---
+
 ## [4.2.0] — 2026-09-23
 
 **Retrieval Engine** — plan §5 of the Master Development Plan. The monolithic
