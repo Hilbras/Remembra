@@ -2,6 +2,7 @@ import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { MemoryService } from "./service.js";
 import { DigestInput } from "./types.js";
+import { isRemembraError, statusFor } from "./errors.js";
 
 interface HttpOptions {
   port?: number;
@@ -120,13 +121,18 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       send(res, 404, { error: `No route: ${req.method} ${path}` });
     } catch (err) {
       const name = (err as { name?: string }).name;
-      const status =
-        name === "ZodError" || name === "BadRequestError"
+      // Structured classification: typed errors carry a stable code → status.
+      const status = isRemembraError(err)
+        ? statusFor(err)
+        : name === "ZodError" || name === "BadRequestError"
           ? 400
           : name === "PayloadTooLarge"
             ? 413
             : 500;
-      send(res, status, { error: err instanceof Error ? err.message : String(err) });
+      send(res, status, {
+        error: err instanceof Error ? err.message : String(err),
+        ...(isRemembraError(err) ? { code: err.code } : {}),
+      });
     }
   });
 

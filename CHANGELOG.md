@@ -7,6 +7,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3). Earlier releases used independent semver: 0.1.0 = v1,
 > 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [3.3.0] — 2026-09-23
+
+**Phase 3 of the deep audit** — architecture: swappable backend, cross-process
+locking, crash recovery, structured errors.
+
+### Added
+- **`MemoryBackend` interface** (`src/backend.ts`) — `MemoryService` now
+  depends on the storage contract, not the file store; a DB backend can be
+  dropped in without touching service/transport code. Tested against an
+  in-memory implementation. Fixes audit Phase 3 item.
+- **Advisory file locking** — `<root>/.remembra.lock` (`O_EXCL` create) around
+  every mutation *including its read*, plus an in-process FIFO queue. Stale
+  locks (dead pid or older than `REMEMBRA_LOCK_STALE_MS`) are stolen;
+  waiters fail with typed `LOCK_TIMEOUT` after `REMEMBRA_LOCK_TIMEOUT_MS`.
+  Fixes audit Phase 2 item (concurrent writers) and closes the
+  touch-vs-archive resurrection window.
+- **Crash-recovery pass** (the audit's "journal", recovery-pass flavor —
+  documented rationale in `docs/architecture.md`): on first access per
+  process, deletes orphaned `*.tmp` files and reconciles ids left in *both*
+  active and archived trees by an interrupted archive/revive (finding #19);
+  newest `updatedAt` wins. Logged when it does anything.
+- **Structured error classification** — `RemembraError` with stable codes
+  (`INVALID_INPUT`, `SNAPSHOT_INVALID`, `SCOPE_ESCAPES_ROOT`, `NOT_FOUND`,
+  `CONFLICT`, `LOCK_TIMEOUT`, `IO_ERROR`, `LLM_ERROR`). HTTP maps codes →
+  statuses and includes `code` in error bodies (423 for locked, 502 for LLM
+  failures); MCP tools return `[CODE] message` with `isError: true`; raw fs
+  failures wrap as `IO_ERROR`. Fixes audit Phase 2 item.
+- **`docs/architecture.md`** — backend seam, locking model, recovery pass,
+  error-code table, schema-versioning notes.
+
+### Changed
+- `archive()` now bumps `updatedAt` (state change updates recency; also makes
+  crash-recovery tie-breaks deterministic).
+- All six MCP tool handlers catch and classify failures instead of throwing
+  through the SDK.
+
+### Added (tests)
+15 Phase-3 tests: non-file backend swappability, lock release/steal/timeout,
+HTTP 423, mixed-concurrency single-tree invariant, tmp + both recovery
+directions, error codes on every boundary, `formatToolError`/`statusFor`
+units. **86/86 total.**
+
 ## [3.2.0] — 2026-09-23
 
 **Phase 2 of the deep audit** — data integrity, portability, and shared schemas.

@@ -1,6 +1,7 @@
-import { MemoryStore } from "./store.js";
+import type { MemoryBackend } from "./backend.js";
 import { search } from "./retrieval.js";
 import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION } from "./types.js";
+import { RemembraError, inputError } from "./errors.js";
 import { resolveEmbeddingProvider, embedText, EmbeddingProvider, cosine } from "./embeddings.js";
 import {
   resolveLlmProvider,
@@ -59,7 +60,7 @@ export class MemoryService {
   private lastDecayRun = 0;
   private decayRunning = false;
 
-  constructor(readonly db: MemoryStore, deps: ServiceDeps = {}) {
+  constructor(readonly db: MemoryBackend, deps: ServiceDeps = {}) {
     const emb = deps.embeddingProvider ?? resolveEmbeddingProvider();
     const llm = deps.llmProvider ?? resolveLlmProvider();
 
@@ -91,7 +92,12 @@ export class MemoryService {
   }
 
   async store(input: unknown) {
-    const parsed = StoreInput.parse(input);
+    let parsed: StoreInput;
+    try {
+      parsed = StoreInput.parse(input);
+    } catch (err) {
+      throw inputError(err, "INVALID_INPUT");
+    }
     const embedding = await this.maybeEmbed(parsed.content);
     const memory = await this.db.store(parsed, embedding);
     return {
@@ -169,7 +175,13 @@ export class MemoryService {
   private digestLock: Promise<unknown> = Promise.resolve();
 
   private async doDigest(opts: { transcript: string; scope?: string; source?: string }): Promise<DigestResult> {
-    const extracted = await this.extractFn(opts.transcript);
+    let extracted: ExtractedMemory[];
+    try {
+      extracted = await this.extractFn(opts.transcript);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new RemembraError("LLM_ERROR", `memory extraction failed: ${msg}`, { cause: err });
+    }
     const active = await this.db.all();
     const archived = await this.db.all(true).then((all) => all.filter((m) => m.archivedAt));
     const seen = new Set(active.map((m) => dedupKey(m.type, m.content, m.scope)));
@@ -296,7 +308,12 @@ export class MemoryService {
    * skipped, making re-import idempotent.
    */
   async importSnapshot(data: unknown): Promise<{ imported: number; skipped: number }> {
-    const snap = SnapshotInput.parse(data); // throws before any write
+    let snap: ReturnType<typeof SnapshotInput.parse>;
+    try {
+      snap = SnapshotInput.parse(data); // throws before any write
+    } catch (err) {
+      throw inputError(err, "SNAPSHOT_INVALID");
+    }
     const existing = await this.db.all(true);
     const ids = new Set(existing.map((m) => m.id));
     const keys = new Set(existing.map((m) => dedupKey(m.type, m.content, m.scope)));

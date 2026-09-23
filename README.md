@@ -139,6 +139,7 @@ Full reference: **[docs/tools.md](docs/tools.md)**
 | [AI providers](docs/providers.md) | Digest LLM + embeddings configuration |
 | [Lifecycle](docs/lifecycle.md) | Decay, archiving, auto-delete, contradiction merging |
 | [Security](docs/security.md) | Trust model, enforced protections, deployment checklist |
+| [Architecture](docs/architecture.md) | Backend interface, locking, crash recovery, error codes |
 | [Contributing](CONTRIBUTING.md) | Dev workflow and guidelines |
 | [Changelog](CHANGELOG.md) | Release history |
 

@@ -52,6 +52,9 @@ Retrieved memories should be treated as **data with provenance**, not commands
 | **Body size limit** | 10 MiB default (`REMEMBRA_MAX_BODY`), `413` on excess — pre-checks `Content-Length` and enforces while streaming |
 | **Digest validation** | `DigestInput` Zod schema on both MCP and HTTP paths |
 | **Atomic writes** | temp file + `rename()` (POSIX-atomic) — no half-written memories after a crash |
+| **Advisory locking** | `<root>/.remembra.lock` (`O_EXCL`) + in-process FIFO — cross-process writes serialize; stale locks (dead pid / older than `REMEMBRA_LOCK_STALE_MS`) are stolen; waiters fail with typed `LOCK_TIMEOUT` (HTTP 423) |
+| **Crash recovery** | one-time pass on first access: removes orphaned `*.tmp`, reconciles ids left in both active+archived trees by an interrupted archive/revive |
+| **Structured errors** | every actionable failure has a stable code (`INVALID_INPUT`, `LOCK_TIMEOUT`, `LLM_ERROR`, …) mapped to HTTP statuses / MCP `[CODE]` prefixes |
 | **ID collisions** | 12-hex IDs (2⁴⁸) + existence check on store |
 | **Content-Length** | Set on every response |
 
@@ -83,7 +86,9 @@ remembra --http
 - **No encryption at rest** — files are plaintext markdown (by design: you can
   read and edit them). Use filesystem-level encryption if needed.
 - **No PII redaction** — what you store is what's written to disk.
-- **No write locking / journal** — single-writer assumption; concurrent writers
-  from multiple machines are unsupported (atomic writes + the digest lock
-  protect against crashes and same-process races, not cross-machine
-  interleaving). `remembra export` for backups across machines.
+- **Single-writer assumption per store, now cross-process safe** — mutations
+  take an advisory lockfile (`O_EXCL`, stale-steal, typed `LOCK_TIMEOUT`), so
+  an MCP server, the `remembra maintain` CLI, and a session digest can run
+  against one store concurrently on one machine. Network filesystems with
+  unreliable `O_EXCL` semantics are untested; `remembra export` for backups
+  across machines.

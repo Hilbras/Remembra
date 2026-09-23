@@ -13,6 +13,7 @@ import {
   listInputShape,
   forgetInputShape,
 } from "./types.js";
+import { toolFail } from "./errors.js";
 
 const store = new MemoryStore(MemoryStore.defaultRoot());
 const service = new MemoryService(store);
@@ -82,7 +83,7 @@ if (argv[0] === "export") {
 }
 
 async function startMcp(): Promise<void> {
-  const server = new McpServer({ name: "remembra", version: "3.2.0" });
+  const server = new McpServer({ name: "remembra", version: "3.3.0" });
 
   server.registerTool(
     "memory_store",
@@ -95,8 +96,12 @@ async function startMcp(): Promise<void> {
       inputSchema: storeInputShape,
     },
     async (args) => {
-      const result = await service.store(args);
-      return { content: [{ type: "text", text: result.message }] };
+      try {
+        const result = await service.store(args);
+        return { content: [{ type: "text", text: result.message }] };
+      } catch (err) {
+        return toolFail(err);
+      }
     },
   );
 
@@ -111,12 +116,16 @@ async function startMcp(): Promise<void> {
       inputSchema: digestInputShape,
     },
     async (args) => {
-      const result = await service.digest(DigestInput.parse(args));
-      const text =
-        `Digest complete: ${result.extracted} extracted, ${result.stored.length} stored, ` +
-        `${result.merged} merged/revived, ${result.skippedDuplicates} duplicates skipped.` +
-        (result.ids.length ? `\nStored ids: ${result.ids.join(", ")}` : "");
-      return { content: [{ type: "text", text }] };
+      try {
+        const result = await service.digest(DigestInput.parse(args));
+        const text =
+          `Digest complete: ${result.extracted} extracted, ${result.stored.length} stored, ` +
+          `${result.merged} merged/revived, ${result.skippedDuplicates} duplicates skipped.` +
+          (result.ids.length ? `\nStored ids: ${result.ids.join(", ")}` : "");
+        return { content: [{ type: "text", text }] };
+      } catch (err) {
+        return toolFail(err);
+      }
     },
   );
 
@@ -131,13 +140,17 @@ async function startMcp(): Promise<void> {
       inputSchema: {},
     },
     async () => {
-      const result = await service.maintain();
-      const text =
-        `Maintenance complete: ${result.archived.length} archived, ` +
-        `${result.deleted.length} deleted, ${result.embedded} vectors backfilled.` +
-        (result.archived.length ? `\nArchived: ${result.archived.join(", ")}` : "") +
-        (result.deleted.length ? `\nDeleted: ${result.deleted.join(", ")}` : "");
-      return { content: [{ type: "text", text }] };
+      try {
+        const result = await service.maintain();
+        const text =
+          `Maintenance complete: ${result.archived.length} archived, ` +
+          `${result.deleted.length} deleted, ${result.embedded} vectors backfilled.` +
+          (result.archived.length ? `\nArchived: ${result.archived.join(", ")}` : "") +
+          (result.deleted.length ? `\nDeleted: ${result.deleted.join(", ")}` : "");
+        return { content: [{ type: "text", text }] };
+      } catch (err) {
+        return toolFail(err);
+      }
     },
   );
 
@@ -151,8 +164,12 @@ async function startMcp(): Promise<void> {
       inputSchema: searchInputShape,
     },
     async (args) => {
-      const result = await service.search(args);
-      return { content: [{ type: "text", text: result.text }] };
+      try {
+        const result = await service.search(args);
+        return { content: [{ type: "text", text: result.text }] };
+      } catch (err) {
+        return toolFail(err);
+      }
     },
   );
 
@@ -164,8 +181,12 @@ async function startMcp(): Promise<void> {
       inputSchema: listInputShape,
     },
     async (args) => {
-      const result = await service.list(args);
-      return { content: [{ type: "text", text: result.text }] };
+      try {
+        const result = await service.list(args);
+        return { content: [{ type: "text", text: result.text }] };
+      } catch (err) {
+        return toolFail(err);
+      }
     },
   );
 
@@ -177,11 +198,15 @@ async function startMcp(): Promise<void> {
       inputSchema: forgetInputShape,
     },
     async ({ id }) => {
-      const result = await service.forget(id);
-      return {
-        content: [{ type: "text", text: result.text }],
-        isError: !result.ok,
-      };
+      try {
+        const result = await service.forget(id);
+        return {
+          content: [{ type: "text", text: result.text }],
+          isError: !result.ok,
+        };
+      } catch (err) {
+        return toolFail(err);
+      }
     },
   );
 

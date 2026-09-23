@@ -3,6 +3,15 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { Memory, StoreInput, SCHEMA_VERSION } from "./types.js";
+import type { MemoryBackend } from "./backend.js";
+import { RemembraError } from "./errors.js";
+
+export interface StoreLockOptions {
+  /** Max wait for the cross-process lock (ms). Env: REMEMBRA_LOCK_TIMEOUT_MS. Default 5000. */
+  lockTimeoutMs?: number;
+  /** Lock files older than this with a dead/unknown pid are stolen (ms). Env: REMEMBRA_LOCK_STALE_MS. Default 10000. */
+  lockStaleMs?: number;
+}
 
 /**
  * File-based memory store (source of truth — no database).
@@ -13,38 +22,166 @@ import { Memory, StoreInput, SCHEMA_VERSION } from "./types.js";
  *   archived/global/<id>.md   — archived memories (out of search, listed with flag)
  *   archived/scopes/<scope>/  — archived scoped memories
  *
- * Each file is markdown with frontmatter for human readability and greppability.
- * Maintenance runs opportunistically on search + via `memory_maintain`.
+ * Concurrency (audit: advisory file locking):
+ *   - in-process: all mutating ops of one instance go through a FIFO queue;
+ *   - cross-process: `<root>/.remembra.lock` via O_EXCL create, stolen only
+ *     when stale (dead pid or older than lockStaleMs).
+ *
+ * Crash recovery (audit: journal for crash recovery — recovery-pass flavor):
+ *   atomic rename() already prevents torn files, so instead of a WAL this
+ *   store runs a one-time recovery on first access per instance:
+ *     1. delete orphaned `*.tmp` files (crash between write and rename);
+ *     2. reconcile ids present in BOTH active and archived trees (crash
+ *        between archive/revive's write and unlink) — newest updatedAt wins,
+ *        ties go to the archived copy.
  */
-export class MemoryStore {
-  constructor(private readonly root: string) {}
+export class MemoryStore implements MemoryBackend {
+  private readonly lockTimeoutMs: number;
+  private readonly lockStaleMs: number;
+  /** In-process FIFO so the file lock is only ever contended cross-process. */
+  private queue: Promise<void> = Promise.resolve();
+  private recovery: Promise<void> | null = null;
+  private recovered = false;
+  private holdsLock = false;
+
+  constructor(
+    private readonly root: string,
+    opts: StoreLockOptions = {},
+  ) {
+    this.lockTimeoutMs = opts.lockTimeoutMs ?? Number(process.env.REMEMBRA_LOCK_TIMEOUT_MS ?? 5000);
+    this.lockStaleMs = opts.lockStaleMs ?? Number(process.env.REMEMBRA_LOCK_STALE_MS ?? 10000);
+  }
 
   static defaultRoot(): string {
     return process.env.REMEMBRA_HOME ?? path.join(os.homedir(), ".remembra");
   }
 
-  private fileFor(m: Memory): string {
-    const safeScope = m.scope === "global" ? "global" : m.scope.replace(/[^a-zA-Z0-9._/-]/g, "_");
-    const base = m.scope === "global" ? path.join(this.root, "global") : path.join(this.root, "scopes", safeScope);
-    const archivedBase =
-      m.scope === "global"
-        ? path.join(this.root, "archived", "global")
-        : path.join(this.root, "archived", "scopes", safeScope);
-    const dir = m.archivedAt ? archivedBase : base;
-    const file = path.resolve(path.join(dir, `${m.id}.md`));
-    // Defense in depth (P0): never touch anything outside the storage root.
-    const root = path.resolve(this.root);
-    if (!file.startsWith(root + path.sep)) {
-      throw new Error(`Invalid scope "${m.scope}": resolves outside the storage root`);
-    }
-    return file;
-  }
+  // -------------------------------------------------------------------------
+  // Public API — each entry awaits recovery, then runs under the lock.
+  // Internal helpers must NOT call back into locked public methods
+  // (the queue/lock are not reentrant); reads (get/all) never lock.
+  // -------------------------------------------------------------------------
 
   async store(input: StoreInput, embedding?: number[]): Promise<Memory> {
+    await this.ensureRecovered();
+    return this.withLock(() => this.storeLocked(input, embedding));
+  }
+
+  async forget(id: string): Promise<boolean> {
+    await this.ensureRecovered();
+    return this.withLock(async () => {
+      const file = await this.findFile(id);
+      if (!file) return false;
+      await fs.unlink(file);
+      return true;
+    });
+  }
+
+  /** Load active memories (excludes archived). Pass includeArchived for everything. */
+  async all(includeArchived = false): Promise<Memory[]> {
+    await this.ensureRecovered();
+    const dirs = [path.join(this.root, "global"), path.join(this.root, "scopes")];
+    if (includeArchived) {
+      dirs.push(path.join(this.root, "archived", "global"), path.join(this.root, "archived", "scopes"));
+    }
+    const files = await walk(...dirs);
+    const memories = await Promise.all(files.map((f) => parse(f)));
+    return memories.filter((m): m is Memory => m !== null);
+  }
+
+  async get(id: string): Promise<Memory | null> {
+    await this.ensureRecovered();
+    const file = await this.findFile(id);
+    if (!file) return null;
+    return parse(file);
+  }
+
+  /** Move a memory to the archived tree (sets archivedAt). */
+  async archive(id: string): Promise<Memory | null> {
+    await this.ensureRecovered();
+    return this.withLock(async () => {
+      const m = await this.get(id);
+      if (!m || m.archivedAt) return null;
+      const oldFile = this.fileFor(m);
+      const now = new Date().toISOString();
+      const updated: Memory = { ...m, archivedAt: now, updatedAt: now };
+      const newFile = this.fileFor(updated);
+      if (oldFile === newFile) return null;
+      await fs.mkdir(path.dirname(newFile), { recursive: true });
+      await writeFileAtomic(newFile, render(updated), fs);
+      await fs.unlink(oldFile);
+      return updated;
+    });
+  }
+
+  /** Bring an archived memory back into active search. */
+  async revive(id: string): Promise<Memory | null> {
+    await this.ensureRecovered();
+    return this.withLock(async () => {
+      const m = await this.get(id);
+      if (!m || !m.archivedAt) return null;
+      const oldFile = this.fileFor(m);
+      const now = new Date().toISOString();
+      const updated: Memory = { ...m, archivedAt: undefined, lastSeen: now, updatedAt: now };
+      const newFile = this.fileFor(updated);
+      await fs.mkdir(path.dirname(newFile), { recursive: true });
+      await writeFileAtomic(newFile, render(updated), fs);
+      await fs.unlink(oldFile);
+      return updated;
+    });
+  }
+
+  /** Persist changes to an existing memory (merge/update path). */
+  async update(memory: Memory): Promise<Memory> {
+    await this.ensureRecovered();
+    return this.withLock(async () => {
+      const updated: Memory = { ...memory, updatedAt: new Date().toISOString() };
+      const file = this.fileFor(updated);
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await writeFileAtomic(file, render(updated), fs);
+      return updated;
+    });
+  }
+
+  /** Record that a memory surfaced in search (decay refresh). Cheap: no-op if seen <1h ago. */
+  async touch(id: string): Promise<void> {
+    await this.ensureRecovered();
+    return this.withLock(async () => {
+      // Read + write inside the lock: racing an archive/revive move here is
+      // what used to be able to resurrect a file in both trees.
+      const m = await this.get(id);
+      if (!m) return;
+      const last = Date.parse(m.lastSeen ?? m.updatedAt);
+      if (Number.isFinite(last) && Date.now() - last < 3_600_000) return;
+      m.lastSeen = new Date().toISOString();
+      await writeFileAtomic(this.fileFor(m), render(m), fs);
+    });
+  }
+
+  /** Import a snapshot memory verbatim (id preserved). Returns false if the id exists. */
+  async importMemory(m: Memory): Promise<boolean> {
+    await this.ensureRecovered();
+    return this.withLock(async () => {
+      if (await this.findFile(m.id)) return false;
+      const file = this.fileFor(m); // containment check applies (P0)
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await writeFileAtomic(file, render(m), fs);
+      return true;
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Locked body helpers (no reentrant locking inside these).
+  // -------------------------------------------------------------------------
+
+  private async storeLocked(input: StoreInput, embedding?: number[]): Promise<Memory> {
     const now = new Date().toISOString();
     // 12 hex chars (2^48): collision-safe; existence check guards the rest (P2 audit #9).
     let id = genId();
     for (let i = 0; i < 10 && (await this.findFile(id)); i++) id = genId();
+    if (await this.findFile(id)) {
+      throw new RemembraError("CONFLICT", `could not allocate a unique memory id after retries`);
+    }
     const memory: Memory = {
       id,
       type: input.type,
@@ -63,84 +200,24 @@ export class MemoryStore {
     return memory;
   }
 
-  async forget(id: string): Promise<boolean> {
-    const file = await this.findFile(id);
-    if (!file) return false;
-    await fs.unlink(file);
-    return true;
-  }
-
-  /** Load active memories (excludes archived). Pass includeArchived for everything. */
-  async all(includeArchived = false): Promise<Memory[]> {
-    const dirs = [path.join(this.root, "global"), path.join(this.root, "scopes")];
-    if (includeArchived) {
-      dirs.push(path.join(this.root, "archived", "global"), path.join(this.root, "archived", "scopes"));
+  private fileFor(m: Memory): string {
+    const safeScope = m.scope === "global" ? "global" : m.scope.replace(/[^a-zA-Z0-9._/-]/g, "_");
+    const base = m.scope === "global" ? path.join(this.root, "global") : path.join(this.root, "scopes", safeScope);
+    const archivedBase =
+      m.scope === "global"
+        ? path.join(this.root, "archived", "global")
+        : path.join(this.root, "archived", "scopes", safeScope);
+    const dir = m.archivedAt ? archivedBase : base;
+    const file = path.resolve(path.join(dir, `${m.id}.md`));
+    // Defense in depth (P0): never touch anything outside the storage root.
+    const root = path.resolve(this.root);
+    if (!file.startsWith(root + path.sep)) {
+      throw new RemembraError(
+        "SCOPE_ESCAPES_ROOT",
+        `Invalid scope "${m.scope}": resolves outside the storage root`,
+      );
     }
-    const files = await walk(...dirs);
-    const memories = await Promise.all(files.map((f) => parse(f)));
-    return memories.filter((m): m is Memory => m !== null);
-  }
-
-  async get(id: string): Promise<Memory | null> {
-    const file = await this.findFile(id);
-    if (!file) return null;
-    return parse(file);
-  }
-
-  /** Move a memory to the archived tree (sets archivedAt). */
-  async archive(id: string): Promise<Memory | null> {
-    const m = await this.get(id);
-    if (!m || m.archivedAt) return null;
-    const oldFile = this.fileFor(m);
-    const updated: Memory = { ...m, archivedAt: new Date().toISOString() };
-    const newFile = this.fileFor(updated);
-    if (oldFile === newFile) return null;
-    await fs.mkdir(path.dirname(newFile), { recursive: true });
-    await writeFileAtomic(newFile, render(updated), fs);
-    await fs.unlink(oldFile);
-    return updated;
-  }
-
-  /** Bring an archived memory back into active search. */
-  async revive(id: string): Promise<Memory | null> {
-    const m = await this.get(id);
-    if (!m || !m.archivedAt) return null;
-    const oldFile = this.fileFor(m);
-    const now = new Date().toISOString();
-    const updated: Memory = { ...m, archivedAt: undefined, lastSeen: now, updatedAt: now };
-    const newFile = this.fileFor(updated);
-    await fs.mkdir(path.dirname(newFile), { recursive: true });
-    await writeFileAtomic(newFile, render(updated), fs);
-    await fs.unlink(oldFile);
-    return updated;
-  }
-
-  /** Persist changes to an existing memory (merge/update path). */
-  async update(memory: Memory): Promise<Memory> {
-    const updated: Memory = { ...memory, updatedAt: new Date().toISOString() };
-    const file = this.fileFor(updated);
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await writeFileAtomic(file, render(updated), fs);
-    return updated;
-  }
-
-  /** Record that a memory surfaced in search (decay refresh). Cheap: no-op if seen <1h ago. */
-  async touch(id: string): Promise<void> {
-    const m = await this.get(id);
-    if (!m) return;
-    const last = Date.parse(m.lastSeen ?? m.updatedAt);
-    if (Number.isFinite(last) && Date.now() - last < 3_600_000) return;
-    m.lastSeen = new Date().toISOString();
-    await writeFileAtomic(this.fileFor(m), render(m), fs);
-  }
-
-  /** Import a snapshot memory verbatim (id preserved). Returns false if the id exists. */
-  async importMemory(m: Memory): Promise<boolean> {
-    if (await this.findFile(m.id)) return false;
-    const file = this.fileFor(m); // containment check applies (P0)
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await writeFileAtomic(file, render(m), fs);
-    return true;
+    return file;
   }
 
   private async findFile(id: string): Promise<string | null> {
@@ -151,10 +228,185 @@ export class MemoryStore {
     );
     return files.find((f) => path.basename(f, ".md") === id) ?? null;
   }
+
+  // -------------------------------------------------------------------------
+  // Advisory file lock + in-process queue.
+  // -------------------------------------------------------------------------
+
+  private lockFile(): string {
+    return path.join(this.root, ".remembra.lock");
+  }
+
+  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this.queue;
+    let release!: () => void;
+    this.queue = new Promise<void>((r) => (release = r));
+    await prev;
+    try {
+      await this.acquireFileLock();
+      try {
+        return await fn();
+      } catch (err) {
+        throw classifyFsError(err);
+      } finally {
+        await this.releaseFileLock();
+      }
+    } finally {
+      release();
+    }
+  }
+
+  private async acquireFileLock(): Promise<void> {
+    const file = this.lockFile();
+    const deadline = Date.now() + this.lockTimeoutMs;
+    for (;;) {
+      try {
+        const fh = await fs.open(file, "wx");
+        try {
+          await fh.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }), "utf8");
+        } finally {
+          await fh.close();
+        }
+        this.holdsLock = true;
+        return;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+          throw new RemembraError(
+            "IO_ERROR",
+            `cannot create lock file: ${err instanceof Error ? err.message : err}`,
+            { cause: err },
+          );
+        }
+      }
+      if (await this.lockIsStale(file)) {
+        await fs.unlink(file).catch(() => {});
+        continue; // steal: O_EXCL create decides the winner
+      }
+      if (Date.now() >= deadline) {
+        const holder = await lockHolderPid(file);
+        throw new RemembraError(
+          "LOCK_TIMEOUT",
+          `storage is locked by ${holder !== null ? `pid ${holder}` : "another process"} (waited ${this.lockTimeoutMs}ms)`,
+        );
+      }
+      await sleep(15 + Math.floor(Math.random() * 20));
+    }
+  }
+
+  private async releaseFileLock(): Promise<void> {
+    if (!this.holdsLock) return;
+    this.holdsLock = false;
+    try {
+      const info = JSON.parse(await fs.readFile(this.lockFile(), "utf8"));
+      if (info.pid === process.pid) await fs.unlink(this.lockFile()).catch(() => {});
+    } catch {
+      // already gone (or unreadable) — nothing to release
+    }
+  }
+
+  private async lockIsStale(file: string): Promise<boolean> {
+    try {
+      const st = await fs.stat(file);
+      if (Date.now() - st.mtimeMs >= this.lockStaleMs) return true;
+      let pid: unknown;
+      try {
+        pid = (JSON.parse(await fs.readFile(file, "utf8")) as { pid?: unknown }).pid;
+      } catch {
+        pid = undefined;
+      }
+      if (typeof pid !== "number") return false; // fresh but unwritten: writer in progress
+      if (pid === process.pid) return true; // our own leftover (queue prevents live self-holds)
+      try {
+        process.kill(pid, 0);
+        return false; // alive
+      } catch (err) {
+        return (err as NodeJS.ErrnoException).code !== "EPERM"; // ESRCH dead → stale; EPERM alive → wait
+      }
+    } catch {
+      return true; // vanished between EEXIST and stat → retry the create
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Crash recovery (the "journal" phase — see class doc for why not a WAL).
+  // -------------------------------------------------------------------------
+
+  private async ensureRecovered(): Promise<void> {
+    if (this.recovered) return;
+    if (!this.recovery) {
+      this.recovery = this.withLock(() => this.recover()).then(() => {
+        this.recovered = true;
+      });
+    }
+    await this.recovery;
+  }
+
+  private async recover(): Promise<void> {
+    const everything = await walkRaw(this.root);
+    const tmps = everything.filter((f) => f.endsWith(".tmp"));
+    for (const t of tmps) await fs.unlink(t).catch(() => {});
+
+    // Ids present in both active and archived trees → interrupted archive/revive.
+    const active = await walk(path.join(this.root, "global"), path.join(this.root, "scopes"));
+    const archived = await walk(path.join(this.root, "archived"));
+    const archivedById = new Map(archived.map((f) => [path.basename(f, ".md"), f]));
+    let reconciled = 0;
+    for (const activeFile of active) {
+      const twin = archivedById.get(path.basename(activeFile, ".md"));
+      if (!twin) continue;
+      const [am, zm] = await Promise.all([parse(activeFile), parse(twin)]);
+      if (!am && !zm) {
+        await fs.unlink(activeFile).catch(() => {});
+        await fs.unlink(twin).catch(() => {});
+        reconciled++;
+        continue;
+      }
+      // Newest updatedAt wins; ties go to the archived copy (archive writes
+      // archivedAt last in the common crash window).
+      const keepArchived = !am || (zm !== null && Date.parse(zm.updatedAt) >= Date.parse(am.updatedAt));
+      await fs.unlink(keepArchived ? activeFile : twin).catch(() => {});
+      reconciled++;
+    }
+
+    if (tmps.length > 0 || reconciled > 0) {
+      console.error(
+        `Remembra: crash recovery — removed ${tmps.length} orphaned temp file(s), reconciled ${reconciled} interrupted move(s)`,
+      );
+    }
+  }
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function genId(): string {
   return randomUUID().replace(/-/g, "").slice(0, 12);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function lockHolderPid(file: string): Promise<number | null> {
+  try {
+    const pid = (JSON.parse(await fs.readFile(file, "utf8")) as { pid?: unknown }).pid;
+    return typeof pid === "number" ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Wrap raw filesystem failures so callers see a stable IO_ERROR code. */
+function classifyFsError(err: unknown): unknown {
+  if (err instanceof RemembraError) return err;
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  if (typeof code === "string" && /^E[A-Z]+$/.test(code)) {
+    return new RemembraError("IO_ERROR", `filesystem error (${code}): ${(err as Error).message}`, {
+      cause: err,
+    });
+  }
+  return err;
 }
 
 /**
@@ -173,7 +425,7 @@ async function writeFileAtomic(file: string, data: string, fsmod: typeof fs): Pr
   }
 }
 
-async function walk(...dirs: string[]): Promise<string[]> {
+async function walkGeneric(dirs: string[], pred: (name: string) => boolean): Promise<string[]> {
   const out: string[] = [];
   for (const dir of dirs) {
     let entries;
@@ -184,11 +436,20 @@ async function walk(...dirs: string[]): Promise<string[]> {
     }
     for (const e of entries) {
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) out.push(...(await walk(full)));
-      else if (e.name.endsWith(".md")) out.push(full);
+      if (e.isDirectory()) out.push(...(await walkGeneric([full], pred)));
+      else if (pred(e.name)) out.push(full);
     }
   }
   return out;
+}
+
+/** All files (used by crash recovery to find *.tmp orphans). */
+async function walkRaw(...dirs: string[]): Promise<string[]> {
+  return walkGeneric(dirs, () => true);
+}
+
+async function walk(...dirs: string[]): Promise<string[]> {
+  return walkGeneric(dirs, (name) => name.endsWith(".md"));
 }
 
 function render(m: Memory): string {
