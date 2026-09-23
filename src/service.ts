@@ -1,5 +1,5 @@
 import type { MemoryBackend } from "./backend.js";
-import { search } from "./retrieval.js";
+import { searchQ } from "./retrieval.js";
 import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, Provenance, defaultTrust } from "./types.js";
 import { RemembraError, inputError, errorLabel } from "./errors.js";
 import { resolveEmbeddingProvider, embedText, EmbeddingProvider, cosine } from "./embeddings.js";
@@ -137,12 +137,12 @@ export class MemoryService {
     };
   }
 
-  async search(q: { query?: string; scope?: string; type?: MemoryType; limit?: number }) {
+  async search(q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean }) {
     const t0 = performance.now();
     let queryVec: number[] | null = null;
     if (q.query && this.embedFn) queryVec = (await this.maybeEmbed(q.query)) ?? null;
 
-    const results = search(await this.db.all(), q, queryVec);
+    const { results: ranked, explanations } = searchQ(await this.db.all(), q, queryVec);
     const durationMs = performance.now() - t0;
 
     // Observability (audit Phase 7): counters + hygiene-first query logging —
@@ -152,14 +152,14 @@ export class MemoryService {
     logEvent("info", "search", {
       scope: q.scope,
       terms: (q.query ?? "").split(/\s+/).filter((t) => t.length > 1).length,
-      results: results.length,
+      results: ranked.length,
       limit: q.limit,
       duration_ms: Math.round(durationMs * 10) / 10,
       ...(process.env.REMEMBRA_DEBUG && q.query ? { query: q.query } : {}),
     });
 
     // Refresh decay clocks for memories that surfaced (fire-and-forget).
-    for (const m of results)
+    for (const m of ranked)
       this.db.touch(m.id).catch((err) => {
         logEvent(
           "warn",
@@ -172,15 +172,15 @@ export class MemoryService {
     this.maybeRunDecay();
 
     const text =
-      results.length === 0
+      ranked.length === 0
         ? "No matching memories."
-        : results
+        : ranked
             .map(
               (m) =>
                 `[${m.id}] ${m.type.toUpperCase()} (scope: ${m.scope}, importance: ${m.importance}, ${m.updatedAt.slice(0, 10)})\n${m.content}`,
             )
             .join("\n\n");
-    return { text, results };
+    return { text, results: ranked, ...(explanations ? { explanations } : {}) };
   }
 
   async list(q: {

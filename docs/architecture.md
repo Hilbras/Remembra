@@ -206,7 +206,7 @@ read+parse cost is cached.
 
 Brute-force cosine **is** the vector index at our target scale: the benchmark
 in `src/test/phase5.test.ts` measures a full search over **10,000 ×
-768-dimensional vectors in ~32 ms** — a single-threaded file walk with JS math
+768-dimensional vectors in ~74 ms** — a single-threaded file walk with JS math
 comfortably inside an interactive budget. Native ANN libraries
 (FAISS/HNSW bindings) would add a compiled toolchain to every
 `npm install` for double-digit milliseconds of savings.

@@ -83,3 +83,66 @@ export function cosine(a: number[], b: number[]): number {
   if (na === 0 || nb === 0) return 0;
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
 }
+
+// ---------------------------------------------------------------------------
+// V4.2.0: query-embedding cache (plan §5.9). In-memory, TTL-based, keyed by
+// (model, textHash) — avoids redundant provider calls for repeated queries.
+// ---------------------------------------------------------------------------
+const EMBED_CACHE_TTL_MS =
+  Number(process.env.REMEMBRA_EMBEDDING_CACHE_TTL_MS) || 3_600_000; // 1h default
+interface EmbedCacheEntry {
+  vec: number[];
+  ts: number;
+}
+const embedCache = new Map<string, EmbedCacheEntry>();
+
+/** murmur-like 32-bit hash of a short string (enough to key the cache, not crypto). */
+function hashStr(s: string): number {
+  let h = 0xdeadbeef;
+  for (let i = 0; i < s.length; i++) {
+    h = (h + s.charCodeAt(i)) | 0;
+    h = (h ^ (h >>> 11)) >>> 0;
+  }
+  return h >>> 0;
+}
+
+/**
+ * Look up (or compute + cache) an embedding vector for the given text.
+ * Falls back to a direct embedText call on miss/expired.
+ */
+export async function embedCached(
+  text: string,
+  provider: EmbeddingProvider = resolveEmbeddingProvider(),
+  opts?: EmbedCallOptions,
+): Promise<number[] | null> {
+  if (provider === "none") return null;
+  const model =
+    provider === "openai"
+      ? process.env.REMEMBRA_EMBEDDING_MODEL ?? "text-embedding-3-small"
+      : process.env.REMEMBRA_EMBEDDING_MODEL ?? "nomic-embed-text";
+  const key = `${model}:${hashStr(text)}`;
+  const now = Date.now();
+  const hit = embedCache.get(key);
+  if (hit && now - hit.ts < EMBED_CACHE_TTL_MS) return hit.vec;
+  try {
+    const vec = await embedText(text, provider, opts);
+    embedCache.set(key, { vec, ts: now });
+    return vec;
+  } catch {
+    return null;
+  }
+}
+
+/** Exposed for tests to reset the cache between runs. */
+export function clearEmbedCache(): void {
+  embedCache.clear();
+}
+
+/** Exposed for metrics (plan §V4.2.0 — observability on the retrieval path). */
+export function embedCacheStats(): { size: number; capacity_ms: number; ttl_ms: number } {
+  return {
+    size: embedCache.size,
+    capacity_ms: EMBED_CACHE_TTL_MS,
+    ttl_ms: EMBED_CACHE_TTL_MS,
+  };
+}

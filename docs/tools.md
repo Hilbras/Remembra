@@ -73,6 +73,7 @@ and whenever earlier work might be referenced.
 | `scope` | string | no | Current project path/id — pass it whenever you have one |
 | `type` | memory type | no | Restrict to one type |
 | `limit` | 1–50 | no | Max results (default 10) |
+| `explain` | boolean | no | Include per-memory score breakdown (V4.2.0+) |
 
 Returns formatted memories:
 

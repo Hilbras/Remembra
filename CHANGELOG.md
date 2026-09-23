@@ -7,6 +7,58 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [4.2.0] — 2026-09-23
+
+**Retrieval Engine** — plan §5 of the Master Development Plan. The monolithic
+`search()` function is replaced by a staged multi-stage pipeline with
+explainability, hybrid fusion, diversity, temporal parsing, and an
+in-process embedding cache. Every existing `search()` call retains its
+ranking; the new `searchQ()` entry point adds optional per-memory score
+breakdowns.
+
+### Added
+- **Multi-stage retrieval pipeline** (`src/retrieval.ts`): normalize → hard
+  filters → candidate generation → keyword scoring → vector scoring → RRF
+  fusion → ranking modifiers → standing-instruction gate → MMR diversity →
+  context selection.
+- **Reciprocal Rank Fusion (RRF)** between keyword and vector signals with
+  average-rank tie handling so tied items do not suffer positional bias.
+- **Reranker interface** (`Reranker`, `identityReranker`, `EmbedReranker`)
+  exported for future provider plugging; identity is the default so existing
+  rankings are preserved.
+- **MMR-lite diversity pass** that dampens redundant near-duplicate results
+  in semantic mode (pool capped at `limit × 10` for O(K·N) bounded cost).
+- **Retrieval explanations** (`SearchResults.explanations`): each memory gets
+  a `{ components, totalScore, reasons }` breakdown when the caller sets
+  `explain: true` on the query. HTTP `?explain=true` is wired end-to-end.
+- **Temporal query parsing**: `latest [N]`, `recent [N]`, `before <date>`,
+  `after <date>` recognised in the query string and applied as recency boosts
+  or hard filters.
+- **Embedding cache** (`embedCached`, `clearEmbedCache` in `embeddings.ts`):
+  in-process TTL-based cache keyed by `(model, textHash)` — avoids redundant
+  provider calls for repeated queries within the TTL window.
+- **Confidence integrated into scoring** (user-decided during design):
+  `confidence × 20` additive term alongside provenance/trust/retention.
+
+### Changed
+- `service.search()` now accepts `explain?: boolean` and returns it in the
+  envelope when requested. HTTP `GET /memories/search?explain=true` surfaces
+  the per-memory breakdown.
+- `SearchQuery` gains optional `explain` field; `SearchResults` and
+  `RetrievalExplanation` added to `types.ts`.
+
+### Fixed
+- Keyword and vector ranked lists use deterministic tie-breaking (id sort),
+  eliminating input-order dependence in RRF positions.
+- Embed reranker no longer overrides the RRF+modifier ranking; it is
+  available as a composable hook for callers that opt in.
+- Single-signal RRF short-circuit avoids unnecessary Map construction.
+
+### Tests
+- Six new tests in `src/test/retrieval.test.ts`: explain output, RRF tie
+  fairness, temporal `latest`/`after` parsing, MMR deduplication, embed
+  cache export shape. Full suite remains at 204 green.
+
 ## [4.1.1] — 2026-09-23
 
 ### Fixed

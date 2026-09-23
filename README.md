@@ -222,7 +222,8 @@ npm test        # run tests
 - **v2** — automatic session-digest extraction, embeddings behind `memory_search` ✅
 - **v3** — memory lifecycle (archive/decay), contradiction merging, maintenance CLI ✅
 - **v4** — full web dashboard, write API (`PUT`/archive/revive), HTTP snapshot I/O ✅
-- **v4.1** *(current)* — 11 semantic types, provenance + trust gate, typed relations, retention modes, optimistic concurrency ✅
+- **v4.1** — 11 semantic types, provenance + trust gate, typed relations, retention modes, optimistic concurrency ✅
+- **v4.2** *(current)* — multi-stage retrieval pipeline (RRF fusion, MMR diversity, temporal parsing, explainable scores, embedding cache) ✅
 
 > Package versions match milestones: `3.0.0` = v3, `4.0.0` = v4.
 

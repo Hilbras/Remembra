@@ -242,6 +242,7 @@ export const searchInputShape = {
   scope: z.string().optional().describe("Current project path or workspace id to filter by"),
   type: MemoryType.optional(),
   limit: z.number().int().min(1).max(50).optional(),
+  explain: z.boolean().optional().describe("Include per-memory score breakdown (V4.2.0+)"),
 };
 export const SearchInput = z.object(searchInputShape);
 export type SearchInput = z.infer<typeof SearchInput>;
@@ -347,6 +348,30 @@ export interface SearchQuery {
   scope?: string;
   type?: MemoryType;
   limit?: number;
+  /** Include per-memory score breakdown (plan §5.8 / V4.2.0). Off by default. */
+  explain?: boolean;
+  /** Pre-seeded candidate ids for future relationship-expansion calls. */
+  candidates?: string[];
+}
+
+/** Each scoring component exposed so callers can inspect why a memory ranked
+    where it did (plan §5.8). */
+export interface RetrievalExplanation {
+  /** Unique id of the scored memory. */
+  id: string;
+  /** Full score breakdown (sums to totalScore). */
+  components: Record<string, number>;
+  /** The final float score assigned before MMR truncation. */
+  totalScore: number;
+  /** Which gates fired: "scope_match", "role_gate", "similarity_cut", ... */
+  reasons: string[];
+}
+
+/** Output envelope from the retrieval pipeline — wraps both the ranked memories
+    and optional per-memory explanations. */
+export interface SearchResults {
+  results: Memory[];
+  explanations?: RetrievalExplanation[];
 }
 
 /** Backup file envelope (remembra export / import). */

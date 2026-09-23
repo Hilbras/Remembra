@@ -55,7 +55,7 @@ static dashboard shell (`/`, `/ui/*`) are exempt. Errors are JSON with an
 | GET | `/metrics` | Prometheus text (auth when keyed) |
 | POST | `/memories` | store |
 | PUT | `/memories/:id` | patch |
-| GET | `/memories/search` | search (`query`/`q`, `scope`, `type`, `limit`) |
+| GET | `/memories/search` | search (`query`/`q`, `scope`, `type`, `limit`, `explain`) |
 | GET | `/memories` | list (`scope`, `type`, `includeArchived`, pagination) |
 | GET | `/memories/:id` | one memory + related + backlinks |
 | POST | `/memories/:id/relate` | link / unlink |

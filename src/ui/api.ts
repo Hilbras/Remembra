@@ -63,6 +63,8 @@ export interface ListResult {
 export interface SearchResult {
   text?: string;
   results: MemoryRec[];
+  /** Per-memory score breakdown — present only when `explain=true` was requested. */
+  explanations?: Array<{ id: string; components: Record<string, number>; totalScore: number; reasons: string[] }>;
 }
 
 /** First-line brief of a linked memory (service.get). */

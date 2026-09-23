@@ -170,6 +170,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           scope: url.searchParams.get("scope") ?? undefined,
           type: (url.searchParams.get("type") as never) ?? undefined,
           limit,
+          explain: url.searchParams.get("explain") === "true",
         });
         return sendListLike(res, 200, result, "results");
       }
