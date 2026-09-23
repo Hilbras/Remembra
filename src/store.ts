@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto";
 import { Memory, StoreInput, SCHEMA_VERSION } from "./types.js";
 import type { MemoryBackend } from "./backend.js";
 import { RemembraError } from "./errors.js";
+import { logEvent } from "./log.js";
+import { metrics } from "./metrics.js";
 
 export interface StoreLockOptions {
   /** Max wait for the cross-process lock (ms). Env: REMEMBRA_LOCK_TIMEOUT_MS. Default 5000. */
@@ -224,7 +226,11 @@ export class MemoryStore implements MemoryBackend {
       return null;
     }
     const probe = this.cache.probe(file, st);
-    if (probe.hit) return probe.memory ?? null;
+    if (probe.hit) {
+      metrics.inc("remembra_cache_events_total", { result: "hit" });
+      return probe.memory ?? null;
+    }
+    metrics.inc("remembra_cache_events_total", { result: "miss" });
     const memory = await parse(file);
     this.cache.remember(file, st, memory);
     return memory;
@@ -440,7 +446,10 @@ export class MemoryStore implements MemoryBackend {
     }
 
     if (tmps.length > 0 || reconciled > 0) {
-      console.error(
+      logEvent(
+        "warn",
+        "crash_recovery",
+        { orphaned_tmp: tmps.length, reconciled },
         `Remembra: crash recovery — removed ${tmps.length} orphaned temp file(s), reconciled ${reconciled} interrupted move(s)`,
       );
     }
@@ -593,7 +602,12 @@ async function parse(file: string): Promise<Memory | null> {
     const key = `${file}:${why}`;
     if (parseWarnings.has(key)) return;
     parseWarnings.add(key);
-    console.error(`Remembra: skipping unparseable memory file ${path.basename(file)} (${why})`);
+    logEvent(
+      "warn",
+      "memory_parse_skipped",
+      { file: path.basename(file), reason: why },
+      `Remembra: skipping unparseable memory file ${path.basename(file)} (${why})`,
+    );
   };
   try {
     const raw = await fs.readFile(file, "utf8");

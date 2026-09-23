@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { promises as fs } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { VERSION } from "./version.js";
+import { logEvent } from "./log.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { MemoryStore } from "./store.js";
 import { MemoryService } from "./service.js";
@@ -71,7 +73,7 @@ if (argv[0] === "export") {
   });
   // Graceful shutdown: stop accepting, drain in-flight requests, then exit.
   const shutdown = (sig: string) => {
-    console.error(`Remembra: received ${sig}, shutting down`);
+    logEvent("info", "shutdown", { signal: sig }, `Remembra: received ${sig}, shutting down`);
     httpServer.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   };
@@ -83,7 +85,7 @@ if (argv[0] === "export") {
 }
 
 async function startMcp(): Promise<void> {
-  const server = new McpServer({ name: "remembra", version: "3.6.0" });
+  const server = new McpServer({ name: "remembra", version: VERSION });
 
   server.registerTool(
     "memory_store",
@@ -216,5 +218,5 @@ async function startMcp(): Promise<void> {
   await server.connect(transport);
   // Log hygiene (audit #7): filesystem paths only under REMEMBRA_DEBUG.
   const rootNote = process.env.REMEMBRA_DEBUG ? ` (root: ${MemoryStore.defaultRoot()})` : "";
-  console.error(`Remembra MCP server running${rootNote}`);
+  logEvent("info", "mcp_listening", { ...(rootNote ? { root: MemoryStore.defaultRoot() } : {}) }, `Remembra MCP server running${rootNote}`);
 }

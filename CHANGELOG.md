@@ -7,6 +7,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3). Earlier releases used independent semver: 0.1.0 = v1,
 > 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [3.7.0] — 2026-09-23
+
+**Phase 7 of the deep audit** — observability. All five roadmap items
+covered (error-rate alerting taken as the *pragmatic substrate*: counters +
+documented rules, no built-in notifier — decided in scope review).
+
+### Added
+- **Structured JSON logging** (`src/log.ts`) — every server-side event goes
+  through one logger on **stderr** (stdout stays reserved for MCP stdio/CLI).
+  Format: `REMEMBRA_LOG=json|text` forces it; unset → auto — JSON when stderr
+  is piped (containers, CI, shippers), text on a TTY. Text mode prints the
+  exact legacy strings, so existing greps and the Phase 2/3 tests still hold.
+  JSON lines carry `{"ts","level","event","msg",...fields}`.
+- **`GET /metrics`** (`src/metrics.ts`) — zero-dependency Prometheus text
+  endpoint: request/digest/search/cache counters, latency histograms,
+  `errors_total{code,transport}`, cache-entry gauge, `remembra_info`. Route
+  labels are a fixed low-cardinality enum (never raw paths). Sits **after**
+  the API-key check — keyed deployments must not leak counters; `/health`
+  stays exempt.
+- **Search query logging** — one structured `search` event per call (scope,
+  term count, results, limit, `duration_ms`). Raw query text only under
+  `REMEMBRA_DEBUG` (Phase 2 log-hygiene rule unchanged).
+- **`/health` readiness probe** — now runs a real storage read: `200 ok`
+  with `version`/`uptime_s`/`storage`/`cache` fields, **`503 unready`** with
+  the failing error code when storage cannot be read — the probe fails
+  instead of lying. Field `status:"ok"` kept for existing consumers.
+- **Alerting infrastructure** — `docs/observability.md`: metric reference,
+  scrape config (incl. `x-api-key`), and ready-to-paste Prometheus rules
+  (down, internal error rate with 4xx excluded, readiness, lock contention,
+  search p95, cache thrash). No built-in notifier by design: a local tool
+  alerts through the operator's existing stack.
+- `src/version.ts` single-sources `VERSION` (MCP server id, `/health`,
+  `remembra_info`); a test pins it to `package.json`.
+
+### Fixed
+- **Prometheus bucket labels** — histogram series emitted `{le="…"route="…"}`
+  (missing comma), caught by the exposition-format test.
+
+### Changed
+- Conversion to `logEvent` at 8 sites (listening banners, shutdown, parse
+  skip, crash recovery, embedding/touch/merge/decay failures) — messages
+  unchanged in text mode.
+
+### Tests
+- **132 tests** (+13: log formats + auto-detection, `/metrics` content,
+  label enum + exposition grammar, auth on `/metrics`, counter movement for
+  store/search/cache, MCP + HTTP error counters, hygiene-first query logging
+  (and `REMEMBRA_DEBUG` opt-in), healthy + broken-storage `/health`,
+  version pin). Suite verified stable across 3 consecutive runs.
+
 ## [3.6.0] — 2026-09-23
 
 **Phase 6 of the deep audit** — testing depth. All six roadmap items now

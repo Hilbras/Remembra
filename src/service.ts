@@ -1,8 +1,12 @@
 import type { MemoryBackend } from "./backend.js";
 import { search } from "./retrieval.js";
 import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION } from "./types.js";
-import { RemembraError, inputError } from "./errors.js";
+import { RemembraError, inputError, errorLabel } from "./errors.js";
 import { resolveEmbeddingProvider, embedText, EmbeddingProvider, cosine } from "./embeddings.js";
+import { logEvent } from "./log.js";
+import { metrics } from "./metrics.js";
+import { VERSION } from "./version.js";
+import { performance } from "node:perf_hooks";
 import {
   resolveLlmProvider,
   extractMemories,
@@ -86,7 +90,7 @@ export class MemoryService {
       return await this.embedFn(text);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`Remembra: embedding failed (${msg.slice(0, 200)}); continuing without`);
+      logEvent("warn", "embedding_failed", { error: msg.slice(0, 200) }, `Remembra: embedding failed (${msg.slice(0, 200)}); continuing without`);
       return undefined;
     }
   }
@@ -105,6 +109,7 @@ export class MemoryService {
     const memory = await this.db.store(parsed, embedding, {
       provenance: opts?.provenance ?? "explicit",
     });
+    metrics.inc("remembra_stores_total");
     return {
       id: memory.id,
       message: `Stored ${memory.type} memory ${memory.id} (scope: ${memory.scope})`,
@@ -113,15 +118,35 @@ export class MemoryService {
   }
 
   async search(q: { query?: string; scope?: string; type?: MemoryType; limit?: number }) {
+    const t0 = performance.now();
     let queryVec: number[] | null = null;
     if (q.query && this.embedFn) queryVec = (await this.maybeEmbed(q.query)) ?? null;
 
     const results = search(await this.db.all(), q, queryVec);
+    const durationMs = performance.now() - t0;
+
+    // Observability (audit Phase 7): counters + hygiene-first query logging —
+    // raw query text only under REMEMBRA_DEBUG (same rule as the root path).
+    metrics.inc("remembra_searches_total");
+    metrics.observe("remembra_search_duration_seconds", durationMs / 1000);
+    logEvent("info", "search", {
+      scope: q.scope,
+      terms: (q.query ?? "").split(/\s+/).filter((t) => t.length > 1).length,
+      results: results.length,
+      limit: q.limit,
+      duration_ms: Math.round(durationMs * 10) / 10,
+      ...(process.env.REMEMBRA_DEBUG && q.query ? { query: q.query } : {}),
+    });
 
     // Refresh decay clocks for memories that surfaced (fire-and-forget).
     for (const m of results)
       this.db.touch(m.id).catch((err) => {
-        console.error(`Remembra: touch failed (${m.id}): ${String(err).slice(0, 150)}`);
+        logEvent(
+          "warn",
+          "touch_failed",
+          { id: m.id, error: String(err).slice(0, 150) },
+          `Remembra: touch failed (${m.id}): ${String(err).slice(0, 150)}`,
+        );
       });
     // Opportunistic decay pass, debounced (decision v3-Q1: piggyback on search).
     this.maybeRunDecay();
@@ -186,6 +211,35 @@ export class MemoryService {
     return { ok, text: ok ? `Deleted memory ${id}.` : `No memory with id ${id}.` };
   }
 
+  /** Readiness probe (audit Phase 7): can the backend actually be read? */
+  async health(): Promise<{
+    status: "ok" | "unready";
+    version: string;
+    uptime_s: number;
+    storage: string;
+    cache?: { size: number; capacity: number };
+  }> {
+    let storage = "ok";
+    try {
+      await this.db.all();
+    } catch (err) {
+      storage = errorLabel(err);
+    }
+    const cache = this.storageStats();
+    return {
+      status: storage === "ok" ? "ok" : "unready",
+      version: VERSION,
+      uptime_s: Math.round(process.uptime()),
+      storage,
+      ...(cache ? { cache } : {}),
+    };
+  }
+
+  /** Parse-cache stats when the backend exposes them (file backend does). */
+  storageStats(): { size: number; capacity: number } | null {
+    return this.db.cacheStats?.() ?? null;
+  }
+
   /**
    * Session digest (v2) with contradiction-merge (v3):
    * extract worth-keeping memories, skip exact duplicates, and let the LLM
@@ -195,12 +249,29 @@ export class MemoryService {
    * read the same active set and double-store duplicates.
    */
   async digest(opts: { transcript: string; scope?: string; source?: string }): Promise<DigestResult> {
+    const t0 = performance.now();
     const run = this.digestLock.then(() => this.doDigest(opts));
     this.digestLock = run.then(
       () => undefined,
       () => undefined,
     );
-    return run;
+    const observe = () => {
+      metrics.observe("remembra_digest_duration_seconds", (performance.now() - t0) / 1000);
+    };
+    return run.then(
+      (res) => {
+        metrics.inc("remembra_digests_total");
+        metrics.inc("remembra_digest_items_total", { result: "stored" }, res.stored.length);
+        metrics.inc("remembra_digest_items_total", { result: "skipped" }, res.skippedDuplicates);
+        metrics.inc("remembra_digest_items_total", { result: "merged" }, res.merged);
+        observe();
+        return res;
+      },
+      (err) => {
+        observe();
+        throw err;
+      },
+    );
   }
 
   private digestLock: Promise<unknown> = Promise.resolve();
@@ -276,7 +347,10 @@ export class MemoryService {
             content: candidate.content,
           });
         } catch (err) {
-          console.error(
+          logEvent(
+            "warn",
+            "merge_llm_failed",
+            { error: String(err).slice(0, 150) },
             `Remembra: merge LLM failed (${String(err).slice(0, 150)}); storing fresh`,
           );
           decision = { action: "store" };
@@ -428,7 +502,14 @@ export class MemoryService {
     this.lastDecayRun = Date.now();
     this.decayRunning = true;
     this.decayPass()
-      .catch((err) => console.error("Remembra: decay pass failed:", err))
+      .catch((err) =>
+        logEvent(
+          "warn",
+          "decay_failed",
+          { error: String(err).slice(0, 200) },
+          `Remembra: decay pass failed: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      )
       .finally(() => {
         this.decayRunning = false;
       });

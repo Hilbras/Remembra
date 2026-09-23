@@ -21,6 +21,8 @@ export interface MemoryBackend {
     embedding?: number[],
     opts?: { provenance?: Memory["provenance"] },
   ): Promise<Memory>;
+  /** Optional observability hook — the file backend exposes parse-cache stats. */
+  cacheStats?(): { size: number; capacity: number };
   get(id: string): Promise<Memory | null>;
   all(includeArchived?: boolean): Promise<Memory[]>;
   update(memory: Memory): Promise<Memory>;

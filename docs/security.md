@@ -60,6 +60,7 @@ Retrieved memories should be treated as **data with provenance**, not commands
 | **Structured errors** | every actionable failure has a stable code (`INVALID_INPUT`, `LOCK_TIMEOUT`, `LLM_ERROR`, …) mapped to HTTP statuses / MCP `[CODE]` prefixes |
 | **ID collisions** | 12-hex IDs (2⁴⁸) + existence check on store |
 | **Content-Length** | Set on every response |
+| **Metrics auth (3.7.0)** | `GET /metrics` sits *after* the API-key check — counters and latencies never leak without the key (`/health` stays exempt for readiness probes) |
 
 ## Deployment checklist
 

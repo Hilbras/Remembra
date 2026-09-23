@@ -2,7 +2,9 @@ import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { MemoryService } from "./service.js";
 import { DigestInput } from "./types.js";
-import { isRemembraError, statusFor } from "./errors.js";
+import { isRemembraError, statusFor, errorLabel } from "./errors.js";
+import { logEvent } from "./log.js";
+import { metrics } from "./metrics.js";
 
 interface HttpOptions {
   port?: number;
@@ -42,7 +44,8 @@ export function resolveListen(
  * Minimal HTTP API over the same handlers the MCP tools use.
  *
  * Routes:
- *   GET    /health              → liveness (no auth)
+ *   GET    /health              → liveness + readiness (no auth): 200 ok / 503 unready
+ *   GET    /metrics             → Prometheus text format (auth when keyed)
  *   POST   /memories            → store a memory
  *   GET    /memories/search     → ?query=&scope=&type=&limit=
  *   GET    /memories            → ?scope=&type=&includeArchived=&offset=&limit=
@@ -60,12 +63,37 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       const url = new URL(req.url ?? "/", "http://localhost");
       const path = url.pathname.replace(/\/+$/, "") || "/";
 
+      // Request instrumentation (audit Phase 7) — low-cardinality route label,
+      // counted on finish so the real status code is visible.
+      const route = routeLabel(path);
+      const startedAt = performance.now();
+      res.on("finish", () => {
+        metrics.inc("remembra_http_requests_total", {
+          route,
+          method: req.method ?? "OTHER",
+          status: res.statusCode,
+        });
+        metrics.observe("remembra_http_request_duration_seconds", (performance.now() - startedAt) / 1000, {
+          route,
+        });
+      });
+
+      // Liveness + readiness (audit Phase 7): 200 when storage is readable,
+      // 503 with the failing check when it is not.
       if (path === "/health") {
-        return send(res, 200, { status: "ok" });
+        const health = await service.health();
+        return send(res, health.status === "ok" ? 200 : 503, health);
       }
 
       if (opts.apiKey && !authorized(req, opts.apiKey)) {
         return send(res, 401, { error: "Unauthorized: missing or invalid API key" });
+      }
+
+      // GET /metrics — Prometheus text format. After the auth check on
+      // purpose: keyed (incl. public) deployments must not leak counters.
+      if (req.method === "GET" && path === "/metrics") {
+        res.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" });
+        return res.end(metrics.render());
       }
 
       // POST /maintain — decay sweep + vector backfill
@@ -131,6 +159,10 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           : name === "PayloadTooLarge"
             ? 413
             : 500;
+      metrics.inc("remembra_errors_total", {
+        code: name === "PayloadTooLarge" ? "PAYLOAD_TOO_LARGE" : errorLabel(err),
+        transport: "http",
+      });
       send(res, status, {
         error: err instanceof Error ? err.message : String(err),
         ...(isRemembraError(err) ? { code: err.code } : {}),
@@ -140,13 +172,42 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 
   const port = opts.port ?? Number(process.env.REMEMBRA_PORT ?? 8787);
   const address = listenTarget.host;
+  // Readiness-adjacent gauge: bound to this server's service (re-registered
+  // idempotently if several servers exist in one process, e.g. tests).
+  metrics.gauge("remembra_cache_entries", "Parse-cache entries currently held", () => {
+    const s = service.storageStats();
+    return s ? [{ value: s.size }] : [];
+  });
   server.listen(port, address, () => {
     const where = address ?? "0.0.0.0";
-    console.error(
+    logEvent(
+      "info",
+      "http_listening",
+      { port, host: where, auth: Boolean(opts.apiKey) },
       `Remembra HTTP API listening on ${where}:${port}${opts.apiKey ? " (auth required)" : " (no auth — loopback only)"}`,
     );
   });
   return server;
+}
+
+/** Low-cardinality route label for metrics (never the raw path). */
+function routeLabel(p: string): string {
+  switch (p) {
+    case "/health":
+      return "health";
+    case "/metrics":
+      return "metrics";
+    case "/memories":
+      return "memories";
+    case "/memories/search":
+      return "search";
+    case "/memories/digest":
+      return "digest";
+    case "/maintain":
+      return "maintain";
+    default:
+      return /^\/memories\/[^/]+$/.test(p) ? "memory_item" : "other";
+  }
 }
 
 /** Constant-time API key comparison (P1 audit: timing side-channel). */

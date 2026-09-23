@@ -5,6 +5,7 @@
  * Every failure that callers should react to carries a stable `code`.
  * HTTP maps codes to statuses; MCP tools surface them as `[CODE] message`.
  */
+import { metrics } from "./metrics.js";
 
 export type ErrorCode =
   | "INVALID_INPUT" // Zod validation failed on a service boundary
@@ -71,10 +72,18 @@ export function formatToolError(err: unknown): string {
   return `[INTERNAL] ${err instanceof Error ? err.message : String(err)}`;
 }
 
+/** Stable low-cardinality label for metrics (`remembra_errors_total{code}`). */
+export function errorLabel(err: unknown): ErrorCode | "INVALID_INPUT" | "INTERNAL" {
+  if (isRemembraError(err)) return err.code;
+  if (isZodLike(err)) return "INVALID_INPUT";
+  return "INTERNAL";
+}
+
 /** MCP tool error result shape (structural — no SDK import needed). */
 export function toolFail(err: unknown): {
   content: { type: "text"; text: string }[];
   isError: true;
 } {
+  metrics.inc("remembra_errors_total", { code: errorLabel(err), transport: "mcp" });
   return { content: [{ type: "text", text: formatToolError(err) }], isError: true };
 }

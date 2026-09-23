@@ -96,6 +96,7 @@ REMEMBRA_API_KEY="your-secret" remembra --http
 | `REMEMBRA_LOCK_STALE_MS` | `10000` | Age after which a lock with a dead/unknown pid is stolen |
 | `REMEMBRA_CACHE_SIZE` | `10000` | Parse-cache LRU capacity (entries); `0` disables caching |
 | `REMEMBRA_DEBUG` | *(unset)* | `1` logs the storage root path at startup (off by default: log hygiene) |
+| `REMEMBRA_LOG` | *(auto)* | Force log format: `json` or `text`. Unset → auto: JSON when stderr is piped, text on a TTY. See [observability.md](observability.md) |
 
 LLM/embedding key setup: see **[providers.md](providers.md)**.
 
