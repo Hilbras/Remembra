@@ -101,6 +101,20 @@ All routes except `/health` require `x-api-key` (or `Authorization: Bearer`) whe
 > to start. Public deployments (ChatGPT) must set a key. See
 > [security.md](docs/security.md).
 
+## Backup & restore
+
+Your memories are plain files under `~/.remembra` — plus a portable snapshot
+format for moving between machines or disaster recovery:
+
+```bash
+remembra export memories.json                    # full snapshot (incl. archived)
+remembra import memories.json                    # idempotent: existing ids/dups skipped
+```
+
+Import validates the **whole file before writing anything** — a corrupt or
+tampered snapshot is rejected atomically, never half-imported. Of course,
+`rsync`/`git` on `~/.remembra` works too.
+
 ## Tools
 
 | Tool | Purpose |

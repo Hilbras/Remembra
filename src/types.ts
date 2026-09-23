@@ -5,9 +5,15 @@ export const MemoryType = z.enum(["fact", "decision", "role", "history"]);
 export type MemoryType = z.infer<typeof MemoryType>;
 
 /**
+ * Frontmatter schema version. Bump when the Memory format changes and
+ * add a migration step in store.ts (missing field in old files = v1).
+ */
+export const SCHEMA_VERSION = 1;
+
+/**
  * Scope of a memory.
  * - "global": always relevant (user preferences, roles, general facts)
- * - any other string: project/workspace scope (e.g. a repo path or project id)
+ * - any other string: project/workspace scope (e.g. a project path or project id)
  */
 export type MemoryScope = string; // "global" | "/path/to/project" | "chatgpt"
 
@@ -40,32 +46,103 @@ export function isSafeScope(scope: string): boolean {
   return !normalized.split("/").some((seg) => seg === "..");
 }
 
-export const StoreInput = z.object({
-  type: MemoryType,
-  content: z.string().min(1),
+// ---------------------------------------------------------------------------
+// Shared input schemas (audit #13: one source of truth).
+// The raw `*Shape` objects feed MCP tool inputSchemas (ZodRawShape);
+// the parsed `*Input` objects validate on every transport.
+// ---------------------------------------------------------------------------
+
+export const storeInputShape = {
+  type: MemoryType.describe("fact | decision | role | history"),
+  content: z.string().min(1).describe("The memory itself, written as a standalone statement"),
   scope: z
     .string()
     .default("global")
-    .refine(isSafeScope, { message: "scope must not contain '..' path segments" }),
-  tags: z.array(z.string()).default([]),
-  importance: z.number().int().min(1).max(5).default(3),
-  source: z.string().optional(),
-});
+    .describe("'global' for always-relevant memories, or a project path/id for project-scoped ones"),
+  tags: z.array(z.string()).default([]).describe("Keywords that boost retrieval"),
+  importance: z
+    .number()
+    .int()
+    .min(1)
+    .max(5)
+    .default(3)
+    .describe("1=minor, 5=critical (default 3)"),
+  source: z.string().optional().describe("Originating session or client"),
+};
+export const StoreInput = z
+  .object(storeInputShape)
+  .refine((v) => isSafeScope(v.scope), { message: "scope must not contain '..' path segments" });
 export type StoreInput = z.infer<typeof StoreInput>;
 
-export const DigestInput = z.object({
-  transcript: z.string().min(1),
-  scope: z
+export const digestInputShape = {
+  transcript: z
     .string()
-    .refine(isSafeScope, { message: "scope must not contain '..' path segments" })
-    .optional(),
-  source: z.string().max(500).optional(),
-});
+    .min(1)
+    .describe("Conversation transcript or a detailed summary of the session"),
+  scope: z.string().optional().describe("Scope for extracted memories (default: global)"),
+  source: z.string().optional().describe("Originating session/client"),
+};
+export const DigestInput = z
+  .object(digestInputShape)
+  .refine((v) => v.scope === undefined || isSafeScope(v.scope), {
+    message: "scope must not contain '..' path segments",
+  });
 export type DigestInput = z.infer<typeof DigestInput>;
 
+export const searchInputShape = {
+  query: z.string().optional().describe("Keywords to match (omit to get a scope/recency-ranked list)"),
+  scope: z.string().optional().describe("Current project path or workspace id to filter by"),
+  type: MemoryType.optional(),
+  limit: z.number().int().min(1).max(50).optional(),
+};
+export const SearchInput = z.object(searchInputShape);
+export type SearchInput = z.infer<typeof SearchInput>;
+
+export const listInputShape = {
+  scope: z.string().optional(),
+  type: MemoryType.optional(),
+  includeArchived: z.boolean().optional().describe("Include archived memories (flagged)"),
+};
+export const ListInput = z.object(listInputShape);
+export type ListInput = z.infer<typeof ListInput>;
+
+export const forgetInputShape = {
+  id: z.string().describe("Memory id (from memory_store or memory_list)"),
+};
+export const ForgetInput = z.object(forgetInputShape);
+export type ForgetInput = z.infer<typeof ForgetInput>;
+
+/** Query accepted by the retrieval layer (retrieval.ts). */
 export interface SearchQuery {
   query?: string;
   scope?: string;
   type?: MemoryType;
   limit?: number;
 }
+
+/** Backup file envelope (remembra export / import). */
+export const SNAPSHOT_FORMAT = "remembra-export";
+export const SnapshotInput = z.object({
+  format: z.literal(SNAPSHOT_FORMAT),
+  version: z.number().int().positive(),
+  exportedAt: z.string(),
+  memories: z
+    .array(
+      z.object({
+        id: z.string().regex(/^[a-f0-9]{8,32}$/, "invalid id"),
+        type: MemoryType,
+        content: z.string().min(1),
+        scope: z.string().refine(isSafeScope, { message: "scope must not contain '..'" }),
+        tags: z.array(z.string()),
+        importance: z.number().int().min(1).max(5),
+        createdAt: z.string(),
+        updatedAt: z.string(),
+        source: z.string().optional(),
+        lastSeen: z.string().optional(),
+        archivedAt: z.string().optional(),
+        embedding: z.array(z.number()).optional(),
+      }),
+    )
+    .max(100_000),
+});
+export type SnapshotInput = z.infer<typeof SnapshotInput>;

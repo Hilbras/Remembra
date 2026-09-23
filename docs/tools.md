@@ -88,6 +88,17 @@ vectors. Roles never decay. Takes no arguments. See [lifecycle.md](lifecycle.md)
 Returns counts + affected ids. Also available as `POST /maintain` and the
 `remembra maintain` CLI command.
 
+## CLI commands
+
+```bash
+remembra maintain            # decay sweep + vector backfill (one-shot, prints JSON)
+remembra export <file>.json  # full backup snapshot incl. archived memories
+remembra import <file>.json  # restore; validates whole file first (atomic), idempotent
+```
+
+Import skips existing ids and exact-duplicate contents, so running it twice —
+or importing into a machine that already has the data — is always safe.
+
 ---
 
 ## Suggested session flow

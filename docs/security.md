@@ -70,8 +70,9 @@ remembra --http
 
 - [ ] `REMEMBRA_API_KEY` set with a long random value (≥32 bytes)
 - [ ] TLS terminator in front for any non-loopback exposure
-- [ ] `REMEMBRA_HOME` lives on a filesystem you back up (there is **no built-in
-      backup yet** — the files are the only copy)
+- [ ] `REMEMBRA_HOME` lives on a filesystem you back up — use
+      `remembra export <file>.json` for portable snapshots (or `rsync`/git the
+      directory)
 - [ ] Periodic `memory_list {type: "role"}` audit
 - [ ] LLM/embedding keys scoped to least privilege
 
@@ -83,7 +84,6 @@ remembra --http
   read and edit them). Use filesystem-level encryption if needed.
 - **No PII redaction** — what you store is what's written to disk.
 - **No write locking / journal** — single-writer assumption; concurrent writers
-  from multiple machines are unsupported (atomic writes protect against crashes,
-  not interleaving).
-- **No built-in backup/export** — planned; until then, back up `REMEMBRA_HOME`
-  with your normal file backup (it's plain files, `rsync`/git all work).
+  from multiple machines are unsupported (atomic writes + the digest lock
+  protect against crashes and same-process races, not cross-machine
+  interleaving). `remembra export` for backups across machines.

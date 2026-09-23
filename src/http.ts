@@ -89,11 +89,13 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 
       // GET /memories/search
       if (req.method === "GET" && path === "/memories/search") {
+        const rawLimit = url.searchParams.get("limit");
+        const limit = rawLimit && Number.isFinite(Number(rawLimit)) ? Number(rawLimit) : undefined;
         const result = await service.search({
           query: url.searchParams.get("query") ?? url.searchParams.get("q") ?? undefined,
           scope: url.searchParams.get("scope") ?? undefined,
           type: (url.searchParams.get("type") as never) ?? undefined,
-          limit: url.searchParams.get("limit") ? Number(url.searchParams.get("limit")) : undefined,
+          limit,
         });
         return send(res, 200, result);
       }

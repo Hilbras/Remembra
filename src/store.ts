@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import { Memory, StoreInput } from "./types.js";
+import { Memory, StoreInput, SCHEMA_VERSION } from "./types.js";
 
 /**
  * File-based memory store (source of truth — no database).
@@ -134,6 +134,15 @@ export class MemoryStore {
     await writeFileAtomic(this.fileFor(m), render(m), fs);
   }
 
+  /** Import a snapshot memory verbatim (id preserved). Returns false if the id exists. */
+  async importMemory(m: Memory): Promise<boolean> {
+    if (await this.findFile(m.id)) return false;
+    const file = this.fileFor(m); // containment check applies (P0)
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await writeFileAtomic(file, render(m), fs);
+    return true;
+  }
+
   private async findFile(id: string): Promise<string | null> {
     const files = await walk(
       path.join(this.root, "global"),
@@ -186,6 +195,7 @@ function render(m: Memory): string {
   const lines = [
     "---",
     `id: ${m.id}`,
+    `version: ${SCHEMA_VERSION}`,
     `type: ${m.type}`,
     `scope: ${m.scope}`,
     `tags: [${m.tags.join(", ")}]`,
@@ -204,11 +214,23 @@ function render(m: Memory): string {
   return lines.filter((l) => l !== undefined).join("\n");
 }
 
+/** Files we've already warned about (avoid log spam on every search). */
+const parseWarnings = new Set<string>();
+
 async function parse(file: string): Promise<Memory | null> {
+  const warnOnce = (why: string) => {
+    const key = `${file}:${why}`;
+    if (parseWarnings.has(key)) return;
+    parseWarnings.add(key);
+    console.error(`Remembra: skipping unparseable memory file ${path.basename(file)} (${why})`);
+  };
   try {
     const raw = await fs.readFile(file, "utf8");
     const match = raw.match(/^---\n([\s\S]*?)\n---\n\n?([\s\S]*)$/);
-    if (!match) return null;
+    if (!match) {
+      warnOnce("missing/invalid frontmatter");
+      return null;
+    }
     const meta: Record<string, string> = {};
     for (const line of match[1].split("\n")) {
       const idx = line.indexOf(":");
@@ -235,7 +257,8 @@ async function parse(file: string): Promise<Memory | null> {
       source: meta.source,
       embedding,
     };
-  } catch {
+  } catch (err) {
+    warnOnce(err instanceof Error ? err.message : String(err));
     return null;
   }
 }

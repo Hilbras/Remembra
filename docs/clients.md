@@ -92,6 +92,7 @@ REMEMBRA_API_KEY="your-secret" remembra --http
 | `REMEMBRA_ARCHIVE_TTL_DAYS` | `365` | Archived memory → deleted |
 | `REMEMBRA_HOST` | *(see security.md)* | HTTP bind address (loopback without key) |
 | `REMEMBRA_MAX_BODY` | `10485760` | Max HTTP request body bytes |
+| `REMEMBRA_DEBUG` | *(unset)* | `1` logs the storage root path at startup (off by default: log hygiene) |
 
 LLM/embedding key setup: see **[providers.md](providers.md)**.
 

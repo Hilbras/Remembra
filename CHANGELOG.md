@@ -7,6 +7,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3). Earlier releases used independent semver: 0.1.0 = v1,
 > 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [3.2.0] — 2026-09-23
+
+**Phase 2 of the deep audit** — data integrity, portability, and shared schemas.
+
+### Added
+- **`remembra export <file>.json` / `remembra import <file>.json`** — full
+  snapshot backup incl. archived memories. Import validates the *whole* file
+  before writing (atomic rollback on any invalid entry) and is idempotent
+  (existing ids and exact duplicates are skipped). Fixes audit #8.
+- **Schema version field** — every memory file now carries `version: 1` in
+  frontmatter; files without it (v1–v3.1) parse as v1. Fixes audit #10.
+- `REMEMBRA_DEBUG=1` — opt-in storage-root path logging.
+
+### Fixed
+- **Log hygiene (audit #7)**: startup no longer prints the storage root path
+  (gated behind `REMEMBRA_DEBUG`); embedding errors truncated to 200 chars;
+  swallowed `touch()` errors now logged (audit #15); unparseable memory files
+  warn once instead of being silently skipped.
+- **Simultaneous digests** — digest runs are serialized through a lock, so
+  parallel sessions can no longer double-store duplicates.
+- **Merge LLM failure fails open** — a failed merge stores the new fact fresh
+  instead of aborting the digest mid-way (never lose data).
+- **Shared input schemas (audit #13)** — MCP tools, HTTP routes and the
+  service all parse the same Zod shapes from `types.ts` (single source of
+  truth; the `type` enum is no longer declared twice).
+- `?limit=abc` on `/memories/search` no longer yields empty results (NaN guard).
+
+### Changed
+- MCP `memory_store` now applies `.default()` for `tags`/`importance` at the
+  schema layer (behavior unchanged; validation moved to shared schemas).
+
+### Added (tests)
+12 Phase-2 tests: schema version + backward compat, malformed-file recovery,
+empty transcript, extraction rollback, merge fail-open, parallel stores,
+serialized digests, export/import round-trip, cross-id dedup, atomic import
+rollback. **71/71 total.**
+
 ## [3.1.0] — 2026-09-23
 
 **Security hardening** in response to the deep audit (`HILBRAS-MEMORY-DEEP-AUDIT.md`).

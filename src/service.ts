@@ -1,6 +1,6 @@
 import { MemoryStore } from "./store.js";
 import { search } from "./retrieval.js";
-import { StoreInput, MemoryType, Memory } from "./types.js";
+import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION } from "./types.js";
 import { resolveEmbeddingProvider, embedText, EmbeddingProvider, cosine } from "./embeddings.js";
 import {
   resolveLlmProvider,
@@ -84,7 +84,8 @@ export class MemoryService {
     try {
       return await this.embedFn(text);
     } catch (err) {
-      console.error(`Remembra: embedding failed (${err instanceof Error ? err.message : err}); continuing without`);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`Remembra: embedding failed (${msg.slice(0, 200)}); continuing without`);
       return undefined;
     }
   }
@@ -107,7 +108,10 @@ export class MemoryService {
     const results = search(await this.db.all(), q, queryVec);
 
     // Refresh decay clocks for memories that surfaced (fire-and-forget).
-    for (const m of results) this.db.touch(m.id).catch(() => {});
+    for (const m of results)
+      this.db.touch(m.id).catch((err) => {
+        console.error(`Remembra: touch failed (${m.id}): ${String(err).slice(0, 150)}`);
+      });
     // Opportunistic decay pass, debounced (decision v3-Q1: piggyback on search).
     this.maybeRunDecay();
 
@@ -149,8 +153,22 @@ export class MemoryService {
    * Session digest (v2) with contradiction-merge (v3):
    * extract worth-keeping memories, skip exact duplicates, and let the LLM
    * merge items that evolved from a stored memory (superseded text preserved).
+   *
+   * Serialized through a lock: simultaneous digests could otherwise both
+   * read the same active set and double-store duplicates.
    */
   async digest(opts: { transcript: string; scope?: string; source?: string }): Promise<DigestResult> {
+    const run = this.digestLock.then(() => this.doDigest(opts));
+    this.digestLock = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private digestLock: Promise<unknown> = Promise.resolve();
+
+  private async doDigest(opts: { transcript: string; scope?: string; source?: string }): Promise<DigestResult> {
     const extracted = await this.extractFn(opts.transcript);
     const active = await this.db.all();
     const archived = await this.db.all(true).then((all) => all.filter((m) => m.archivedAt));
@@ -183,10 +201,20 @@ export class MemoryService {
       const itemVec = (await this.maybeEmbed(item.content)) ?? null;
       const candidate = this.findCandidate(item, scope, [...active, ...archived], itemVec);
       if (candidate) {
-        const decision = await this.mergeFn(item.content, {
-          type: candidate.type,
-          content: candidate.content,
-        });
+        // Fail-open: a merge LLM failure must never lose the new fact —
+        // store it fresh instead (consistent with extraction fail-open).
+        let decision: { action: "store" } | { action: "skip" } | { action: "merge"; content: string };
+        try {
+          decision = await this.mergeFn(item.content, {
+            type: candidate.type,
+            content: candidate.content,
+          });
+        } catch (err) {
+          console.error(
+            `Remembra: merge LLM failed (${String(err).slice(0, 150)}); storing fresh`,
+          );
+          decision = { action: "store" };
+        }
         if (decision.action === "skip") {
           skippedDuplicates++;
           continue;
@@ -230,8 +258,7 @@ export class MemoryService {
   /**
    * Explicit maintenance (decision v3-Q1): decay sweep + vector backfill.
    * Exposed as the `memory_maintain` tool, POST /maintain, and the CLI.
-   */
-  async maintain(): Promise<MaintainResult> {
+   */  async maintain(): Promise<MaintainResult> {
     const result = await this.decayPass();
     // Vector backfill: embed active memories stored while embeddings were off.
     if (this.embedFn) {
@@ -246,6 +273,50 @@ export class MemoryService {
       }
     }
     return result;
+  }
+
+  /**
+   * Full snapshot for backup (audit #8): every memory incl. archived.
+   * Written by `remembra export <file>` as JSON.
+   */
+  async exportSnapshot() {
+    const memories = await this.db.all(true);
+    return {
+      format: SNAPSHOT_FORMAT,
+      version: SCHEMA_VERSION,
+      exportedAt: new Date().toISOString(),
+      memories,
+    };
+  }
+
+  /**
+   * Restore from a snapshot (audit #8). All-or-nothing validation: the whole
+   * file is Zod-parsed before anything is written, so a corrupt/tampered
+   * snapshot can never half-import. Existing ids and exact duplicates are
+   * skipped, making re-import idempotent.
+   */
+  async importSnapshot(data: unknown): Promise<{ imported: number; skipped: number }> {
+    const snap = SnapshotInput.parse(data); // throws before any write
+    const existing = await this.db.all(true);
+    const ids = new Set(existing.map((m) => m.id));
+    const keys = new Set(existing.map((m) => dedupKey(m.type, m.content, m.scope)));
+    let imported = 0;
+    let skipped = 0;
+    for (const m of snap.memories) {
+      const key = dedupKey(m.type, m.content, m.scope);
+      if (ids.has(m.id) || keys.has(key)) {
+        skipped++;
+        continue;
+      }
+      if (await this.db.importMemory(m)) {
+        imported++;
+        ids.add(m.id);
+        keys.add(key);
+      } else {
+        skipped++;
+      }
+    }
+    return { imported, skipped };
   }
 
   /** Decay lifecycle: unused actives → archived → auto-deleted past TTL. */
