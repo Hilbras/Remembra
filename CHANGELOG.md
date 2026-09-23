@@ -3,6 +3,18 @@
 All notable changes to Remembra will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.2.0] — 2026-09-23
+
+### Added
+- HTTP API mode: `remembra --http [--port N]` — same handlers as the MCP tools.
+- Routes: `GET /health`, `POST /memories`, `GET /memories/search`, `GET /memories`,
+  `DELETE /memories/:id`.
+- API-key auth via `REMEMBRA_API_KEY` (`x-api-key` header or `Authorization: Bearer`).
+- `REMEMBRA_PORT` env var as default port.
+- Shared `MemoryService` core used by both MCP and HTTP transports.
+- ChatGPT setup guide with full Custom GPT OpenAPI action schema (`docs/chatgpt.md`).
+- HTTP and service test suites.
+
 ## [0.1.0] — 2026-09-23
 
 ### Added

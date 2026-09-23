@@ -16,7 +16,7 @@ One memory server, many clients:
 | Claude Code | MCP (stdio) |
 | Cline | MCP (stdio) |
 | Kimi Code | MCP (stdio) |
-| ChatGPT | HTTP API + Custom GPT action *(v1.5)* |
+| ChatGPT | HTTP API + Custom GPT action ✅ |
 
 ## The problem
 
@@ -73,6 +73,27 @@ claude mcp add remembra -- remembra
 
 More clients (Cline, Kimi Code) in **[docs/clients.md](docs/clients.md)**.
 
+### ChatGPT (HTTP mode)
+
+```bash
+REMEMBRA_API_KEY="your-secret" remembra --http --port 8787
+```
+
+Then wire a Custom GPT to the API — full walkthrough in **[docs/chatgpt.md](docs/chatgpt.md)**.
+
+### HTTP API
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| GET | `/health` | Liveness (no auth) |
+| POST | `/memories` | Store a memory |
+| GET | `/memories/search?query=&scope=` | Search |
+| GET | `/memories?scope=&type=` | List |
+| DELETE | `/memories/:id` | Forget |
+
+All routes except `/health` require `x-api-key` (or `Authorization: Bearer`) when
+`REMEMBRA_API_KEY` is set.
+
 ## Tools
 
 | Tool | Purpose |
@@ -91,6 +112,7 @@ Full reference: **[docs/tools.md](docs/tools.md)**
 | [Memory model](docs/memory-model.md) | Types, scopes, ranking, storage format |
 | [Tool reference](docs/tools.md) | Every MCP tool with arguments |
 | [Client setup](docs/clients.md) | Config for each supported tool |
+| [ChatGPT setup](docs/chatgpt.md) | HTTP API + Custom GPT walkthrough |
 | [Contributing](CONTRIBUTING.md) | Dev workflow and guidelines |
 | [Changelog](CHANGELOG.md) | Release history |
 
@@ -119,8 +141,8 @@ npm test        # run tests
 
 ## Roadmap
 
-- **v1** *(current)* — MCP server for coding tools, file storage, layered retrieval
-- **v1.5** — HTTP API + ChatGPT Custom GPT action
+- **v1** — MCP server for coding tools, file storage, layered retrieval ✅
+- **v1.5** *(current)* — HTTP API + ChatGPT Custom GPT action ✅
 - **v2** — automatic session-digest extraction, embeddings behind `memory_search`
 - **v3** — SQLite for scale, duplicate merging, memory decay
 

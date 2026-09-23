@@ -71,14 +71,21 @@ Add to the MCP config file used by Kimi CLI:
 
 ## ChatGPT
 
-*Planned for v1.5* — an HTTP layer exposing the same handlers, wired to a
-Custom GPT action with API-key auth.
+Uses the HTTP mode instead of MCP — see the full walkthrough in
+**[chatgpt.md](chatgpt.md)** (server start, API reference, Custom GPT action schema,
+tunneling options).
+
+```bash
+REMEMBRA_API_KEY="your-secret" remembra --http
+```
 
 ## Environment
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `REMEMBRA_HOME` | `~/.remembra` | Where memory files live |
+| `REMEMBRA_API_KEY` | *(unset)* | Enables auth on the HTTP API |
+| `REMEMBRA_PORT` | `8787` | HTTP API port (`--port` overrides) |
 
 ## Tips
 
