@@ -380,6 +380,89 @@ export const UpdateInput = z
   });
 export type UpdateInput = z.infer<typeof UpdateInput>;
 
+// V4.8 batch limits are deliberately shared by SDK, HTTP, and MCP callers.
+export const MAX_BATCH_ITEMS = 100;
+export const MAX_BATCH_BYTES = 10 * 1024 * 1024;
+
+const batchIds = z
+  .array(z.string().min(1))
+  .min(1)
+  .max(MAX_BATCH_ITEMS)
+  .refine((ids) => new Set(ids).size === ids.length, {
+    message: "batch ids must be unique",
+  });
+
+const hasBatchPatchField = (v: Record<string, unknown>): boolean =>
+  Object.keys(v).some(
+    (k) => !["id", "expectedVersion", "reason"].includes(k) && v[k] !== undefined,
+  );
+
+const batchUpdateItem = z
+  .object({ ...updateInputShape, id: z.string().min(1) })
+  .refine(hasBatchPatchField, { message: "update must include at least one field" });
+
+const batchUpdateItems = z
+  .array(batchUpdateItem)
+  .min(1)
+  .max(MAX_BATCH_ITEMS)
+  .refine((items) => new Set(items.map((item) => item.id)).size === items.length, {
+    message: "batch update ids must be unique",
+  });
+
+export const BatchRequest = z.discriminatedUnion("operation", [
+  z.object({ operation: z.literal("store"), items: z.array(StoreInput).min(1).max(MAX_BATCH_ITEMS) }),
+  z.object({ operation: z.literal("update"), items: batchUpdateItems }),
+  z.object({ operation: z.literal("delete"), ids: batchIds }),
+  z.object({ operation: z.literal("export"), ids: batchIds }),
+]);
+export type BatchRequest = z.infer<typeof BatchRequest>;
+
+/** MCP-facing shape; the service performs the discriminated structural parse. */
+export const batchInputShape = {
+  operation: z.enum(["store", "update", "delete", "export"]).describe("Batch operation"),
+  items: z.array(z.unknown()).optional().describe("Store or update items"),
+  ids: z.array(z.string()).optional().describe("Delete/export ids"),
+};
+
+export interface BatchSummary {
+  requested: number;
+  succeeded: number;
+  failed: number;
+}
+
+export interface BatchSuccess<T> {
+  index: number;
+  id?: string;
+  ok: true;
+  result: T;
+}
+
+export interface BatchFailure {
+  index: number;
+  id?: string;
+  ok: false;
+  error: { code: string; message: string };
+}
+
+export type BatchOutcome<T = unknown> = BatchSuccess<T> | BatchFailure;
+
+export interface BatchMutationResult {
+  operation: "store" | "update" | "delete";
+  summary: BatchSummary;
+  results: BatchOutcome[];
+}
+
+export interface BatchExportResult {
+  operation: "export";
+  format: typeof SNAPSHOT_FORMAT;
+  version: number;
+  exportedAt: string;
+  memories: Memory[];
+  summary: BatchSummary;
+  results: BatchOutcome<{ id: string }>[];
+}
+
+
 export const getInputShape = {
   id: z.string().describe("Memory id — returns the memory with related links and backlinks"),
 };

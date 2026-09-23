@@ -1,6 +1,6 @@
 # Tool Reference
 
-Remembra exposes twelve MCP tools. All of them work the same way across every
+Remembra exposes thirteen MCP tools. All of them work the same way across every
 MCP-compatible client.
 
 ## `memory_store`
@@ -34,6 +34,23 @@ Persist a memory so it survives context-window resets.
 - Raw signal *not yet validated* → `observation`
 
 Returns the assigned memory id.
+
+## `memory_batch`
+
+Run a bounded store, update, delete, or selected-export batch through one
+operation-dispatched call. The service validates the complete request before
+writing; operational failures are returned per item and the batch is not a
+cross-item transaction.
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `operation` | `store \| update \| delete \| export` | ✅ | Batch operation |
+| `items` | object[] | store/update | Store inputs or `{id, ...patch}` update items |
+| `ids` | string[] | delete/export | Unique memory ids to delete or export |
+
+Limits are 100 items and 10 MiB of compact JSON. Store duplicates are not
+coalesced. Missing or inaccessible ids are reported as `NOT_FOUND` inside the
+result envelope; top-level malformed requests return `[INVALID_INPUT]`.
 
 ## `memory_update`
 

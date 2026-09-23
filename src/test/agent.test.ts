@@ -180,6 +180,18 @@ test("agent mode prevents cross-agent mutation of private memories", async () =>
   assert.equal((await (svc.forget as any)(memory.id, { agent: { agentId: "agent-a" } })).ok, true);
 });
 
+test("agent batch preserves per-item visibility failures", async () => {
+  const svc = await makeService(true);
+  const { memory } = await storeAsAgent(svc, agentA, "agent-a");
+  const result = await svc.batch(
+    { operation: "delete", ids: [memory.id, "does-not-exist"] },
+    { agent: { agentId: "agent-b" } },
+  );
+  assert.equal(result.summary.succeeded, 0);
+  assert.equal((result.results[0] as { error: { code: string } }).error.code, "NOT_FOUND");
+  assert.equal((await svc.get(memory.id, { agent: { agentId: "agent-a" } })).memory.id, memory.id);
+});
+
 test("agent mode blocks relationship, history, and export disclosure", async () => {
   const svc = await makeService(true);
   const { memory: privateMemory } = await storeAsAgent(svc, agentA, "agent-a");

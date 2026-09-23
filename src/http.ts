@@ -313,6 +313,17 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return send(res, 200, result);
       }
 
+      // POST /memories/batch — bounded operation-dispatched batch.
+      if (req.method === "POST" && path === "/memories/batch") {
+        const body = await readBody(req, maxBody);
+        const result = await service.batch(body, agentOptions);
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return result.operation === "export"
+          ? sendListLike(res, 200, result, "memories")
+          : sendListLike(res, 200, result, "results");
+      }
+
       // POST /memories
       if (req.method === "POST" && path === "/memories") {
         const body = await readBody(req, maxBody);
@@ -506,6 +517,8 @@ function routeLabel(p: string): string {
       return "search";
     case "/memories/digest":
       return "digest";
+    case "/memories/batch":
+      return "batch";
     case "/maintain":
       return "maintain";
     case "/memories/compress":

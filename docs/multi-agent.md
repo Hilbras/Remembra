@@ -67,8 +67,11 @@ When `REMEMBRA_AGENT_MODE=1` is set (or the service receives
   authorization error, to avoid disclosing that the id exists.
 
 The policy applies to search, list, direct reads, updates, lifecycle changes,
-relationships, history, and deletion. It is a memory-visibility policy, not a
-replacement for transport authentication.
+relationships, history, deletion, and every item in a batch operation. Batch
+requests never accept a public identity field: the trusted host context is
+applied to each store/update/delete/export item independently. An inaccessible
+batch id is reported as `NOT_FOUND`, and a failed item does not authorize or
+expose neighboring items.
 
 ## Council conventions
 

@@ -36,13 +36,14 @@ Prepare Remembra for large memory collections without changing existing single-m
 
 ### Phase 2: Batch APIs
 
-- [ ] Task 3: Add bounded batch store/update/delete/export service APIs.
+- [x] Task 3: Add bounded batch store/update/delete/export service APIs.
   - Acceptance: input limits are enforced; each item is validated; existing single-item APIs and error envelopes remain unchanged; agent policy applies to every item.
   - Verification: service and HTTP integration tests, including partial-failure behavior.
   - Files: `src/service.ts`, `src/http.ts`, `src/types.ts`, tests.
   - Scope: M.
 
 - [ ] Task 4: Add batch embedding and provider concurrency limits.
+  - Progress: bounded `embedTexts` helper and regression tests are landed; wiring it into batch store is pending.
   - Acceptance: embedding batches respect `maxBatchSize` and `maxConcurrentEmbeddings`; failures are isolated and observable.
   - Verification: fake-provider tests with call counters and deterministic limits.
   - Files: `src/embeddings.ts`, `src/service.ts`, tests.
@@ -50,7 +51,7 @@ Prepare Remembra for large memory collections without changing existing single-m
 
 ### Checkpoint: Batch operations
 
-- [ ] Full suite green; no unbounded request-body or batch memory growth.
+- [x] Full suite green; no unbounded request-body or batch memory growth.
 
 ### Phase 3: Background work
 

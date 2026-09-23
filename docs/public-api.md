@@ -61,6 +61,7 @@ Remembra does not trust an `agentId` JSON field or public agent header. See
 | GET | `/metrics` | Prometheus text (auth when keyed) |
 | GET | `/agents/:id` | agent attribution and memory counts (no memory content) |
 | POST | `/memories` | store |
+| POST | `/memories/batch` | bounded store/update/delete/selected-export batch |
 | PUT | `/memories/:id` | patch |
 | GET | `/memories/search` | search (`query`/`q`, `scope`, `type`, `limit`, `explain`) |
 | GET | `/memories` | list (`scope`, `type`, `includeArchived`, pagination) |
@@ -73,6 +74,27 @@ Remembra does not trust an `agentId` JSON field or public agent header. See
 | GET | `/snapshot` | full export |
 | POST | `/import` | idempotent, atomic import |
 | DELETE | `/memories/:id` | forget |
+
+### Batches
+
+`POST /memories/batch` accepts one discriminated `operation`:
+
+```json
+{"operation":"store","items":[{"type":"fact","content":"Redis is the queue backend"}]}
+{"operation":"update","items":[{"id":"...","content":"Updated","expectedVersion":2}]}
+{"operation":"delete","ids":["..."]}
+{"operation":"export","ids":["..."]}
+```
+
+Structural validation (shape, count, duplicate IDs, and the 10 MiB compact JSON
+limit) completes before any write. Valid mutations then run sequentially;
+operational failures are returned per item and successful/failed rows retain
+input order. The first batch slice is **not** a cross-item transaction. Export
+returns a normal import-compatible snapshot plus per-item selection outcomes;
+relations to unselected memories are omitted.
+
+Batch limits are 100 items and 10 MiB. HTTP mixed results use status `200`;
+top-level malformed requests use the normal `INVALID_INPUT` envelope.
 
 ### Error codes → HTTP status
 

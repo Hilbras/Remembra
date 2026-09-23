@@ -1,6 +1,6 @@
 import type { MemoryBackend } from "./backend.js";
 import { extractQuery, searchQ } from "./retrieval.js";
-import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, Provenance, defaultTrust, CompressInput } from "./types.js";
+import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, Provenance, defaultTrust, CompressInput, BatchRequest, MAX_BATCH_BYTES, BatchOutcome, BatchSummary, BatchFailure } from "./types.js";
 import { RemembraError, inputError, errorLabel } from "./errors.js";
 import { resolveEmbeddingProvider, embedText, EmbeddingProvider, cosine } from "./embeddings.js";
 import { logEvent } from "./log.js";
@@ -75,6 +75,23 @@ interface ServiceDeps {
 export interface AgentReadOptions {
   /** Identity established by the host application, never an unauthenticated request field. */
   agent?: AgentContext;
+}
+
+function batchFailure(index: number, id: string | undefined, error: unknown): BatchOutcome {
+  return {
+    index,
+    ...(id ? { id } : {}),
+    ok: false,
+    error: {
+      code: errorLabel(error),
+      message: error instanceof Error ? error.message : String(error),
+    },
+  };
+}
+
+function batchSummary(results: readonly BatchOutcome[]): BatchSummary {
+  const succeeded = results.filter((result) => result.ok).length;
+  return { requested: results.length, succeeded, failed: results.length - succeeded };
 }
 
 /**
@@ -411,6 +428,108 @@ export class MemoryService {
             )
             .join("\n\n");
     return { text, results: ranked, ...(explanations ? { explanations } : {}) };
+  }
+
+  /**
+   * Execute a bounded, operation-dispatched batch. The complete request is
+   * parsed before the first write. Mutations then run sequentially and report
+   * operational failures per item; they are not a cross-item transaction.
+   */
+  async batch(input: unknown, options: AgentReadOptions = {}) {
+    let request: ReturnType<typeof BatchRequest.parse>;
+    try {
+      let compact: string | undefined;
+      try {
+        compact = JSON.stringify(input);
+      } catch {
+        throw new RemembraError("INVALID_INPUT", "batch request must be JSON-serializable");
+      }
+      if (typeof compact !== "string" || Buffer.byteLength(compact, "utf8") > MAX_BATCH_BYTES) {
+        throw new RemembraError("INVALID_INPUT", `batch request exceeds ${MAX_BATCH_BYTES} bytes`);
+      }
+      request = BatchRequest.parse(input);
+    } catch (err) {
+      throw inputError(err, "INVALID_INPUT");
+    }
+
+    if (request.operation === "store") {
+      const results: BatchOutcome[] = [];
+      for (const [index, item] of request.items.entries()) {
+        try {
+          const result = await this.store(item, options);
+          results.push({ index, id: result.id, ok: true, result: { id: result.id, message: result.message } });
+        } catch (err) {
+          results.push(batchFailure(index, undefined, err));
+        }
+      }
+      return { operation: "store" as const, summary: batchSummary(results), results };
+    }
+
+    if (request.operation === "update") {
+      const results: BatchOutcome[] = [];
+      for (const [index, item] of request.items.entries()) {
+        const { id, ...patch } = item;
+        try {
+          const result = await this.update(id, patch, options);
+          results.push({
+            index,
+            id,
+            ok: true,
+            result: { version: result.memory.version, text: result.text },
+          });
+        } catch (err) {
+          results.push(batchFailure(index, id, err));
+        }
+      }
+      return { operation: "update" as const, summary: batchSummary(results), results };
+    }
+
+    if (request.operation === "delete") {
+      const results: BatchOutcome[] = [];
+      for (const [index, id] of request.ids.entries()) {
+        try {
+          const result = await this.forget(id, options);
+          if (!result.ok) throw new RemembraError("NOT_FOUND", result.text);
+          results.push({ index, id, ok: true, result: { text: result.text } });
+        } catch (err) {
+          results.push(batchFailure(index, id, err));
+        }
+      }
+      return { operation: "delete" as const, summary: batchSummary(results), results };
+    }
+
+    const selected: Memory[] = [];
+    const results: BatchOutcome<{ id: string }>[] = [];
+    for (const [index, id] of request.ids.entries()) {
+      const memory = await this.db.get(id);
+      if (!memory || !this.canRead(memory, options)) {
+        results.push(batchFailure(index, id, new RemembraError("NOT_FOUND", `No memory with id ${id}`)) as BatchFailure);
+        continue;
+      }
+      selected.push(memory);
+      results.push({ index, id, ok: true, result: { id } });
+    }
+    const selectedIds = new Set(selected.map((memory) => memory.id));
+    const memories = selected.map((memory) => {
+      const relations = memory.relations?.filter((relation) => selectedIds.has(relation.id));
+      return { ...memory, ...(relations?.length ? { relations } : { relations: undefined }) };
+    });
+    const snapshot = {
+      format: SNAPSHOT_FORMAT,
+      version: SCHEMA_VERSION,
+      exportedAt: new Date().toISOString(),
+      memories,
+    } as const;
+    const compact = JSON.stringify(snapshot);
+    if (Buffer.byteLength(compact, "utf8") > MAX_BATCH_BYTES) {
+      throw new RemembraError("INVALID_INPUT", `batch export exceeds ${MAX_BATCH_BYTES} bytes`);
+    }
+    return {
+      ...snapshot,
+      operation: "export" as const,
+      summary: batchSummary(results),
+      results,
+    };
   }
 
   async list(q: {

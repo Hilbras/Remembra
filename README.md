@@ -118,6 +118,7 @@ light-mode toggle. Guide: **[docs/ui.md](docs/ui.md)**.
 | GET | `/health` | Liveness + readiness (no auth) |
 | GET | `/metrics` | Prometheus metrics (auth when keyed) |
 | POST | `/memories` | Store a memory |
+| POST | `/memories/batch` | Bounded store/update/delete/selected-export batch |
 | PUT | `/memories/:id` | Patch fields incl. `trust`/`retention`; stale `expectedVersion` → 409 |
 | GET | `/memories/search?query=&scope=` | Search |
 | GET | `/memories?scope=&type=` | List |
@@ -160,6 +161,7 @@ tampered snapshot is rejected atomically, never half-imported. Of course,
 | Tool | Purpose |
 |------|---------|
 | `memory_store` | Save a memory (11 semantic types) |
+| `memory_batch` | Bounded store/update/delete/selected-export batch |
 | `memory_update` | Patch a memory — content, scope, tags, trust, `expectedVersion`, … |
 | `memory_archive` / `memory_revive` | Manually park a memory aside / bring it back |
 | `memory_digest` | Extract + store memories from a transcript (LLM) |

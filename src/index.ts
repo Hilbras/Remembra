@@ -23,6 +23,7 @@ import {
   relateInputShape,
   historyInputShape,
   updateInputShape,
+  batchInputShape,
   MemoryType,
   TrustLevel,
   RetentionMode,
@@ -243,6 +244,25 @@ async function startMcp(): Promise<void> {
       try {
         const result = await service.store(args);
         return { content: [{ type: "text", text: result.message }] };
+      } catch (err) {
+        return toolFail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "memory_batch",
+    {
+      title: "Run a memory batch",
+      description:
+        "Run a bounded store, update, delete, or selected export batch. Items are validated " +
+        "before writes; operational failures are returned per item and are not a transaction.",
+      inputSchema: batchInputShape,
+    },
+    async (args) => {
+      try {
+        const result = await service.batch(args);
+        return { content: [{ type: "text", text: JSON.stringify(result) }] };
       } catch (err) {
         return toolFail(err);
       }

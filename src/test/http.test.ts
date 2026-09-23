@@ -55,6 +55,33 @@ test("store → search → delete round-trip", async () => {
   assert.equal(gone.status, 404);
 });
 
+test("POST /memories/batch returns ordered outcomes and validates structure", async () => {
+  const res = await fetch(`${base}/memories/batch`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": "test-key" },
+    body: JSON.stringify({
+      operation: "store",
+      items: [
+        { type: "fact", content: "batch HTTP one" },
+        { type: "decision", content: "batch HTTP two", importance: 4 },
+      ],
+    }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.operation, "store");
+  assert.deepEqual(body.summary, { requested: 2, succeeded: 2, failed: 0 });
+  assert.deepEqual(body.results.map((item: { index: number }) => item.index), [0, 1]);
+
+  const invalid = await fetch(`${base}/memories/batch`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": "test-key" },
+    body: JSON.stringify({ operation: "delete", ids: [] }),
+  });
+  assert.equal(invalid.status, 400);
+  assert.equal((await invalid.json()).code, "INVALID_INPUT");
+});
+
 test("invalid JSON body returns 400", async () => {
   const res = await fetch(`${base}/memories`, {
     method: "POST",
