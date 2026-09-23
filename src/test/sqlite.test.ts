@@ -30,6 +30,31 @@ test("sqlite: store and retrieve round-trip", async () => {
   await fs.rm(dir, { recursive: true, force: true });
 });
 
+test("sqlite: agent attribution, ownership, and access round-trip", async () => {
+  const { store } = await tempSqlite();
+  const m = await store.store(StoreInput.parse({
+    type: "fact",
+    content: "Agent-only research",
+    owner: "agent",
+    access: "private",
+    provenance: {
+      sourceType: "agent",
+      agentId: "researcher-1",
+      agentType: "researcher",
+      agentVersion: "2.0.0",
+      conversationId: "conversation-1",
+      taskId: "task-1",
+      runId: "run-1",
+    },
+  }));
+
+  const got = await store.get(m.id);
+  assert.equal(got?.owner, "agent");
+  assert.equal(got?.access, "private");
+  assert.deepEqual(got?.provenance, m.provenance);
+  store.close();
+});
+
 test("sqlite: update with version bump", async () => {
   const { store } = await tempSqlite();
   const m = await store.store(StoreInput.parse({ type: "fact", content: "original" }));

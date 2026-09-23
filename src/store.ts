@@ -21,6 +21,7 @@ import { RemembraError } from "./errors.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { encryptionEnabled, isEncrypted, encryptBuffer, decryptBuffer } from "./crypto.js";
+import { defaultAccess, defaultOwner } from "./agent.js";
 
 export interface StoreLockOptions {
   /** Max wait for the cross-process lock (ms). Env: REMEMBRA_LOCK_TIMEOUT_MS. Default 5000. */
@@ -422,6 +423,11 @@ export class MemoryStore implements MemoryBackend {
       ...(input.provenance?.sessionId ? { sessionId: input.provenance.sessionId } : {}),
       ...(input.provenance?.messageId ? { messageId: input.provenance.messageId } : {}),
       ...(input.provenance?.agentId ? { agentId: input.provenance.agentId } : {}),
+      ...(input.provenance?.agentType ? { agentType: input.provenance.agentType } : {}),
+      ...(input.provenance?.agentVersion ? { agentVersion: input.provenance.agentVersion } : {}),
+      ...(input.provenance?.conversationId ? { conversationId: input.provenance.conversationId } : {}),
+      ...(input.provenance?.taskId ? { taskId: input.provenance.taskId } : {}),
+      ...(input.provenance?.runId ? { runId: input.provenance.runId } : {}),
       ...(input.provenance?.provider ? { provider: input.provenance.provider } : {}),
     };
     const memory: Memory = {
@@ -438,6 +444,8 @@ export class MemoryStore implements MemoryBackend {
       confidence: input.confidence ?? (provenance.sourceType === "conversation" ? 0.7 : 1),
       trust: input.trust ?? defaultTrust(provenance),
       provenance,
+      owner: input.owner ?? defaultOwner(provenance),
+      access: input.access ?? defaultAccess(),
       retention: input.retention,
       embedding,
     };

@@ -58,13 +58,26 @@ export const RelationKind = z.enum([
 ]);
 export type RelationKind = z.infer<typeof RelationKind>;
 
+/** V4.7: memory ownership class. */
+export const MemoryOwner = z.enum(["user", "agent", "project", "organization", "global"]);
+export type MemoryOwner = z.infer<typeof MemoryOwner>;
+
+/** V4.7: memory access level for multi-agent scoping. */
+export const MemoryAccess = z.enum(["private", "shared", "global"]);
+export type MemoryAccess = z.infer<typeof MemoryAccess>;
+
 /** Provenance object (plan §4.3): where did this come from, who/which session/agent produced it. */
 export const ProvenanceSchema = z.object({
   sourceType: SourceType,
   sessionId: z.string().optional(),
   messageId: z.string().optional(),
-  agentId: z.string().optional(),
-  provider: z.string().optional(),
+  agentId: z.string().optional().describe("V4.7: agent that produced the memory"),
+  agentType: z.string().optional().describe("V4.7: agent role (researcher, coder, critic, planner, reviewer)"),
+  agentVersion: z.string().optional().describe("V4.7: semantic version of the agent"),
+  conversationId: z.string().optional().describe("V4.7: grouped conversation identifier"),
+  taskId: z.string().optional().describe("V4.7: task this memory belongs to"),
+  runId: z.string().optional().describe("V4.7: single execution/run identifier"),
+  provider: z.string().optional().describe("Provider/model (e.g. the digest LLM)"),
 });
 export type Provenance = z.infer<typeof ProvenanceSchema>;
 
@@ -139,6 +152,10 @@ export interface Memory extends MemoryMetadata {
   archivedAt?: string;
   /** Cached embedding vector (REMEMBRA_EMBEDDINGS≠none); serialized in frontmatter. */
   embedding?: number[];
+  /** V4.7: who owns this memory. Absent means the store's default owner. */
+  owner?: MemoryOwner;
+  /** V4.7: agent-mode visibility policy. Absent means REMEMBRA_DEFAULT_ACCESS or global. */
+  access?: MemoryAccess;
   /** V4.4/V4.5: optional meta flags set by security checks and lifecycle. */
   meta?: { injected?: boolean; quarantined?: boolean; contradicted?: boolean; compressedFrom?: string[]; compressionAt?: string };
   /** V4.5: temporal bounds. */
@@ -187,6 +204,11 @@ export const provenanceInput = z
     sessionId: z.string().optional().describe("Session that produced the memory"),
     messageId: z.string().optional().describe("Message within that session"),
     agentId: z.string().optional().describe("Agent that produced the memory"),
+    agentType: z.string().optional().describe("Agent role, e.g. researcher or coder"),
+    agentVersion: z.string().optional().describe("Version of the agent that produced the memory"),
+    conversationId: z.string().optional().describe("Conversation this memory belongs to"),
+    taskId: z.string().optional().describe("Task this memory belongs to"),
+    runId: z.string().optional().describe("Execution run this memory belongs to"),
     provider: z.string().optional().describe("Provider/model (e.g. the digest LLM)"),
   })
   .optional()
@@ -223,6 +245,8 @@ export const storeInputShape = {
     ),
   retention: retentionInput.optional(),
   provenance: provenanceInput,
+  owner: MemoryOwner.optional().describe("V4.7: user | agent | project | organization | global"),
+  access: MemoryAccess.optional().describe("V4.7: private | shared | global"),
   meta: z
     .object({ injected: z.boolean().optional(), quarantined: z.boolean().optional() })
     .optional()
@@ -435,6 +459,8 @@ export const SnapshotInput = z.object({
         confidence: z.number().min(0).max(1).optional(),
         trust: TrustLevel.optional(),
         retention: RetentionMode.optional(),
+        owner: MemoryOwner.optional(),
+        access: MemoryAccess.optional(),
         version: z.number().int().min(1).optional(),
         /** Typed edges (4.1.0+). */
         relations: z

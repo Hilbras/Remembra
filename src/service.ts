@@ -21,6 +21,7 @@ import { createInjectionDetector, InjectionResult } from "./injection-detector.j
 import { createSensitiveDetector, SensitivePolicy } from "./sensitive-data.js";
 import { consolidate, ConsolidationFindings } from "./consolidation.js";
 import { computeHealth, getLifecycleState, agingScorePenalty } from "./lifecycle.js";
+import { AgentContext, canReadMemory } from "./agent.js";
 
 export interface DigestResult {
   extracted: number;
@@ -65,6 +66,13 @@ interface ServiceDeps {
   archiveTtlDays?: number;
   /** Force the PII redaction filter on/off (default: REMEMBRA_REDACT env). */
   redact?: boolean;
+  /** V4.7: enable fail-closed agent visibility policy. Disabled by default. */
+  agentMode?: boolean;
+}
+
+export interface AgentReadOptions {
+  /** Identity established by the host application, never an unauthenticated request field. */
+  agent?: AgentContext;
 }
 
 /**
@@ -83,6 +91,7 @@ export class MemoryService {
   private readonly archiveAfterDays: number;
   private readonly archiveTtlDays: number;
   private readonly redactOn: boolean;
+  private readonly agentMode: boolean;
   /** V4.4: prompt injection detector (pattern-based). */
   private readonly injectionDetector = createInjectionDetector();
   /** V4.4: sensitive data policy detector. */
@@ -112,10 +121,22 @@ export class MemoryService {
     this.archiveAfterDays = deps.archiveAfterDays ?? Number(process.env.REMEMBRA_ARCHIVE_AFTER_DAYS ?? 90);
     this.archiveTtlDays = deps.archiveTtlDays ?? Number(process.env.REMEMBRA_ARCHIVE_TTL_DAYS ?? 365);
     this.redactOn = deps.redact ?? redactionEnabled();
+    this.agentMode = deps.agentMode ?? process.env.REMEMBRA_AGENT_MODE === "1";
   }
 
   get embeddingsEnabled(): boolean {
     return this.embedFn !== undefined;
+  }
+
+  /** Returns false rather than disclosing the existence of a private memory. */
+  private canRead(memory: Memory, options: AgentReadOptions = {}): boolean {
+    return canReadMemory(memory, options.agent, this.agentMode);
+  }
+
+  private assertCanRead(memory: Memory | null, id: string, options: AgentReadOptions = {}): asserts memory is Memory {
+    if (!memory || !this.canRead(memory, options)) {
+      throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
+    }
   }
 
   private async maybeEmbed(text: string, signal?: AbortSignal): Promise<number[] | undefined> {
@@ -175,7 +196,7 @@ export class MemoryService {
     };
   }
 
-  async search(q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean; includeExpired?: boolean; includeFuture?: boolean; includeQuarantined?: boolean; includeArchived?: boolean }) {
+  async search(q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean; includeExpired?: boolean; includeFuture?: boolean; includeQuarantined?: boolean; includeArchived?: boolean } & AgentReadOptions) {
     const t0 = performance.now();
     let queryVec: number[] | null = null;
     if (q.query && this.embedFn) queryVec = (await this.maybeEmbed(q.query)) ?? null;
@@ -184,6 +205,7 @@ export class MemoryService {
     let pool = await this.db.all(q.includeArchived);
     const now = Date.now();
     pool = pool.filter((m) => {
+      if (!this.canRead(m, q)) return false;
       if (!q.includeExpired && m.validUntil && Date.parse(m.validUntil) < now) return false;
       if (!q.includeFuture && m.validFrom && Date.parse(m.validFrom) > now) return false;
       if (!q.includeQuarantined && m.meta?.quarantined) return false;
@@ -243,11 +265,12 @@ export class MemoryService {
     includeExpired?: boolean;
     /** V4.5: include future-dated memories (validFrom > now). */
     includeFuture?: boolean;
-  }) {
+  } & AgentReadOptions) {
     let memories = await this.db.all(q.includeArchived ?? false);
     const now = Date.now();
-    // V4.5: temporal and lifecycle filtering.
+    // V4.5 temporal and lifecycle filtering + V4.7 agent visibility policy.
     memories = memories.filter((m) => {
+      if (!this.canRead(m, q)) return false;
       if (!q.includeExpired && m.validUntil && Date.parse(m.validUntil) < now) return false;
       if (!q.includeFuture && m.validFrom && Date.parse(m.validFrom) > now) return false;
       if (!q.includeQuarantined && m.meta?.quarantined) return false;
@@ -288,7 +311,10 @@ export class MemoryService {
     };
   }
 
-  async forget(id: string) {
+  async forget(id: string, options: AgentReadOptions = {}) {
+    const existing = await this.db.get(id);
+    if (this.agentMode) this.assertCanRead(existing, id, options);
+    if (!existing) return { ok: false, text: `No memory with id ${id}.` };
     const ok = await this.db.forget(id);
     return { ok, text: ok ? `Deleted memory ${id}.` : `No memory with id ${id}.` };
   }
@@ -299,7 +325,7 @@ export class MemoryService {
    * between write and unlink is reconciled by the recovery pass).
    * A content change recomputes (or clears) the embedding vector.
    */
-  async update(id: string, input: unknown): Promise<{ memory: Memory; text: string }> {
+  async update(id: string, input: unknown, options: AgentReadOptions = {}): Promise<{ memory: Memory; text: string }> {
     let patch: UpdateInput;
     try {
       patch = UpdateInput.parse(input);
@@ -309,7 +335,7 @@ export class MemoryService {
     // Concurrency + history guards (plan §3.5/§4.6) — never spread onto Memory.
     const { expectedVersion, reason, ...fields } = patch;
     const existing = await this.db.get(id);
-    if (!existing) throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
+    this.assertCanRead(existing, id, options);
     const next: Memory = { ...existing, ...fields };
     if (fields.content !== undefined && fields.content !== existing.content) {
       next.embedding = await this.maybeEmbed(fields.content); // fail-open → keyword fallback
@@ -323,23 +349,27 @@ export class MemoryService {
   }
 
   /** Manually archive a memory (v4: memory_archive / POST /memories/:id/archive). */
-  async archive(id: string): Promise<{ memory: Memory; text: string }> {
+  async archive(id: string, options: AgentReadOptions = {}): Promise<{ memory: Memory; text: string }> {
+    const existing = await this.db.get(id);
+    this.assertCanRead(existing, id, options);
     const memory = await this.db.archive(id);
     if (!memory) throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
     return { memory, text: `Archived ${id}.` };
   }
 
   /** Bring an archived memory back to active (v4: memory_revive / POST). */
-  async revive(id: string): Promise<{ memory: Memory; text: string }> {
+  async revive(id: string, options: AgentReadOptions = {}): Promise<{ memory: Memory; text: string }> {
+    const existing = await this.db.get(id);
+    this.assertCanRead(existing, id, options);
     const memory = await this.db.revive(id);
     if (!memory) throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
     return { memory, text: `Revived ${id}.` };
   }
 
   /** Fetch one memory with its links resolved (audit Phase 8: graph view). */
-  async get(id: string) {
+  async get(id: string, options: AgentReadOptions = {}) {
     const memory = await this.db.get(id);
-    if (!memory) throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
+    this.assertCanRead(memory, id, options);
     const all = await this.db.all(true);
     const brief = (m: Memory) => ({
       id: m.id,
@@ -349,11 +379,11 @@ export class MemoryService {
     });
     // Typed outgoing edges (plan §4.7) + derived backlinks, kind included.
     const related = (memory.relations ?? []).map((r) => {
-      const target = all.find((m) => m.id === r.id);
+      const target = all.find((m) => m.id === r.id && this.canRead(m, options));
       return { kind: r.kind, ...(target ? brief(target) : { id: r.id, missing: true as const }) };
     });
     const backlinks = all
-      .filter((m) => m.id !== id && m.relations?.some((r) => r.id === id))
+      .filter((m) => m.id !== id && this.canRead(m, options) && m.relations?.some((r) => r.id === id))
       .map((m) => ({
         kind: m.relations!.find((r) => r.id === id)!.kind,
         ...brief(m),
@@ -376,7 +406,7 @@ export class MemoryService {
    * graph). Targets are validated on add; backlinks are derived at read
    * time, so one write keeps the edge consistent.
    */
-  async relate(input: unknown): Promise<{ id: string; related: string[]; added: string[]; removed: string[]; text: string }> {
+  async relate(input: unknown, options: AgentReadOptions = {}): Promise<{ id: string; related: string[]; added: string[]; removed: string[]; text: string }> {
     let parsed;
     try {
       parsed = RelateInput.parse(input);
@@ -384,14 +414,15 @@ export class MemoryService {
       throw inputError(err, "INVALID_INPUT");
     }
     const memory = await this.db.get(parsed.id);
-    if (!memory) throw new RemembraError("NOT_FOUND", `No memory with id ${parsed.id}`);
+    this.assertCanRead(memory, parsed.id, options);
     if (parsed.related.includes(parsed.id)) {
       throw new RemembraError("INVALID_INPUT", "a memory cannot be related to itself");
     }
     if (parsed.action === "add") {
       const missing: string[] = [];
       for (const rid of parsed.related) {
-        if (!(await this.db.get(rid))) missing.push(rid);
+        const target = await this.db.get(rid);
+        if (!target || !this.canRead(target, options)) missing.push(rid);
       }
       if (missing.length > 0) {
         throw new RemembraError("NOT_FOUND", `related target(s) not found: ${missing.join(", ")}`);
@@ -447,7 +478,7 @@ export class MemoryService {
    * Newest first; each past version carries a unified diff against its
    * predecessor (the current version diffs against the newest snapshot).
    */
-  async history(input: unknown): Promise<{
+  async history(input: unknown, options: AgentReadOptions = {}): Promise<{
     id: string;
     versions: {
       current?: true;
@@ -468,7 +499,7 @@ export class MemoryService {
       throw inputError(err, "INVALID_INPUT");
     }
     const memory = await this.db.get(parsed.id);
-    if (!memory) throw new RemembraError("NOT_FOUND", `No memory with id ${parsed.id}`);
+    this.assertCanRead(memory, parsed.id, options);
     const entries = (await this.db.history?.(parsed.id)) ?? [];
     const kept = entries.slice(0, parsed.limit ?? entries.length);
 
@@ -951,8 +982,8 @@ export class MemoryService {
    * Full snapshot for backup (audit #8): every memory incl. archived.
    * Written by `remembra export <file>` as JSON.
    */
-  async exportSnapshot() {
-    const memories = await this.db.all(true);
+  async exportSnapshot(options: AgentReadOptions = {}) {
+    const memories = (await this.db.all(true)).filter((m) => this.canRead(m, options));
     return {
       format: SNAPSHOT_FORMAT,
       version: SCHEMA_VERSION,

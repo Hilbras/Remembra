@@ -31,7 +31,10 @@ import {
   ProvenanceSchema,
   defaultTrust,
   RelationKind,
+  MemoryAccess,
+  MemoryOwner,
 } from "./types.js";
+import { defaultAccess, defaultOwner } from "./agent.js";
 
 // ---------------------------------------------------------------------------
 //  Id generation (UUIDv7, plan §3.6)
@@ -114,6 +117,12 @@ CREATE TABLE IF NOT EXISTS memories (
                       'system','verified','trusted','unverified'
                     )),
   provenance        TEXT NOT NULL,
+  owner             TEXT NOT NULL DEFAULT 'global' CHECK (owner IN (
+                       'user','agent','project','organization','global'
+                     )),
+  access            TEXT NOT NULL DEFAULT 'global' CHECK (access IN (
+                       'private','shared','global'
+                     )),
   retention         TEXT NOT NULL DEFAULT 'decaying' CHECK (retention IN (
                       'pinned','persistent','ephemeral','decaying','neverExpire'
                     )),
@@ -182,6 +191,7 @@ export class SqliteBackend implements MemoryBackend {
     this.db.pragma("synchronous = NORMAL");
     this.db.pragma("foreign_keys = ON");
     this.db.exec(SCHEMA_SQL);
+    this.ensureAgentColumns();
 
     // Detect FTS5 support.
     this.ftsEnabled =
@@ -210,6 +220,18 @@ export class SqliteBackend implements MemoryBackend {
     });
   }
 
+  /** Add V4.7 policy columns to databases created by earlier 4.x releases. */
+  private ensureAgentColumns(): void {
+    const columns = this.db.pragma("table_info(memories)") as Array<{ name: string }>;
+    const names = new Set(columns.map((c) => c.name));
+    if (!names.has("owner")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN owner TEXT NOT NULL DEFAULT 'global'");
+    }
+    if (!names.has("access")) {
+      this.db.exec("ALTER TABLE memories ADD COLUMN access TEXT NOT NULL DEFAULT 'global'");
+    }
+  }
+
   // -------------------------------------------------------------------------
   //  Public API (MemoryBackend)
   // -------------------------------------------------------------------------
@@ -224,6 +246,11 @@ export class SqliteBackend implements MemoryBackend {
         ...(input.provenance?.sessionId ? { sessionId: input.provenance.sessionId } : {}),
         ...(input.provenance?.messageId ? { messageId: input.provenance.messageId } : {}),
         ...(input.provenance?.agentId ? { agentId: input.provenance.agentId } : {}),
+        ...(input.provenance?.agentType ? { agentType: input.provenance.agentType } : {}),
+        ...(input.provenance?.agentVersion ? { agentVersion: input.provenance.agentVersion } : {}),
+        ...(input.provenance?.conversationId ? { conversationId: input.provenance.conversationId } : {}),
+        ...(input.provenance?.taskId ? { taskId: input.provenance.taskId } : {}),
+        ...(input.provenance?.runId ? { runId: input.provenance.runId } : {}),
         ...(input.provenance?.provider ? { provider: input.provenance.provider } : {}),
       };
       const memory: Memory = {
@@ -241,6 +268,8 @@ export class SqliteBackend implements MemoryBackend {
           input.confidence ?? (provSrc === "conversation" ? 0.7 : 1),
         trust: input.trust ?? defaultTrust(provenance),
         provenance,
+        owner: input.owner ?? defaultOwner(provenance),
+        access: input.access ?? defaultAccess(),
         retention: input.retention,
         embedding,
       };
@@ -308,7 +337,7 @@ export class SqliteBackend implements MemoryBackend {
         .prepare(`
           UPDATE memories SET
             type = ?, content = ?, scope = ?, tags = ?, importance = ?,
-            confidence = ?, trust = ?, provenance = ?, retention = ?,
+            confidence = ?, trust = ?, provenance = ?, owner = ?, access = ?, retention = ?,
             relations = ?, version = ?, created_at = ?, updated_at = ?,
             last_seen = ?, archived_at = ?, embedding = ?
           WHERE id = ?
@@ -322,6 +351,8 @@ export class SqliteBackend implements MemoryBackend {
           updated.confidence,
           updated.trust,
           jsonStr(updated.provenance),
+          updated.owner ?? "global",
+          updated.access ?? "global",
           updated.retention ?? "decaying",
           jsonStr(updated.relations ?? []),
           updated.version,
@@ -504,9 +535,9 @@ export class SqliteBackend implements MemoryBackend {
       .prepare(`
         INSERT INTO memories (
           id, type, content, scope, tags, importance, confidence, trust,
-          provenance, retention, relations, version, created_at, updated_at,
+          provenance, owner, access, retention, relations, version, created_at, updated_at,
           last_seen, archived_at, embedding
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         m.id,
@@ -518,6 +549,8 @@ export class SqliteBackend implements MemoryBackend {
         m.confidence,
         m.trust,
         jsonStr(m.provenance),
+        m.owner ?? "global",
+        m.access ?? "global",
         m.retention ?? "decaying",
         jsonStr(m.relations ?? []),
         m.version,
@@ -773,6 +806,15 @@ function rowToMemory(row: Record<string, unknown>): Memory | null {
     ? (retentionRaw as RetentionMode)
     : undefined;
 
+  const ownerRaw = asStr(row.owner);
+  const owner = MemoryOwner.options.includes(ownerRaw as MemoryOwner)
+    ? (ownerRaw as MemoryOwner)
+    : "global";
+  const accessRaw = asStr(row.access);
+  const access = MemoryAccess.options.includes(accessRaw as MemoryAccess)
+    ? (accessRaw as MemoryAccess)
+    : "global";
+
   const relationsRaw = parseJson<Array<{ id: string; kind: string }>>(asStr(row.relations));
   const relations: Memory["relations"] =
     relationsRaw && relationsRaw.length > 0 ? (relationsRaw as Memory["relations"]) : undefined;
@@ -796,6 +838,8 @@ function rowToMemory(row: Record<string, unknown>): Memory | null {
     confidence,
     trust,
     provenance,
+    owner,
+    access,
     retention,
     relations,
     version,
@@ -878,6 +922,15 @@ async function parseLegacyFile(file: string): Promise<Memory | null> {
     ? (retentionRaw as RetentionMode)
     : undefined;
 
+  const ownerRaw = meta.owner ? String(meta.owner) : undefined;
+  const owner = MemoryOwner.options.includes(ownerRaw as MemoryOwner)
+    ? (ownerRaw as MemoryOwner)
+    : defaultOwner(provenance);
+  const accessRaw = meta.access ? String(meta.access) : undefined;
+  const access = MemoryAccess.options.includes(accessRaw as MemoryAccess)
+    ? (accessRaw as MemoryAccess)
+    : defaultAccess();
+
   const relationsRaw = meta.relations;
   let relations: Memory["relations"] = undefined;
   if (Array.isArray(relationsRaw)) {
@@ -915,6 +968,8 @@ async function parseLegacyFile(file: string): Promise<Memory | null> {
     confidence,
     trust,
     provenance,
+    owner,
+    access,
     retention,
     relations,
     version: revision,
