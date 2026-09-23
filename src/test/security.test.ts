@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createHttpServer, resolveListen } from "../http.js";
 import { MemoryService } from "../service.js";
 import { MemoryStore } from "../store.js";
@@ -9,8 +12,7 @@ import { InjectionDetector } from "../injection-detector.js";
 import { SensitiveDataDetector } from "../sensitive-data.js";
 
 async function makeService(): Promise<MemoryService> {
-  const tmp = await import("node:os");
-  const root = tmp.tmpdir();
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-security-"));
   const store = new MemoryStore(root);
   return new MemoryService(store);
 }
@@ -58,7 +60,9 @@ function fetchJson(port: number, path: string, opts: { method?: string; body?: u
 test("http: secure headers present on API responses", async (t) => {
   const service = await makeService();
   const { srv, port } = await startServer(service, { apiKey: "test-key" });
-  t.after(() => srv.close());
+  t.after(async () => {
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  });
 
   const r = await fetchJson(port, "/memories");
   assert.equal(r.status, 200);
@@ -70,7 +74,9 @@ test("http: secure headers present on API responses", async (t) => {
 test("http: auth required when key is set", async (t) => {
   const service = await makeService();
   const { srv, port } = await startServer(service, { apiKey: "test-key" });
-  t.after(() => srv.close());
+  t.after(async () => {
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  });
 
   // /health is publicly accessible.
   const health = await fetchJson(port, "/health", { headers: { "x-api-key": "" } });
@@ -84,7 +90,9 @@ test("http: auth required when key is set", async (t) => {
 test("http: health without auth bypasses key check", async (t) => {
   const service = await makeService();
   const { srv, port } = await startServer(service); // no apiKey
-  t.after(() => srv.close());
+  t.after(async () => {
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  });
 
   const r = await fetchJson(port, "/health", { headers: {} });
   assert.equal(r.status, 200);
@@ -93,7 +101,9 @@ test("http: health without auth bypasses key check", async (t) => {
 test("http: OPTIONS preflight returns 204 without auth", async (t) => {
   const service = await makeService();
   const { srv, port } = await startServer(service, { apiKey: "test-key" });
-  t.after(() => srv.close());
+  t.after(async () => {
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  });
 
   const r = await new Promise<{ status: number; headers: Record<string, string> }>((resolve, reject) => {
     const req = http.request(`http://127.0.0.1:${port}/memories`, {
@@ -116,7 +126,9 @@ test("http: OPTIONS preflight returns 204 without auth", async (t) => {
 test("http: GET /audit returns events", async (t) => {
   const service = await makeService();
   const { srv, port } = await startServer(service, { apiKey: "test-key" });
-  t.after(() => srv.close());
+  t.after(async () => {
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  });
 
   const r = await fetchJson(port, "/audit");
   assert.equal(r.status, 200);
@@ -129,7 +141,9 @@ test("http: CORS origin header when configured", async (t) => {
   try {
     const service = await makeService();
     const { srv, port } = await startServer(service, { apiKey: "test-key" });
-    t.after(() => srv.close());
+    t.after(async () => {
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  });
 
     const r = await fetchJson(port, "/health");
     assert.equal(r.status, 200);
@@ -146,7 +160,9 @@ test("http: CORS wildcard rejected when key is set", async (t) => {
   try {
     const service = await makeService();
     const { srv, port } = await startServer(service, { apiKey: "test-key" });
-    t.after(() => srv.close());
+    t.after(async () => {
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  });
 
     const r = await fetchJson(port, "/health");
     assert.equal(r.status, 200);
@@ -219,7 +235,10 @@ test("sensitive-data: quarantine policy sets flag", () => {
 
 test("http: GET /quality returns dashboard", async (t) => {
   const service = await makeService();
-  const { port } = await startServer(service);
+  const { srv, port } = await startServer(service);
+  t.after(async () => {
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  });
   const r = await fetchJson(port, "/quality");
   assert.equal(r.status, 200);
   const body = r.body as Record<string, unknown>;
@@ -233,7 +252,10 @@ test("http: GET /quality returns dashboard", async (t) => {
 
 test("http: GET /quality requires auth when key is set", async (t) => {
   const service = await makeService();
-  const { port } = await startServer(service, { apiKey: "secret" });
+  const { srv, port } = await startServer(service, { apiKey: "secret" });
+  t.after(async () => {
+    await new Promise<void>((resolve) => srv.close(() => resolve()));
+  });
   // No auth header → 401.
   const r1 = await fetchJson(port, "/quality");
   assert.equal(r1.status, 401);
