@@ -299,6 +299,10 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           type: (url.searchParams.get("type") as never) ?? undefined,
           limit,
           explain: url.searchParams.get("explain") === "true",
+          includeExpired: url.searchParams.get("includeExpired") === "true",
+          includeFuture: url.searchParams.get("includeFuture") === "true",
+          includeQuarantined: url.searchParams.get("includeQuarantined") === "true",
+          includeArchived: url.searchParams.get("includeArchived") === "true",
         });
         applySecureHeaders(res);
         applyCorsHeaders(res);
@@ -313,10 +317,22 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           includeArchived: url.searchParams.get("includeArchived") === "true",
           offset: intParam(url.searchParams.get("offset"), 0),
           limit: intParam(url.searchParams.get("limit"), 1),
+          includeQuarantined: url.searchParams.get("includeQuarantined") === "true",
+          includeExpired: url.searchParams.get("includeExpired") === "true",
+          includeFuture: url.searchParams.get("includeFuture") === "true",
         });
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return sendListLike(res, 200, result, "memories");
+      }
+
+      // POST /memories/compress — V4.5: trigger consolidation compression.
+      if (req.method === "POST" && path === "/memories/compress") {
+        const body = await readBody(req, maxBody);
+        const result = await service.compress(body);
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, 200, result);
       }
 
       // DELETE /memories/:id
@@ -453,6 +469,8 @@ function routeLabel(p: string): string {
       return "digest";
     case "/maintain":
       return "maintain";
+    case "/memories/compress":
+      return "compress";
     default:
       if (p === "/" || p === "/ui" || p.startsWith("/ui/")) return "ui";
       if (/^\/memories\/[^/]+\/(relate|history|archive|revive)$/.test(p)) return "memory_sub";

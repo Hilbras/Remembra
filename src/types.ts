@@ -139,6 +139,13 @@ export interface Memory extends MemoryMetadata {
   archivedAt?: string;
   /** Cached embedding vector (REMEMBRA_EMBEDDINGS≠none); serialized in frontmatter. */
   embedding?: number[];
+  /** V4.4/V4.5: optional meta flags set by security checks and lifecycle. */
+  meta?: { injected?: boolean; quarantined?: boolean; contradicted?: boolean; compressedFrom?: string[]; compressionAt?: string };
+  /** V4.5: temporal bounds. */
+  validFrom?: string;
+  validUntil?: string;
+  observedAt?: string;
+  supersededBy?: string;
 }
 
 /**
@@ -220,6 +227,11 @@ export const storeInputShape = {
     .object({ injected: z.boolean().optional(), quarantined: z.boolean().optional() })
     .optional()
     .describe("V4.4: security flags set internally"),
+  /** V4.5: temporal bounds for time-sensitive memories. */
+  validFrom: z.string().optional().describe("ISO timestamp when this claim becomes valid"),
+  validUntil: z.string().optional().describe("ISO timestamp when this claim ceases to be valid"),
+  observedAt: z.string().optional().describe("ISO timestamp of the original observation (for backfills)"),
+  supersededBy: z.string().optional().describe("ID of the memory that supersedes this one"),
 };
 export const StoreInput = z
   .object(storeInputShape)
@@ -247,6 +259,14 @@ export const searchInputShape = {
   type: MemoryType.optional(),
   limit: z.number().int().min(1).max(50).optional(),
   explain: z.boolean().optional().describe("Include per-memory score breakdown (V4.2.0+)"),
+  /** V4.5: include memories whose validUntil has passed. */
+  includeExpired: z.boolean().optional(),
+  /** V4.5: include memories whose validFrom is in the future. */
+  includeFuture: z.boolean().optional(),
+  /** V4.5: include quarantined memories. */
+  includeQuarantined: z.boolean().optional(),
+  /** V4.5: include archived memories. */
+  includeArchived: z.boolean().optional(),
 };
 export const SearchInput = z.object(searchInputShape);
 export type SearchInput = z.infer<typeof SearchInput>;
@@ -257,9 +277,20 @@ export const listInputShape = {
   includeArchived: z.boolean().optional().describe("Include archived memories (flagged)"),
   offset: z.number().int().min(0).optional().describe("Pagination: skip this many matching memories"),
   limit: z.number().int().min(1).max(500).optional().describe("Pagination: max memories to return"),
+  includeQuarantined: z.boolean().optional(),
+  includeExpired: z.boolean().optional(),
+  includeFuture: z.boolean().optional(),
 };
 export const ListInput = z.object(listInputShape);
 export type ListInput = z.infer<typeof ListInput>;
+
+export const compressInputShape = {
+  scope: z.string().optional().describe("Scope to filter memories for compression"),
+  type: MemoryType.optional().describe("Memory type to filter for compression"),
+  ids: z.array(z.string()).optional().describe("Explicit memory ids to compress"),
+};
+export const CompressInput = z.object(compressInputShape);
+export type CompressInput = z.infer<typeof CompressInput>;
 
 export const forgetInputShape = {
   id: z.string().describe("Memory id (from memory_store or memory_list)"),

@@ -7,6 +7,60 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [4.5.0] — 2026-09-23
+
+**Lifecycle & Memory Intelligence** — plan §8 of the Master Development Plan.
+Introduces multi-signal decay, memory consolidation (duplicates, contradictions,
+fragments), temporal knowledge fields, and a compression endpoint.
+
+### Added
+- **Multi-signal decay model** (`src/lifecycle.ts`): composite health score
+  combining age, last-seen recency, importance, confidence, retrieval
+  frequency, trust, and relationship strength. Configurable weights via
+  `REMEMBRA_DECAY_WEIGHTS`; aging/archive thresholds via
+  `REMEMBRA_HEALTH_AGE_THRESHOLD` / `REMEMBRA_HEALTH_ARCHIVE_THRESHOLD`.
+- **Memory lifecycle states**: `active`, `aging`, `archived`, `quarantined`,
+  `deleted`. Standing instructions and pinned memories are effectively immortal.
+- **Consolidation detection** (`src/consolidation.ts`): exact-duplicate,
+  near-duplicate (vector similarity ≥ threshold), contradiction (semantic
+  opposition heuristic), and fragment (3+ short same-type memories within
+  window) detection during `POST /maintain`.
+- **Contradiction flagging**: detected contradictions set
+  `meta.contradicted: true` on both memories; surfaced in search results.
+- **Temporal knowledge fields**: `validFrom`, `validUntil`, `observedAt`,
+  `supersededBy` accepted in store input; respected in search and list
+  filters (`includeExpired`, `includeFuture`).
+- **`POST /memories/compress`** endpoint: LLM-assisted compression of
+  fragmented memories into a compact representation with provenance.
+- **Search/list temporal filtering**: new query params
+  `includeExpired`, `includeFuture`, `includeQuarantined`,
+  `includeArchived`.
+- **New env vars**:
+  | Variable | Default | Purpose |
+  |----------|---------|---------|
+  | `REMEMBRA_DECAY_WEIGHTS` | auto | semicolon-separated `key=value` weights |
+  | `REMEMBRA_HEALTH_AGE_THRESHOLD` | `0.35` | health score for aging transition |
+  | `REMEMBRA_HEALTH_ARCHIVE_THRESHOLD` | `0.15` | health score for archive transition |
+  | `REMEMBRA_AGE_THRESHOLD_DAYS` | `30` | days without activity before aging consideration |
+  | `REMEMBRA_AGING_BOOST` | `-50` | search score penalty for aging memories |
+  | `REMEMBRA_DUP_SIMILARITY` | `0.92` | vector similarity threshold for near-dupes |
+  | `REMEMBRA_FRAGMENT_WINDOW_DAYS` | `7` | lookback window for fragment detection |
+
+### Changed
+- `MaintainResult` now includes a `consolidation` field with findings.
+- `Memory` interface extended with `meta`, `validFrom`, `validUntil`,
+  `observedAt`, `supersededBy`.
+- `StoreInput` Zod schema extended with temporal fields and meta.
+- `SearchInput` and `ListInput` extended with temporal filter flags.
+- `POST /maintain` now runs consolidation analysis and flags contradictions.
+
+### Tests
+- 14 new tests in `src/test/lifecycle.test.ts`
+- 9 new tests in `src/test/consolidation.test.ts`
+- 7 new tests in `src/test/temporal.test.ts`
+
+---
+
 ## [4.4.0] — 2026-09-23
 
 **Security & Memory Integrity** — plan §7 of the Master Development Plan.

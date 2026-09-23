@@ -1,6 +1,6 @@
 import type { MemoryBackend } from "./backend.js";
 import { searchQ } from "./retrieval.js";
-import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, Provenance, defaultTrust } from "./types.js";
+import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, Provenance, defaultTrust, CompressInput } from "./types.js";
 import { RemembraError, inputError, errorLabel } from "./errors.js";
 import { resolveEmbeddingProvider, embedText, EmbeddingProvider, cosine } from "./embeddings.js";
 import { logEvent } from "./log.js";
@@ -19,6 +19,8 @@ import {
 } from "./llm.js";
 import { createInjectionDetector, InjectionResult } from "./injection-detector.js";
 import { createSensitiveDetector, SensitivePolicy } from "./sensitive-data.js";
+import { consolidate, ConsolidationFindings } from "./consolidation.js";
+import { computeHealth, getLifecycleState, agingScorePenalty } from "./lifecycle.js";
 
 export interface DigestResult {
   extracted: number;
@@ -33,6 +35,13 @@ export interface MaintainResult {
   deleted: string[];
   embedded: number;
   revived?: number;
+  /** V4.5: consolidation findings from the last maintenance pass. */
+  consolidation?: {
+    exactDuplicates: Array<{ id: string; duplicateOf?: string }>;
+    nearDuplicates: Array<{ a: string; b: string; reason: string }>;
+    contradictions: Array<{ a: string; b: string; reason: string }>;
+    fragments: Array<{ ids: string[]; type: string; scope: string }>;
+  };
 }
 
 interface ServiceDeps {
@@ -166,12 +175,22 @@ export class MemoryService {
     };
   }
 
-  async search(q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean }) {
+  async search(q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean; includeExpired?: boolean; includeFuture?: boolean; includeQuarantined?: boolean; includeArchived?: boolean }) {
     const t0 = performance.now();
     let queryVec: number[] | null = null;
     if (q.query && this.embedFn) queryVec = (await this.maybeEmbed(q.query)) ?? null;
 
-    const { results: ranked, explanations } = searchQ(await this.db.all(), q, queryVec);
+    // V4.5: temporal and lifecycle filtering before search.
+    let pool = await this.db.all(q.includeArchived);
+    const now = Date.now();
+    pool = pool.filter((m) => {
+      if (!q.includeExpired && m.validUntil && Date.parse(m.validUntil) < now) return false;
+      if (!q.includeFuture && m.validFrom && Date.parse(m.validFrom) > now) return false;
+      if (!q.includeQuarantined && m.meta?.quarantined) return false;
+      return true;
+    });
+
+    const { results: ranked, explanations } = searchQ(pool, q, queryVec);
     const durationMs = performance.now() - t0;
 
     // Observability (audit Phase 7): counters + hygiene-first query logging —
@@ -218,8 +237,22 @@ export class MemoryService {
     includeArchived?: boolean;
     offset?: number;
     limit?: number;
+    /** V4.5: include quarantined memories. */
+    includeQuarantined?: boolean;
+    /** V4.5: include expired memories (validUntil < now). */
+    includeExpired?: boolean;
+    /** V4.5: include future-dated memories (validFrom > now). */
+    includeFuture?: boolean;
   }) {
     let memories = await this.db.all(q.includeArchived ?? false);
+    const now = Date.now();
+    // V4.5: temporal and lifecycle filtering.
+    memories = memories.filter((m) => {
+      if (!q.includeExpired && m.validUntil && Date.parse(m.validUntil) < now) return false;
+      if (!q.includeFuture && m.validFrom && Date.parse(m.validFrom) > now) return false;
+      if (!q.includeQuarantined && m.meta?.quarantined) return false;
+      return true;
+    });
     if (q.scope) memories = memories.filter((m) => m.scope === q.scope || m.scope === "global");
     if (q.type) memories = memories.filter((m) => m.type === q.type);
     memories.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -740,9 +773,11 @@ export class MemoryService {
   }
 
   /**
-   * Explicit maintenance (decision v3-Q1): decay sweep + vector backfill.
+   * Explicit maintenance (decision v3-Q1): decay sweep + vector backfill +
+   * consolidation analysis (V4.5).
    * Exposed as the `memory_maintain` tool, POST /maintain, and the CLI.
-   */  async maintain(): Promise<MaintainResult> {
+   */
+  async maintain(): Promise<MaintainResult> {
     const result = await this.decayPass();
     // Vector backfill: embed active memories stored while embeddings were off.
     if (this.embedFn) {
@@ -756,7 +791,90 @@ export class MemoryService {
         }
       }
     }
+
+    // V4.5: consolidation analysis on active memories.
+    const active = await this.db.all();
+    const findings = consolidate(active);
+    if (findings.exactDuplicates.length > 0 || findings.nearDuplicates.length > 0 || findings.contradictions.length > 0 || findings.fragments.length > 0) {
+      logEvent("info", "consolidation", {
+        exact: findings.exactDuplicates.length,
+        nearDup: findings.nearDuplicates.length,
+        contra: findings.contradictions.length,
+        frag: findings.fragments.length,
+      }, "Remembra: consolidation pass complete");
+      // Flag contradictions in-place.
+      for (const c of findings.contradictions) {
+        const a = active.find((m) => m.id === c.a);
+        const b = active.find((m) => m.id === c.b);
+        if (a && !a.meta?.contradicted) {
+          await this.db.update({ ...a, meta: { ...a.meta, contradicted: true } });
+          metrics.inc("remembra_memory_contradicted_total");
+        }
+        if (b && !b.meta?.contradicted) {
+          await this.db.update({ ...b, meta: { ...b.meta, contradicted: true } });
+          metrics.inc("remembra_memory_contradicted_total");
+        }
+      }
+      result.consolidation = {
+        exactDuplicates: findings.exactDuplicates,
+        nearDuplicates: findings.nearDuplicates,
+        contradictions: findings.contradictions,
+        fragments: findings.fragments,
+      };
+    }
+
     return result;
+  }
+
+  /**
+   * V4.5: memory compression — combine fragmented memories into a compact
+   * representation via LLM. Requires scope + type filter + optionally ids.
+   */
+  async compress(input: unknown): Promise<{ compressed: Memory[]; sources: string[] }> {
+    let parsed: CompressInput;
+    try {
+      parsed = CompressInput.parse(input);
+    } catch (err) {
+      throw inputError(err, "INVALID_INPUT");
+    }
+
+    // Gather candidate memories.
+    let pool = parsed.ids
+      ? await Promise.all(parsed.ids.map((id) => this.db.get(id))).then((r) => r.filter(Boolean) as Memory[])
+      : await this.db.all();
+    if (parsed.scope) pool = pool.filter((m) => m.scope === parsed.scope || m.scope === "global");
+    if (parsed.type) pool = pool.filter((m) => m.type === parsed.type);
+    if (pool.length < 3) return { compressed: [], sources: [] };
+
+    // Sort by createdAt ascending (oldest first).
+    pool.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const content = pool.map((m) => `[${m.id}] ${m.content}`).join("\n\n");
+
+    // LLM compression prompt.
+    const prompt = `Consolidate the following related memories into one concise, accurate statement. Preserve all key facts and cite the source IDs. Return ONLY the consolidated text, nothing else.\n\n${content}`;
+
+    let compressedContent: string;
+    try {
+      const extracted = await this.extractFn(prompt, { signal: undefined });
+      compressedContent = extracted[0]?.content ?? content;
+    } catch {
+      // LLM unavailable — fall back to concatenation with provenance tag.
+      compressedContent = `[compressed from ${pool.map((m) => m.id).join(",")}] ${pool.map((m) => m.content).join(". ")}`;
+    }
+
+    const compressedMem = await this.store({
+      type: parsed.type ?? pool[0].type,
+      content: compressedContent,
+      scope: parsed.scope ?? pool[0].scope,
+      tags: pool.flatMap((m) => m.tags),
+      importance: Math.max(...pool.map((m) => m.importance ?? 3)),
+      confidence: Math.min(...pool.map((m) => m.confidence ?? 0.8)),
+      provenance: { sourceType: "system", provider: this.llmName },
+      meta: { compressedFrom: pool.map((m) => m.id), compressionAt: new Date().toISOString() },
+    });
+
+    metrics.inc("remembra_memory_compressed_total", { count: String(pool.length) });
+    return { compressed: [compressedMem.memory], sources: pool.map((m) => m.id) };
   }
 
   /**
