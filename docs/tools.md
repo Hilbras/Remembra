@@ -78,6 +78,16 @@ store them, skipping exact duplicates. See [providers.md](providers.md).
 Requires `REMEMBRA_LLM` + its API key (or Ollama). Returns counts:
 extracted / stored / duplicates skipped, plus stored ids.
 
+## `memory_maintain`
+
+Run maintenance on demand: archive memories unused past
+`REMEMBRA_ARCHIVE_AFTER_DAYS` (default 90), auto-delete archived memories past
+`REMEMBRA_ARCHIVE_TTL_DAYS` (default 365), and backfill missing embedding
+vectors. Roles never decay. Takes no arguments. See [lifecycle.md](lifecycle.md).
+
+Returns counts + affected ids. Also available as `POST /maintain` and the
+`remembra maintain` CLI command.
+
 ---
 
 ## Suggested session flow
@@ -86,4 +96,5 @@ extracted / stored / duplicates skipped, plus stored ids.
 1. memory_search { scope: <current project> }   → recover roles, facts, decisions
 2. ... work happens; model calls memory_store when something worth keeping emerges ...
 3. memory_digest { transcript, scope }           → end-of-session sweep (v2, LLM extracts)
+   (decay + backfill run opportunistically on search; memory_maintain when explicit)
 ```

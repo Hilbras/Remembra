@@ -21,6 +21,10 @@ export interface Memory {
   createdAt: string; // ISO date
   updatedAt: string; // ISO date
   source?: string; // originating session/client
+  /** Last time the memory surfaced in search results (decay signal). */
+  lastSeen?: string;
+  /** Set when archived; archived memories are out of search until revived. */
+  archivedAt?: string;
   /** Cached embedding vector (REMEMBRA_EMBEDDINGS≠none); serialized in frontmatter. */
   embedding?: number[];
 }

@@ -3,6 +3,28 @@
 All notable changes to Remembra will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.0] — 2026-09-23
+
+### Added
+- **Memory lifecycle**: active → downrank → archived (unused 90d, `REMEMBRA_ARCHIVE_AFTER_DAYS`)
+  → deleted (365d after archive, `REMEMBRA_ARCHIVE_TTL_DAYS`). Only archived memories are
+  ever auto-deleted; roles never decay.
+- **Decay piggybacks on search** (debounced 1/hour) — free file math; search hits refresh a
+  memory's `lastSeen` clock, so used memories stay alive.
+- **Contradiction merge**: digest LLM decisions are now `store | skip | merge` — evolved facts
+  update the stored memory in place, preserving the old value as a
+  `> superseded (date): ...` note. Fail-open: LLM failure stores fresh.
+- **Revival**: digesting an exact duplicate of an archived memory revives it.
+- **`memory_maintain` tool** + **`POST /maintain`** + **`remembra maintain` CLI** — explicit
+  decay sweep + embedding vector backfill.
+- `memory_list` gained `includeArchived`; archived memories show a `[archived]` flag.
+- Store ops: `archive()`, `revive()`, `update()`, `touch()`; `archived/` storage tree.
+- `docs/lifecycle.md` — full lifecycle + merge documentation.
+- 11 new tests (decay, TTL delete, revival, merge decisions, backfill).
+
+### Changed
+- Storage stays file-based (decision: no SQLite — files remain source of truth).
+
 ## [0.3.0] — 2026-09-23
 
 ### Added

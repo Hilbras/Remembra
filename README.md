@@ -90,6 +90,7 @@ Then wire a Custom GPT to the API — full walkthrough in **[docs/chatgpt.md](do
 | GET | `/memories/search?query=&scope=` | Search |
 | GET | `/memories?scope=&type=` | List |
 | POST | `/memories/digest` | LLM extract + store from a transcript |
+| POST | `/maintain` | Decay sweep + vector backfill |
 | DELETE | `/memories/:id` | Forget |
 
 All routes except `/health` require `x-api-key` (or `Authorization: Bearer`) when
@@ -103,6 +104,7 @@ All routes except `/health` require `x-api-key` (or `Authorization: Bearer`) whe
 | `memory_digest` | Extract + store memories from a transcript (LLM) |
 | `memory_search` | Retrieve relevant memories (pass `scope` = current project) |
 | `memory_list` | Browse stored memories |
+| `memory_maintain` | Archive decayed / delete expired / backfill vectors |
 | `memory_forget` | Delete by id |
 
 Full reference: **[docs/tools.md](docs/tools.md)**
@@ -116,6 +118,7 @@ Full reference: **[docs/tools.md](docs/tools.md)**
 | [Client setup](docs/clients.md) | Config for each supported tool |
 | [ChatGPT setup](docs/chatgpt.md) | HTTP API + Custom GPT walkthrough |
 | [AI providers](docs/providers.md) | Digest LLM + embeddings configuration |
+| [Lifecycle](docs/lifecycle.md) | Decay, archiving, auto-delete, contradiction merging |
 | [Contributing](CONTRIBUTING.md) | Dev workflow and guidelines |
 | [Changelog](CHANGELOG.md) | Release history |
 
@@ -146,8 +149,8 @@ npm test        # run tests
 
 - **v1** — MCP server for coding tools, file storage, layered retrieval ✅
 - **v1.5** — HTTP API + ChatGPT Custom GPT action ✅
-- **v2** *(current)* — automatic session-digest extraction, embeddings behind `memory_search` ✅
-- **v3** — SQLite for scale, duplicate merging, memory decay
+- **v2** — automatic session-digest extraction, embeddings behind `memory_search` ✅
+- **v3** *(current)* — memory lifecycle (archive/decay), contradiction merging, maintenance CLI ✅
 
 ## License
 

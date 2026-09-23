@@ -5,14 +5,16 @@ import { randomUUID } from "node:crypto";
 import { Memory, StoreInput } from "./types.js";
 
 /**
- * File-based memory store.
+ * File-based memory store (source of truth — no database).
  *
  * Layout (default root: ~/.remembra):
- *   global/<id>.md            — memories valid everywhere
- *   scopes/<scope>/<id>.md    — memories scoped to a project/workspace
+ *   global/<id>.md            — active memories, valid everywhere
+ *   scopes/<scope>/<id>.md    — active memories scoped to a project/workspace
+ *   archived/global/<id>.md   — archived memories (out of search, listed with flag)
+ *   archived/scopes/<scope>/  — archived scoped memories
  *
- * Each file is markdown with YAML-ish frontmatter for human readability
- * and simple greppability.
+ * Each file is markdown with frontmatter for human readability and greppability.
+ * Maintenance runs opportunistically on search + via `memory_maintain`.
  */
 export class MemoryStore {
   constructor(private readonly root: string) {}
@@ -22,11 +24,14 @@ export class MemoryStore {
   }
 
   private fileFor(m: Memory): string {
-    if (m.scope === "global") {
-      return path.join(this.root, "global", `${m.id}.md`);
-    }
-    const safeScope = m.scope.replace(/[^a-zA-Z0-9._/-]/g, "_");
-    return path.join(this.root, "scopes", safeScope, `${m.id}.md`);
+    const safeScope = m.scope === "global" ? "global" : m.scope.replace(/[^a-zA-Z0-9._/-]/g, "_");
+    const base = m.scope === "global" ? path.join(this.root, "global") : path.join(this.root, "scopes", safeScope);
+    const archivedBase =
+      m.scope === "global"
+        ? path.join(this.root, "archived", "global")
+        : path.join(this.root, "archived", "scopes", safeScope);
+    const dir = m.archivedAt ? archivedBase : base;
+    return path.join(dir, `${m.id}.md`);
   }
 
   async store(input: StoreInput, embedding?: number[]): Promise<Memory> {
@@ -56,12 +61,13 @@ export class MemoryStore {
     return true;
   }
 
-  /** Load every memory across all scopes (global + scoped). */
-  async all(): Promise<Memory[]> {
-    const files: string[] = [];
-    for (const dir of [path.join(this.root, "global"), path.join(this.root, "scopes")]) {
-      files.push(...(await walk(dir)));
+  /** Load active memories (excludes archived). Pass includeArchived for everything. */
+  async all(includeArchived = false): Promise<Memory[]> {
+    const dirs = [path.join(this.root, "global"), path.join(this.root, "scopes")];
+    if (includeArchived) {
+      dirs.push(path.join(this.root, "archived", "global"), path.join(this.root, "archived", "scopes"));
     }
+    const files = await walk(...dirs);
     const memories = await Promise.all(files.map((f) => parse(f)));
     return memories.filter((m): m is Memory => m !== null);
   }
@@ -72,8 +78,59 @@ export class MemoryStore {
     return parse(file);
   }
 
+  /** Move a memory to the archived tree (sets archivedAt). */
+  async archive(id: string): Promise<Memory | null> {
+    const m = await this.get(id);
+    if (!m || m.archivedAt) return null;
+    const oldFile = this.fileFor(m);
+    const updated: Memory = { ...m, archivedAt: new Date().toISOString() };
+    const newFile = this.fileFor(updated);
+    if (oldFile === newFile) return null;
+    await fs.mkdir(path.dirname(newFile), { recursive: true });
+    await fs.writeFile(newFile, render(updated), "utf8");
+    await fs.unlink(oldFile);
+    return updated;
+  }
+
+  /** Bring an archived memory back into active search. */
+  async revive(id: string): Promise<Memory | null> {
+    const m = await this.get(id);
+    if (!m || !m.archivedAt) return null;
+    const oldFile = this.fileFor(m);
+    const now = new Date().toISOString();
+    const updated: Memory = { ...m, archivedAt: undefined, lastSeen: now, updatedAt: now };
+    const newFile = this.fileFor(updated);
+    await fs.mkdir(path.dirname(newFile), { recursive: true });
+    await fs.writeFile(newFile, render(updated), "utf8");
+    await fs.unlink(oldFile);
+    return updated;
+  }
+
+  /** Persist changes to an existing memory (merge/update path). */
+  async update(memory: Memory): Promise<Memory> {
+    const updated: Memory = { ...memory, updatedAt: new Date().toISOString() };
+    const file = this.fileFor(updated);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, render(updated), "utf8");
+    return updated;
+  }
+
+  /** Record that a memory surfaced in search (decay refresh). Cheap: no-op if seen <1h ago. */
+  async touch(id: string): Promise<void> {
+    const m = await this.get(id);
+    if (!m) return;
+    const last = Date.parse(m.lastSeen ?? m.updatedAt);
+    if (Number.isFinite(last) && Date.now() - last < 3_600_000) return;
+    m.lastSeen = new Date().toISOString();
+    await fs.writeFile(this.fileFor(m), render(m), "utf8");
+  }
+
   private async findFile(id: string): Promise<string | null> {
-    const files = await walk(path.join(this.root, "global"), path.join(this.root, "scopes"));
+    const files = await walk(
+      path.join(this.root, "global"),
+      path.join(this.root, "scopes"),
+      path.join(this.root, "archived"),
+    );
     return files.find((f) => path.basename(f, ".md") === id) ?? null;
   }
 }
@@ -106,6 +163,8 @@ function render(m: Memory): string {
     `importance: ${m.importance}`,
     `created: ${m.createdAt}`,
     `updated: ${m.updatedAt}`,
+    m.lastSeen ? `lastSeen: ${m.lastSeen}` : undefined,
+    m.archivedAt ? `archivedAt: ${m.archivedAt}` : undefined,
     m.source ? `source: ${m.source}` : undefined,
     m.embedding && m.embedding.length > 0 ? `embedding: [${m.embedding.join(",")}]` : undefined,
     "---",
@@ -142,6 +201,8 @@ async function parse(file: string): Promise<Memory | null> {
       importance: Number(meta.importance ?? 3),
       createdAt: meta.created ?? new Date(0).toISOString(),
       updatedAt: meta.updated ?? meta.created ?? new Date(0).toISOString(),
+      lastSeen: meta.lastSeen,
+      archivedAt: meta.archivedAt,
       source: meta.source,
       embedding,
     };

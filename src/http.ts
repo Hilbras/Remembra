@@ -31,6 +31,12 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return send(res, 401, { error: "Unauthorized: missing or invalid API key" });
       }
 
+      // POST /maintain — decay sweep + vector backfill
+      if (req.method === "POST" && path === "/maintain") {
+        const result = await service.maintain();
+        return send(res, 200, result);
+      }
+
       // POST /memories/digest — must be checked before /memories/:id DELETE patterns
       if (req.method === "POST" && path === "/memories/digest") {
         const body = await readBody(req);

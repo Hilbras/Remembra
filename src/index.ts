@@ -10,10 +10,16 @@ const store = new MemoryStore(MemoryStore.defaultRoot());
 const service = new MemoryService(store);
 
 const httpFlag = process.argv.includes("--http");
+const maintainFlag = process.argv.includes("maintain");
 const portArg = process.argv.indexOf("--port");
 const port = portArg !== -1 ? Number(process.argv[portArg + 1]) : undefined;
 
-if (httpFlag) {
+if (maintainFlag) {
+  // CLI maintenance: `remembra maintain` — one-shot, prints JSON, exits.
+  const result = await service.maintain();
+  console.log(JSON.stringify(result, null, 2));
+  process.exit(0);
+} else if (httpFlag) {
   // HTTP mode: long-running API for non-MCP clients (ChatGPT, scripts, ...).
   createHttpServer(service, {
     port,
@@ -25,7 +31,7 @@ if (httpFlag) {
 }
 
 async function startMcp(): Promise<void> {
-  const server = new McpServer({ name: "remembra", version: "0.3.0" });
+  const server = new McpServer({ name: "remembra", version: "0.4.0" });
 
   server.registerTool(
     "memory_store",
@@ -73,8 +79,29 @@ async function startMcp(): Promise<void> {
       const result = await service.digest({ transcript, scope, source });
       const text =
         `Digest complete: ${result.extracted} extracted, ${result.stored.length} stored, ` +
-        `${result.skippedDuplicates} duplicates skipped.` +
+        `${result.merged} merged/revived, ${result.skippedDuplicates} duplicates skipped.` +
         (result.ids.length ? `\nStored ids: ${result.ids.join(", ")}` : "");
+      return { content: [{ type: "text", text }] };
+    },
+  );
+
+  server.registerTool(
+    "memory_maintain",
+    {
+      title: "Run maintenance",
+      description:
+        "Run maintenance: archive memories unused past REMEMBRA_ARCHIVE_AFTER_DAYS (default 90), " +
+        "auto-delete archived memories past REMEMBRA_ARCHIVE_TTL_DAYS (default 365), and backfill " +
+        "missing embedding vectors. Roles never decay. Safe to call anytime.",
+      inputSchema: {},
+    },
+    async () => {
+      const result = await service.maintain();
+      const text =
+        `Maintenance complete: ${result.archived.length} archived, ` +
+        `${result.deleted.length} deleted, ${result.embedded} vectors backfilled.` +
+        (result.archived.length ? `\nArchived: ${result.archived.join(", ")}` : "") +
+        (result.deleted.length ? `\nDeleted: ${result.deleted.join(", ")}` : "");
       return { content: [{ type: "text", text }] };
     },
   );

@@ -88,6 +88,8 @@ REMEMBRA_API_KEY="your-secret" remembra --http
 | `REMEMBRA_PORT` | `8787` | HTTP API port (`--port` overrides) |
 | `REMEMBRA_LLM` | `openai` | Digest LLM: `openai` \| `anthropic` \| `ollama` |
 | `REMEMBRA_EMBEDDINGS` | `none` | Semantic search: `openai` \| `ollama` \| `none` |
+| `REMEMBRA_ARCHIVE_AFTER_DAYS` | `90` | Unused active memory → archived |
+| `REMEMBRA_ARCHIVE_TTL_DAYS` | `365` | Archived memory → deleted |
 
 LLM/embedding key setup: see **[providers.md](providers.md)**.
 

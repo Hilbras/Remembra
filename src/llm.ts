@@ -112,6 +112,46 @@ async function postJson(
   return res.json();
 }
 
+// ---------------------------------------------------------------------------
+// Contradiction merge (v3): decide whether a new item duplicates, supersedes
+// or is novel relative to a stored memory — and produce the merged text.
+// ---------------------------------------------------------------------------
+
+export type MergeDecision =
+  | { action: "store" } // novel — store it as-is
+  | { action: "skip" } // same fact, already covered
+  | { action: "merge"; content: string }; // new truth — merged text (old preserved by caller)
+
+const MERGE_PROMPT = `You compare a NEW memory with an EXISTING stored memory and decide what to do.
+Return ONLY JSON: {"action":"store"|"skip"|"merge","content":"<merged text>"}
+
+- "skip": they say the same thing (paraphrase is fine) — the existing memory already covers it.
+- "merge": the new one is a newer version of the same fact (a changed value, evolved decision,
+  refined wording). "content" = the updated statement ONLY (state the current truth, no history).
+- "store": unrelated or complementary — store it separately.
+Omit "content" unless action is "merge".`;
+
+export async function resolveMerge(
+  newContent: string,
+  existing: { type: string; content: string },
+  provider: LlmProvider = resolveLlmProvider(),
+): Promise<MergeDecision> {
+  const user = `EXISTING (${existing.type}): ${existing.content}\nNEW: ${newContent}`;
+  const raw = await chat(provider, MERGE_PROMPT, user);
+  let parsed: { action?: string; content?: string };
+  try {
+    const text = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+    parsed = JSON.parse(text);
+  } catch {
+    return { action: "store" }; // fail open: never lose an item because parsing broke
+  }
+  if (parsed.action === "skip") return { action: "skip" };
+  if (parsed.action === "merge" && typeof parsed.content === "string" && parsed.content.trim()) {
+    return { action: "merge", content: parsed.content.trim() };
+  }
+  return { action: "store" };
+}
+
 /** Parse the model's reply into extracted memories, tolerating code fences. */
 export function parseExtraction(raw: string): ExtractedMemory[] {
   let text = raw.trim();
