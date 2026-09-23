@@ -21,7 +21,7 @@ import { createInjectionDetector, InjectionResult } from "./injection-detector.j
 import { createSensitiveDetector, SensitivePolicy } from "./sensitive-data.js";
 import { consolidate, ConsolidationFindings } from "./consolidation.js";
 import { computeHealth, getLifecycleState, agingScorePenalty } from "./lifecycle.js";
-import { AgentContext, canReadMemory, canUseScope } from "./agent.js";
+import { AgentContext, canReadMemory, canUseScope, defaultAccess, defaultOwner } from "./agent.js";
 
 export interface DigestResult {
   extracted: number;
@@ -139,6 +139,60 @@ export class MemoryService {
     }
   }
 
+  private canonicalizeAgentInput(input: StoreInput, options: AgentReadOptions): StoreInput {
+    const { sourceType: rawSourceType, ...provenanceFields } = input.provenance ?? {};
+    const provenance: Provenance = {
+      sourceType: rawSourceType ?? "manual",
+      ...provenanceFields,
+    };
+    const access = input.access ?? defaultAccess();
+    if (!this.agentMode) {
+      return { ...input, access, owner: input.owner ?? defaultOwner(provenance) };
+    }
+
+    const context = options.agent;
+    const attributedKeys = [
+      "agentId",
+      "agentType",
+      "agentVersion",
+      "conversationId",
+      "taskId",
+      "runId",
+    ] as const;
+    const hasAttribution = provenance.sourceType === "agent" || attributedKeys.some((key) => provenance[key] !== undefined);
+    if (!context && hasAttribution) {
+      throw new RemembraError("INVALID_INPUT", "agent attribution requires a verified agent context");
+    }
+    if (!context) return { ...input, provenance, access, owner: input.owner ?? defaultOwner(provenance) };
+
+    for (const key of attributedKeys) {
+      const supplied = provenance[key];
+      const verified = context[key];
+      if (supplied !== undefined && supplied !== verified) {
+        throw new RemembraError("INVALID_INPUT", "agent attribution conflicts with the verified agent context");
+      }
+    }
+    const sourceType = provenance.sourceType === "conversation" || provenance.sourceType === "system" || provenance.sourceType === "import"
+      ? provenance.sourceType
+      : "agent";
+    const canonical: Provenance = {
+      ...provenance,
+      sourceType,
+      agentId: context.agentId,
+      ...(context.agentType ? { agentType: context.agentType } : {}),
+      ...(context.agentVersion ? { agentVersion: context.agentVersion } : {}),
+      ...(context.conversationId ? { conversationId: context.conversationId } : {}),
+      ...(context.taskId ? { taskId: context.taskId } : {}),
+      ...(context.runId ? { runId: context.runId } : {}),
+    };
+    return {
+      ...input,
+      provenance: canonical,
+      access,
+      owner: input.owner ?? (sourceType === "agent" ? "agent" : defaultOwner(canonical)),
+    };
+  }
+
   private assertAgentWrite(input: StoreInput, options: AgentReadOptions): void {
     if (!this.agentMode) return;
     if (input.scope !== "global" && !canUseScope(input.scope, options.agent)) {
@@ -182,6 +236,7 @@ export class MemoryService {
     } catch (err) {
       throw inputError(err, "INVALID_INPUT");
     }
+    parsed = this.canonicalizeAgentInput(parsed, options);
     this.assertAgentWrite(parsed, options);
     // PII redaction (audit Phase 8, opt-in REMEMBRA_REDACT): before embed,
     // before disk, before export — raw patterns never leave this process.
@@ -363,6 +418,9 @@ export class MemoryService {
     const existing = await this.db.get(id);
     this.assertCanRead(existing, id, options);
     const next: Memory = { ...existing, ...fields };
+    if (this.agentMode && !canUseScope(next.scope, options.agent)) {
+      throw new RemembraError("INVALID_INPUT", "memory scope is not available to the verified agent context");
+    }
     if (fields.content !== undefined && fields.content !== existing.content) {
       next.embedding = await this.maybeEmbed(fields.content); // fail-open → keyword fallback
     }
@@ -404,9 +462,25 @@ export class MemoryService {
       content: m.content.split("\n")[0],
     });
     // Typed outgoing edges (plan §4.7) + derived backlinks, kind included.
-    const related = (memory.relations ?? []).map((r) => {
-      const target = all.find((m) => m.id === r.id && this.canRead(m, options));
-      return { kind: r.kind, ...(target ? brief(target) : { id: r.id, missing: true as const }) };
+    const related: Array<{
+      id: string;
+      kind: string;
+      type?: string;
+      scope?: string;
+      content?: string;
+      missing?: true;
+    }> = (memory.relations ?? []).flatMap((r): Array<{
+      id: string;
+      kind: string;
+      type?: string;
+      scope?: string;
+      content?: string;
+      missing?: true;
+    }> => {
+      const target = all.find((m) => m.id === r.id);
+      if (!target) return [{ id: r.id, kind: r.kind, missing: true as const }];
+      if (!this.canRead(target, options)) return [];
+      return [{ kind: r.kind, ...brief(target) }];
     });
     const backlinks = all
       .filter((m) => m.id !== id && this.canRead(m, options) && m.relations?.some((r) => r.id === id))
@@ -444,15 +518,13 @@ export class MemoryService {
     if (parsed.related.includes(parsed.id)) {
       throw new RemembraError("INVALID_INPUT", "a memory cannot be related to itself");
     }
-    if (parsed.action === "add") {
-      const missing: string[] = [];
-      for (const rid of parsed.related) {
-        const target = await this.db.get(rid);
-        if (!target || !this.canRead(target, options)) missing.push(rid);
-      }
-      if (missing.length > 0) {
-        throw new RemembraError("NOT_FOUND", `related target(s) not found: ${missing.join(", ")}`);
-      }
+    const missing: string[] = [];
+    for (const rid of parsed.related) {
+      const target = await this.db.get(rid);
+      if (!target || !this.canRead(target, options)) missing.push(rid);
+    }
+    if (missing.length > 0) {
+      throw new RemembraError("NOT_FOUND", `related target(s) not found: ${missing.join(", ")}`);
     }
     const current = memory.relations ?? [];
     const currentIds = current.map((r) => r.id);
@@ -1077,7 +1149,12 @@ export class MemoryService {
    * Written by `remembra export <file>` as JSON.
    */
   async exportSnapshot(options: AgentReadOptions = {}) {
-    const memories = (await this.db.all(true)).filter((m) => this.canRead(m, options));
+    const visible = (await this.db.all(true)).filter((m) => this.canRead(m, options));
+    const visibleIds = new Set(visible.map((m) => m.id));
+    const memories = visible.map((m) => {
+      const relations = m.relations?.filter((r) => visibleIds.has(r.id));
+      return { ...m, ...(relations?.length ? { relations } : { relations: undefined }) };
+    });
     return {
       format: SNAPSHOT_FORMAT,
       version: SCHEMA_VERSION,
@@ -1099,10 +1176,14 @@ export class MemoryService {
     } catch (err) {
       throw inputError(err, "SNAPSHOT_INVALID");
     }
-    const existing = await this.db.all(true);
+    const allExisting = await this.db.all(true);
+    const hiddenExistingIds = new Set(
+      allExisting.filter((m) => !this.canRead(m, options)).map((m) => m.id),
+    );
+    const existing = allExisting.filter((m) => this.canRead(m, options));
     const ids = new Set(existing.map((m) => m.id));
     const keys = new Set(existing.map((m) => dedupKey(m.type, m.content, m.scope)));
-    let imported = 0;
+    const prepared: Memory[] = [];
     let skipped = 0;
     for (const raw of snap.memories) {
       const key = dedupKey(raw.type, raw.content, raw.scope);
@@ -1117,7 +1198,7 @@ export class MemoryService {
         typeof prov === "string"
           ? { sourceType: prov === "auto" ? "conversation" : "manual" }
           : (prov ?? { sourceType: "manual" });
-      const m: Memory = {
+      let m: Memory = {
         ...rest,
         provenance,
         confidence: rest.confidence ?? (provenance.sourceType === "conversation" ? 0.7 : 1),
@@ -1127,14 +1208,30 @@ export class MemoryService {
           rest.relations ??
           legacyRelated?.map((rid) => ({ id: rid, kind: "related" as const })),
       };
+      const policy = this.agentMode
+        ? this.canonicalizeAgentInput(m, options)
+        : { ...m, access: m.access ?? "global" as const, owner: m.owner ?? defaultOwner(m.provenance) };
+      m = {
+        ...m,
+        provenance: (policy.provenance ?? m.provenance) as Provenance,
+        owner: policy.owner,
+        access: policy.access,
+      };
       this.assertAgentWrite(m, options);
-      if (await this.db.importMemory(m)) {
-        imported++;
-        ids.add(raw.id);
-        keys.add(key);
-      } else {
-        skipped++;
-      }
+      prepared.push(m);
+      ids.add(m.id);
+      keys.add(key);
+    }
+
+    for (const m of prepared) {
+      const relations = m.relations?.filter((r) => !hiddenExistingIds.has(r.id));
+      if (relations?.length !== m.relations?.length) m.relations = relations?.length ? relations : undefined;
+    }
+
+    let imported = 0;
+    for (const m of prepared) {
+      if (await this.db.importMemory(m)) imported++;
+      else skipped++;
     }
     return { imported, skipped };
   }
@@ -1161,7 +1258,7 @@ export class MemoryService {
       }
     }
 
-    const archived = (await this.db.all(true)).filter((m) => m.archivedAt);
+    const archived = (await this.db.all(true)).filter((m) => m.archivedAt && this.canRead(m, options));
     for (const m of archived) {
       // §4.8: critical memories must not disappear — persistent is
       // archived-but-kept; pinned / neverExpire are never touched.

@@ -24,7 +24,9 @@ export interface HttpOptions {
    * only supported HTTP source of AgentContext; a public agent-id header is
    * deliberately not trusted by default.
    */
-  resolveAgentContext?: (req: http.IncomingMessage) => AgentContext | undefined;
+  resolveAgentContext?: (
+    req: http.IncomingMessage,
+  ) => AgentContext | undefined | Promise<AgentContext | undefined>;
 }
 
 const DEFAULT_MAX_BODY = 10 * 1024 * 1024; // transcripts can be large — 10 MiB
@@ -248,7 +250,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // Identity is established by the embedding application only after the
       // transport authentication above. Never infer it from request JSON or an
       // unverified public header.
-      const resolvedAgent = opts.resolveAgentContext?.(req);
+      const resolvedAgent = await opts.resolveAgentContext?.(req);
       const agent = resolvedAgent?.agentId?.trim() ? resolvedAgent : undefined;
       const agentOptions = { agent };
 

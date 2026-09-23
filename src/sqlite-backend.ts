@@ -31,6 +31,7 @@ import {
   ProvenanceSchema,
   defaultTrust,
   RelationKind,
+  SCHEMA_VERSION,
   MemoryAccess,
   MemoryOwner,
 } from "./types.js";
@@ -127,6 +128,7 @@ CREATE TABLE IF NOT EXISTS memories (
   valid_until       TEXT,
   observed_at       TEXT,
   superseded_by     TEXT,
+  meta              TEXT,
   retention         TEXT NOT NULL DEFAULT 'decaying' CHECK (retention IN (
                       'pinned','persistent','ephemeral','decaying','neverExpire'
                     )),
@@ -187,10 +189,17 @@ export class SqliteBackend implements MemoryBackend {
   private ftsEnabled: boolean;
   /** In-process FIFO so mutations are serialized within this instance. */
   private queue: Promise<void> = Promise.resolve();
+  private migrationPromise: Promise<void> | null = null;
 
   constructor(opts: SqliteOptions = {}) {
     const dbPath = opts.dbPath ?? path.join(opts.root ?? ".remembra", "data.sqlite");
     this.db = new Database(dbPath, { readonly: false, fileMustExist: false });
+    const dbSchemaVersion = Number(this.db.pragma("user_version", { simple: true }));
+    if (dbSchemaVersion > SCHEMA_VERSION) {
+      this.db.close();
+      throw new Error(`SQLite schema ${dbSchemaVersion} is newer than supported schema ${SCHEMA_VERSION}`);
+    }
+    this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");
     this.db.pragma("foreign_keys = ON");
@@ -214,7 +223,7 @@ export class SqliteBackend implements MemoryBackend {
     this.idGen = opts.idGen ?? genId;
 
     // Auto-migrate from legacy flat files if needed.
-    this.maybeMigrate(opts.root).catch((err) => {
+    this.startMigration(opts.root).catch((err) => {
       logEvent(
         "error",
         "migration_failed",
@@ -239,6 +248,7 @@ export class SqliteBackend implements MemoryBackend {
       ["valid_until", "TEXT"],
       ["observed_at", "TEXT"],
       ["superseded_by", "TEXT"],
+      ["meta", "TEXT"],
     ] as const) {
       if (!names.has(name)) this.db.exec(`ALTER TABLE memories ADD COLUMN ${name} ${definition}`);
     }
@@ -287,10 +297,11 @@ export class SqliteBackend implements MemoryBackend {
         ...(input.validUntil ? { validUntil: input.validUntil } : {}),
         ...(input.observedAt ? { observedAt: input.observedAt } : {}),
         ...(input.supersededBy ? { supersededBy: input.supersededBy } : {}),
+        ...(input.meta ? { meta: input.meta } : {}),
         embedding,
       };
       this.insertRow(memory);
-      this.audit("store", memory.id, { type: memory.type, scope: memory.scope });
+      this.audit("store", memory.id, { type: memory.type, scope: memory.scope }, provenance);
       return memory;
     });
   }
@@ -354,7 +365,7 @@ export class SqliteBackend implements MemoryBackend {
           UPDATE memories SET
             type = ?, content = ?, scope = ?, tags = ?, importance = ?,
             confidence = ?, trust = ?, provenance = ?, owner = ?, access = ?,
-            valid_from = ?, valid_until = ?, observed_at = ?, superseded_by = ?, retention = ?,
+            valid_from = ?, valid_until = ?, observed_at = ?, superseded_by = ?, meta = ?, retention = ?,
             relations = ?, version = ?, created_at = ?, updated_at = ?,
             last_seen = ?, archived_at = ?, embedding = ?
           WHERE id = ?
@@ -374,6 +385,7 @@ export class SqliteBackend implements MemoryBackend {
           updated.validUntil ?? null,
           updated.observedAt ?? null,
           updated.supersededBy ?? null,
+          jsonStr(updated.meta),
           updated.retention ?? "decaying",
           jsonStr(updated.relations ?? []),
           updated.version,
@@ -385,7 +397,7 @@ export class SqliteBackend implements MemoryBackend {
           updated.id,
         );
 
-      this.audit("update", updated.id, { reason: opts?.reason });
+      this.audit("update", updated.id, { reason: opts?.reason }, updated.provenance);
       return updated;
     });
   }
@@ -403,7 +415,7 @@ export class SqliteBackend implements MemoryBackend {
         )
         .run(now, now, id);
       const updated = rowToMemory({ ...row, archived_at: now, updated_at: now });
-      this.audit("archive", id);
+      this.audit("archive", id, undefined, updated?.provenance);
       return updated;
     });
   }
@@ -421,7 +433,7 @@ export class SqliteBackend implements MemoryBackend {
         )
         .run(now, now, id);
       const updated = rowToMemory({ ...row, archived_at: null, last_seen: now, updated_at: now });
-      this.audit("revive", id);
+      this.audit("revive", id, undefined, updated?.provenance);
       return updated;
     });
   }
@@ -444,11 +456,12 @@ export class SqliteBackend implements MemoryBackend {
     return this.withLock(async () => {
       // Look up the integer rowid for FTS sync.
       const memRow = this.db
-        .prepare("SELECT rowid FROM memories WHERE id = ?")
-        .get(id) as { rowid: number } | undefined;
+        .prepare("SELECT rowid, provenance FROM memories WHERE id = ?")
+        .get(id) as { rowid: number; provenance: string } | undefined;
       if (!memRow) return false;
       // Audit before deleting so the FK reference is valid.
-      this.audit("forget", id);
+      const provenance = parseJson<Memory["provenance"]>(memRow.provenance);
+      this.audit("forget", id, undefined, provenance ?? undefined);
       // Manually sync FTS before deleting.
       if (this.ftsEnabled && memRow.rowid) {
         try {
@@ -475,7 +488,7 @@ export class SqliteBackend implements MemoryBackend {
         .get(m.id) as { 1: number } | undefined;
       if (existing) return false;
       this.insertRow(m);
-      this.audit("import", m.id);
+      this.audit("import", m.id, undefined, m.provenance);
       return true;
     });
   }
@@ -556,10 +569,10 @@ export class SqliteBackend implements MemoryBackend {
       .prepare(`
         INSERT INTO memories (
           id, type, content, scope, tags, importance, confidence, trust,
-          provenance, owner, access, valid_from, valid_until, observed_at, superseded_by,
+          provenance, owner, access, valid_from, valid_until, observed_at, superseded_by, meta,
           retention, relations, version, created_at, updated_at,
           last_seen, archived_at, embedding
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         m.id,
@@ -577,6 +590,7 @@ export class SqliteBackend implements MemoryBackend {
         m.validUntil ?? null,
         m.observedAt ?? null,
         m.supersededBy ?? null,
+        jsonStr(m.meta),
         m.retention ?? "decaying",
         jsonStr(m.relations ?? []),
         m.version,
@@ -614,7 +628,24 @@ export class SqliteBackend implements MemoryBackend {
     }
   }
 
-  private audit(action: string, memoryId: string | null, details?: Record<string, unknown>): void {
+  private audit(
+    action: string,
+    memoryId: string | null,
+    details?: Record<string, unknown>,
+    provenance?: Memory["provenance"],
+  ): void {
+    const actor = provenance?.agentId
+      ? {
+          actor: {
+            agentId: provenance.agentId,
+            agentType: provenance.agentType,
+            agentVersion: provenance.agentVersion,
+            conversationId: provenance.conversationId,
+            taskId: provenance.taskId,
+            runId: provenance.runId,
+          },
+        }
+      : {};
     this.db
       .prepare(
         "INSERT INTO memory_audit (memory_id, action, details, created_at) VALUES (?, ?, ?, ?)",
@@ -622,7 +653,7 @@ export class SqliteBackend implements MemoryBackend {
       .run(
         memoryId,
         action,
-        details ? jsonStr(details) : null,
+        (details || Object.keys(actor).length > 0) ? jsonStr({ ...details, ...actor }) : null,
         new Date().toISOString(),
       );
   }
@@ -703,14 +734,17 @@ export class SqliteBackend implements MemoryBackend {
   //  Migration from legacy flat files
   // -------------------------------------------------------------------------
 
+  private startMigration(root?: string): Promise<void> {
+    if (!this.migrationPromise) {
+      this.migrationPromise = this.maybeMigrate(root).finally(() => {
+        this.migrationPromise = null;
+      });
+    }
+    return this.migrationPromise;
+  }
+
   private async maybeMigrate(root?: string): Promise<void> {
     const dbPath = this.db.name;
-    const dbExists = await fs
-      .access(dbPath)
-      .then(() => true)
-      .catch(() => false);
-    if (dbExists) return; // already migrated or fresh install
-
     const legacyRoot = root ?? path.dirname(dbPath);
     const globalDir = path.join(legacyRoot, "global");
     const scopesDir = path.join(legacyRoot, "scopes");
@@ -735,12 +769,8 @@ export class SqliteBackend implements MemoryBackend {
       try {
         const mem = await parseLegacyFile(file);
         if (!mem) { skipped++; continue; }
-        // Sanitise scope for SQLite storage (same sanitisation as file backend).
-        const safeScope =
-          mem.scope === "global"
-            ? "global"
-            : mem.scope.replace(/[^a-zA-Z0-9._/-]/g, "_");
-        mem.scope = safeScope;
+        // Scope is semantic data, not a filesystem path. Keep council/task
+        // scopes intact so agent policy can compare them exactly.
         this.insertRow(mem);
         imported++;
       } catch {
@@ -748,9 +778,15 @@ export class SqliteBackend implements MemoryBackend {
       }
     }
 
-    // Move legacy tree out of the way.
+    // Move only legacy data directories; data.sqlite must stay in place.
     const legacyMove = path.join(legacyRoot, ".legacy");
-    await fs.rename(legacyRoot, legacyMove).catch(() => {});
+    await fs.mkdir(legacyMove, { recursive: true });
+    for (const name of ["global", "scopes", "archived"]) {
+      const from = path.join(legacyRoot, name);
+      if (await fs.access(from).then(() => true, () => false)) {
+        await fs.rename(from, path.join(legacyMove, name)).catch(() => {});
+      }
+    }
 
     logEvent(
       "info",
@@ -789,7 +825,7 @@ export class SqliteBackend implements MemoryBackend {
   async migrate(): Promise<{ imported: number; skipped: number }> {
     const root = path.dirname(this.db.name);
     // Run migration even if DB exists (idempotent: skips if no legacy files).
-    await this.maybeMigrate(root);
+    await this.startMigration(root);
     const count = this.db.prepare("SELECT count(*) AS cnt FROM memories").get() as { cnt: number };
     return { imported: count.cnt, skipped: 0 };
   }
@@ -844,6 +880,7 @@ function rowToMemory(row: Record<string, unknown>): Memory | null {
   const validUntil = asStr(row.valid_until);
   const observedAt = asStr(row.observed_at);
   const supersededBy = asStr(row.superseded_by);
+  const memoryMeta = parseJson<Memory["meta"]>(asStr(row.meta));
 
   const relationsRaw = parseJson<Array<{ id: string; kind: string }>>(asStr(row.relations));
   const relations: Memory["relations"] =
@@ -874,6 +911,7 @@ function rowToMemory(row: Record<string, unknown>): Memory | null {
     ...(validUntil ? { validUntil } : {}),
     ...(observedAt ? { observedAt } : {}),
     ...(supersededBy ? { supersededBy } : {}),
+    ...(memoryMeta ? { meta: memoryMeta } : {}),
     retention,
     relations,
     version,
@@ -959,11 +997,11 @@ async function parseLegacyFile(file: string): Promise<Memory | null> {
   const ownerRaw = meta.owner ? String(meta.owner) : undefined;
   const owner = MemoryOwner.options.includes(ownerRaw as MemoryOwner)
     ? (ownerRaw as MemoryOwner)
-    : defaultOwner(provenance);
+    : "global";
   const accessRaw = meta.access ? String(meta.access) : undefined;
   const access = MemoryAccess.options.includes(accessRaw as MemoryAccess)
     ? (accessRaw as MemoryAccess)
-    : defaultAccess();
+    : "global";
 
   const relationsRaw = meta.relations;
   let relations: Memory["relations"] = undefined;
@@ -988,6 +1026,10 @@ async function parseLegacyFile(file: string): Promise<Memory | null> {
   const supersededBy = meta.supersededBy ? String(meta.supersededBy) : undefined;
   const lastSeen = meta.lastSeen ? String(meta.lastSeen) : undefined;
   const archivedAt = meta.archivedAt ? String(meta.archivedAt) : undefined;
+  const memoryMeta =
+    meta.meta && typeof meta.meta === "object" && !Array.isArray(meta.meta)
+      ? (meta.meta as Memory["meta"])
+      : undefined;
   const embeddingRaw = meta.embedding;
   const embedding: number[] | undefined =
     typeof embeddingRaw === "string" && embeddingRaw.length > 0
@@ -1012,6 +1054,7 @@ async function parseLegacyFile(file: string): Promise<Memory | null> {
     ...(validUntil ? { validUntil } : {}),
     ...(observedAt ? { observedAt } : {}),
     ...(supersededBy ? { supersededBy } : {}),
+    ...(memoryMeta ? { meta: memoryMeta } : {}),
     retention,
     relations,
     version: revision,

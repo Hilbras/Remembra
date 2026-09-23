@@ -126,7 +126,7 @@ test("frontmatter carries trust, retention, provenance object and typed relation
   await svc.relate({ id: a.id, related: [b.id], kind: "contradicts" });
 
   const raw = await fs.readFile(await findFile(store, a.id), "utf8");
-  assert.match(raw, /^version: 2$/m, "schema version");
+  assert.match(raw, /^version: 3$/m, "schema version");
   assert.match(raw, /^revision: \d+$/m, "per-memory CAS counter is `revision`, not `version`");
   assert.match(raw, /^trust: verified$/m);
   assert.match(raw, /^retention: pinned$/m);

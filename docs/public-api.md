@@ -13,7 +13,7 @@ here, it's internal and may change in any release.
 | Removing/renaming a tool, route, field, or env var; changing a type/range/meaning; storage format breaks | major (`x.0.0`) |
 
 Package versions match roadmap milestones for `.0` releases (4.0.0 = v4 …).
-Current schema version: `SCHEMA_VERSION = 2` (see [storage.md](storage.md));
+Current schema version: `SCHEMA_VERSION = 3` (see [storage.md](storage.md));
 files with a **higher** version are refused on read, never served partially —
 older readers skip newer files (logged, never deleted) instead of serving
 them half-understood.
@@ -101,7 +101,7 @@ Envelope written by `remembra export` and `GET /snapshot`:
 ```json
 {
   "format": "remembra-export",
-  "version": 2,
+  "version": 3,
   "exportedAt": "2026-09-23T00:00:00.000Z",
   "memories": [ { "id": "01a0cdfe-930f-7b25-962f-b2f64bf48a90", "type": "fact", "content": "…", "scope": "global",
                   "tags": [], "importance": 3, "createdAt": "…", "updatedAt": "…",

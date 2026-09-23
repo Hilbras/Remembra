@@ -453,6 +453,7 @@ export class MemoryStore implements MemoryBackend {
       ...(input.validUntil ? { validUntil: input.validUntil } : {}),
       ...(input.observedAt ? { observedAt: input.observedAt } : {}),
       ...(input.supersededBy ? { supersededBy: input.supersededBy } : {}),
+      ...(input.meta ? { meta: input.meta } : {}),
       embedding,
     };
     const file = this.fileFor(memory);
@@ -1033,12 +1034,12 @@ async function parse(file: string): Promise<Memory | null> {
     const ownerRaw = asStr(meta.owner);
     const owner = MemoryOwner.options.includes(ownerRaw as MemoryOwner)
       ? (ownerRaw as MemoryOwner)
-      : undefined;
+      : "global";
     if (ownerRaw !== undefined && !owner) fix(`invalid owner "${truncate(ownerRaw)}"`);
     const accessRaw = asStr(meta.access);
     const access = MemoryAccess.options.includes(accessRaw as MemoryAccess)
       ? (accessRaw as MemoryAccess)
-      : undefined;
+      : "global";
     if (accessRaw !== undefined && !access) fix(`invalid access "${truncate(accessRaw)}"`);
 
     const memoryMeta =

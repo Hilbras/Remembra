@@ -24,8 +24,20 @@ test("new files carry schema version in frontmatter", async () => {
   const m = await store.store(storeInput("versioned fact"));
   const file = path.join(store["root"], "global", `${m.id}.md`);
   const raw = await fs.readFile(file, "utf8");
-  assert.match(raw, /^version: 2$/m, "4.1.0 schema — 4.0.x readers skip these (Q5 downgrade contract)");
+  assert.match(raw, /^version: 3$/m, "4.7.0 schema — older readers skip these (downgrade contract)");
   assert.match(raw, /^revision: 1$/m, "the memory's own concurrency counter (plan §3.5)");
+});
+
+test("newer schema files are refused rather than exposing unknown policy fields", async () => {
+  const store = await tempStore();
+  const newerId = "newer123";
+  await fs.mkdir(path.join(store["root"], "global"), { recursive: true });
+  await fs.writeFile(
+    path.join(store["root"], "global", `${newerId}.md`),
+    `---\nid: ${newerId}\nversion: 4\ntype: fact\nscope: global\ntags: []\nimportance: 3\ncreated: 2026-01-01T00:00:00.000Z\nupdated: 2026-01-01T00:00:00.000Z\n---\n\nFuture policy\n`,
+    "utf8",
+  );
+  assert.equal((await store.all()).length, 0);
 });
 
 test("old files without a version field still parse (backward compat)", async () => {

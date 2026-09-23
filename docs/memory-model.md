@@ -301,7 +301,7 @@ git-friendly:
 ```markdown
 ---
 id: 01a0cdfe-930f-7b25-962f-b2f64bf48a90
-version: 2
+version: 3
 revision: 1
 type: fact
 scope: global
@@ -317,7 +317,7 @@ provenance:
 The API rate limit is 100 requests/minute.
 ```
 
-`version` is the **schema** guard (currently `2`); `revision` is the memory's
+`version` is the **schema** guard (currently `3`); `revision` is the memory's
 own write counter — exposed as `version` in JSON. The full field reference,
 validation rules and downgrade contract live in
 [storage.md](storage.md).

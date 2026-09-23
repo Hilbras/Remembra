@@ -19,7 +19,8 @@ export type MemoryType = z.infer<typeof MemoryType>;
 /**
  * Frontmatter schema version (plan §3.4 — bumped to 2 in 4.1.0 when the
  * format gained trust/relations/provenance-object/retention and spec-parsed
- * YAML replaced the hand-rolled parser). Bump when the Memory format changes
+ * YAML replaced the hand-rolled parser; bumped to 3 in 4.7.0 for agent
+ * ownership/access and security metadata). Bump when the Memory format changes
  * and add a migration step in store.ts (missing field in old files = v1).
  *
  * Downgrade contract (4.1.0 decision): files written by 4.1.0 carry
@@ -27,7 +28,7 @@ export type MemoryType = z.infer<typeof MemoryType>;
  * because those readers cannot honor `trust` when gating instructions.
  * 4.0.x-era files (version: 1) stay fully readable by 4.1.0.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 /** Trust classification (plan §4.5). Gate rule: instruction-like types inject only at trust ≥ trusted. */
 export const TrustLevel = z.enum(["unverified", "trusted", "verified", "system"]);
@@ -251,9 +252,15 @@ export const storeInputShape = {
   owner: MemoryOwner.optional().describe("V4.7: user | agent | project | organization | global"),
   access: MemoryAccess.optional().describe("V4.7: private | shared | global"),
   meta: z
-    .object({ injected: z.boolean().optional(), quarantined: z.boolean().optional() })
+    .object({
+      injected: z.boolean().optional(),
+      quarantined: z.boolean().optional(),
+      contradicted: z.boolean().optional(),
+      compressedFrom: z.array(z.string()).optional(),
+      compressionAt: z.string().optional(),
+    })
     .optional()
-    .describe("V4.4: security flags set internally"),
+    .describe("V4.4/V4.5: security, lifecycle, and compression metadata"),
   /** V4.5: temporal bounds for time-sensitive memories. */
   validFrom: z.string().optional().describe("ISO timestamp when this claim becomes valid"),
   validUntil: z.string().optional().describe("ISO timestamp when this claim ceases to be valid"),
@@ -488,5 +495,7 @@ export const SnapshotInput = z.object({
       }),
     )
     .max(100_000),
+}).refine((snapshot) => snapshot.version <= SCHEMA_VERSION, {
+  message: `snapshot schema version must be <= ${SCHEMA_VERSION}`,
 });
 export type SnapshotInput = z.infer<typeof SnapshotInput>;

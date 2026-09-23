@@ -12,6 +12,26 @@ async function tempSqlite(): Promise<{ store: SqliteBackend; dir: string }> {
   return { store, dir };
 }
 
+test("sqlite: migrates legacy markdown memories without rewriting semantic scopes", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-sql-migrate-"));
+  await fs.mkdir(path.join(dir, "global"), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "global", "legacy1234.md"),
+    `---\nid: legacy1234\nversion: 2\ntype: decision\nscope: council:research\ntags: []\nimportance: 3\nconfidence: 1\ntrust: trusted\ncreated: 2026-01-01T00:00:00.000Z\nupdated: 2026-01-01T00:00:00.000Z\nprovenance: { sourceType: manual }\n---\n\nLegacy decision\n`,
+    "utf8",
+  );
+
+  const store = new SqliteBackend({ root: dir });
+  await store.migrate();
+  const migrated = await store.get("legacy1234");
+  assert.equal(migrated?.scope, "council:research");
+  assert.equal(migrated?.owner, "global");
+  assert.equal(migrated?.access, "global");
+  assert.equal((await store.all()).length, 1);
+  store.close();
+  await fs.rm(dir, { recursive: true, force: true });
+});
+
 test("sqlite: store and retrieve round-trip", async () => {
   const { store, dir } = await tempSqlite();
   const m = await store.store(StoreInput.parse({ type: "fact", content: "Uses SQLite natively" }));
@@ -39,6 +59,7 @@ test("sqlite: agent attribution, ownership, and access round-trip", async () => 
     access: "private",
     validFrom: "2026-01-01T00:00:00.000Z",
     observedAt: "2025-12-31T00:00:00.000Z",
+    meta: { injected: true, contradicted: true },
     provenance: {
       sourceType: "agent",
       agentId: "researcher-1",
@@ -55,7 +76,13 @@ test("sqlite: agent attribution, ownership, and access round-trip", async () => 
   assert.equal(got?.access, "private");
   assert.equal(got?.validFrom, "2026-01-01T00:00:00.000Z");
   assert.equal(got?.observedAt, "2025-12-31T00:00:00.000Z");
+  assert.equal(got?.meta?.injected, true);
+  assert.equal(got?.meta?.contradicted, true);
   assert.deepEqual(got?.provenance, m.provenance);
+  const events = await store.getAudit({ limit: 10 });
+  const details = JSON.parse(String(events.find((event) => event.action === "store")?.details));
+  assert.equal(details.actor.agentId, "researcher-1");
+  assert.equal(details.actor.taskId, "task-1");
   store.close();
 });
 

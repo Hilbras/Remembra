@@ -108,11 +108,11 @@ All actionable failures are `RemembraError` with a stable `code`
 ## Schema versioning
 
 Every memory file carries `version: <n>` in frontmatter (`SCHEMA_VERSION` in
-`types.ts`, currently **2** — bumped by 4.1.0). Files without the field
+`types.ts`, currently **3** — bumped by 4.7.0). Files without the field
 (v1–v3.1) parse as v1. Two different numbers, deliberately:
 
 - frontmatter `version` is the **schema guard** — readers refuse
-  `version > SCHEMA_VERSION` (4.0.x readers likewise skip `version: 2`
+  `version > SCHEMA_VERSION` (older readers likewise skip `version: 3`
   files: logged, never deleted, so downgrades neither lose data nor silently
   bypass the trust gate);
 - frontmatter `revision` is the memory's own **write counter** — exposed as

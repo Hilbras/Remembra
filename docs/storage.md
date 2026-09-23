@@ -39,7 +39,7 @@ content body:
 ```text
 ---
 id: 01a0cdfe-9306-7453-9558-72a8bab41162
-version: 2
+version: 3
 revision: 3
 type: decision
 scope: /home/me/project
@@ -71,7 +71,7 @@ so scopes/tags/sources containing YAML-ambiguous characters round-trip.
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `id` | hex8–32 or UUIDv7 | ✅ | equals the filename (path is the source of truth); UUIDv7 since 4.1.0 |
-| `version` | int | ✅ on new files | **schema** version (`SCHEMA_VERSION = 2`); missing on legacy files (treated as 1); readers refuse anything higher |
+| `version` | int | ✅ on new files | **schema** version (`SCHEMA_VERSION = 3`); missing on legacy files (treated as 1); readers refuse anything higher |
 | `revision` | int | ✅ on new files | this memory's write counter — the JSON `version` used for optimistic concurrency (§3.5); missing on legacy files → 1 |
 | `type` | 11 semantic types | ✅ | `fact · preference · decision · constraint · instruction · role · entity · relationship · event · history · observation` — see [memory-model.md](memory-model.md) |
 | `scope` | string | ✅ | `global` or a project path/id; no `..` segments |
@@ -84,7 +84,10 @@ so scopes/tags/sources containing YAML-ambiguous characters round-trip.
 | `lastValidated` | ISO 8601 | — | stamped when `trust` changes (4.1.0, §4.2) |
 | `archivedAt` | ISO 8601 | — | present ⇔ the file lives in the archived tree |
 | `source` | string | — | originating session/client |
-| `provenance` | nested object | ✅ | `{ sourceType, sessionId?, messageId?, agentId?, provider? }` — where it came from (4.1.0, §4.3); legacy `explicit`/`auto` strings migrate on read |
+| `provenance` | nested object | ✅ | `{ sourceType, sessionId?, messageId?, agentId?, agentType?, agentVersion?, conversationId?, taskId?, runId?, provider? }` — where it came from (4.1.0, §4.3); legacy `explicit`/`auto` strings migrate on read |
+| `owner` | enum | — | `user · agent · project · organization · global` (4.7.0) |
+| `access` | enum | — | `private · shared · global`; agent-mode visibility policy (4.7.0) |
+| `meta` | nested object | — | security/lifecycle/compression flags such as `quarantined`, `injected`, `contradicted` (4.7.0) |
 | `retention` | decay mode | — | `pinned \| persistent \| ephemeral \| neverExpire` — omit = `decaying` (4.1.0, §4.8) |
 | `relations` | list of `{id, kind}` | — | typed edges `supports · contradicts · supersedes · refines · duplicates · related` (4.1.0, §4.7); legacy `related: [ids]` migrates on read |
 | `embedding` | `[f,f,…]` | — | vector cache (comma-separated, no spaces) |
@@ -115,11 +118,10 @@ from `get`/`all`/`search`, **left untouched on disk**, and logged once as
 | invalid scope | empty, `..` segment, or backslash |
 | empty content | nothing after the frontmatter |
 
-**Downgrade contract (4.1.0):** files are written with `version: 2`.
-Older readers (4.0.x) **skip** those files — logged, never deleted — because
-they cannot honor `trust` when gating instructions; upgrading again restores
-them untouched. 4.1.0 reads every pre-4.1 file (`version: 1` or absent)
-as-is, normalizing the legacy shapes below.
+**Downgrade contract (4.7.0):** files are written with `version: 3`.
+Older readers **skip** those files — logged, never deleted — because they
+cannot honor agent access policy. Upgrading again restores them untouched.
+Readers accept pre-4.7 versions and normalize legacy shapes.
 
 **Normalized** — recoverable value problems are fixed at read time and logged
 once as `memory_normalized`, so the memory is still served and ranking math

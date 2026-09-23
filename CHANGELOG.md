@@ -7,6 +7,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [4.7.0] — 2026-09-23
+
+**Agent & Multi-Agent Memory** — plan §10 of the Master Development Plan.
+Adds opt-in agent identity, attribution, scope-aware visibility, council/task
+scope conventions, and trusted HTTP context resolution.
+
+### Added
+- **Agent attribution**: `agentType`, `agentVersion`, `conversationId`,
+  `taskId`, and `runId` provenance fields, preserved by file and SQLite
+  backends and snapshot import/export.
+- **Ownership and access policy**: `owner` (`user`, `agent`, `project`,
+  `organization`, `global`) and `access` (`private`, `shared`, `global`) on
+  stored memories.
+- **Agent mode**: opt-in fail-closed visibility for search, list, direct
+  reads, updates, lifecycle operations, relationships, history, compression,
+  maintenance, quality, audit, and snapshots.
+- **Council conventions**: use existing scopes such as `agent:<id>`,
+  `council:<name>`, and `task:<id>` with the existing eleven memory types.
+- **Trusted HTTP context**: `createHttpServer` accepts an application-supplied
+  `resolveAgentContext(req)` callback. It is never inferred from a public
+  agent-id field or header.
+- **`GET /agents/:id`**: non-content agent metadata and memory counts.
+- **New environment variables**:
+  | Variable | Default | Meaning |
+  |----------|---------|---------|
+  | `REMEMBRA_AGENT_MODE` | `0` | Enable fail-closed agent visibility policy |
+  | `REMEMBRA_DEFAULT_ACCESS` | `global` | Default access for new memories |
+
+### Security
+- Private memories are never treated as authenticated merely because their
+  payload contains an `agentId`; a host-authenticated context is required.
+- Non-global direct access is scope-checked, including council and task
+  scopes, so an agent cannot bypass retrieval filters with a guessed memory id.
+
+### Tests
+- Agent policy, attribution, persistence, snapshot, compression, summary, and
+  HTTP resolver coverage in `src/test/agent.test.ts` and
+  `src/test/http.test.ts`.
+- SQLite attribution, ownership, access, and temporal round-trip coverage in
+  `src/test/sqlite.test.ts`.
+
+---
+
 ## [4.6.0] — 2026-09-23
 
 **Observability & Evaluation** — plan §9 of the Master Development Plan.
