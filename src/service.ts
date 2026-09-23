@@ -17,6 +17,8 @@ import {
   LlmProvider,
   ExtractedMemory,
 } from "./llm.js";
+import { createInjectionDetector, InjectionResult } from "./injection-detector.js";
+import { createSensitiveDetector, SensitivePolicy } from "./sensitive-data.js";
 
 export interface DigestResult {
   extracted: number;
@@ -72,6 +74,10 @@ export class MemoryService {
   private readonly archiveAfterDays: number;
   private readonly archiveTtlDays: number;
   private readonly redactOn: boolean;
+  /** V4.4: prompt injection detector (pattern-based). */
+  private readonly injectionDetector = createInjectionDetector();
+  /** V4.4: sensitive data policy detector. */
+  private readonly sensitiveDetector = createSensitiveDetector();
   /** Resolved extraction LLM — recorded as provenance.provider on digests (§4.3). */
   private readonly llmName: LlmProvider;
   private lastDecayRun = 0;
@@ -124,6 +130,29 @@ export class MemoryService {
     // PII redaction (audit Phase 8, opt-in REMEMBRA_REDACT): before embed,
     // before disk, before export — raw patterns never leave this process.
     if (this.redactOn) parsed = this.applyRedaction(parsed);
+
+    // V4.4: sensitive data policy check.
+    const sensitive = this.sensitiveDetector.scan(parsed.content);
+    if (sensitive.detected && sensitive.action === "reject") {
+      logEvent("warn", "sensitive_data.rejected", { categories: sensitive.categories }, "Remembra: sensitive data rejected by policy");
+      metrics.inc("remembra_errors_total", { code: "SENSITIVE_DATA", transport: "service" });
+      throw new RemembraError("SENSITIVE_DATA", `Sensitive data detected (${sensitive.categories.join(", ")})`);
+    }
+    if (sensitive.detected && sensitive.action === "quarantine") {
+      parsed.trust = "unverified";
+      parsed.meta = { ...parsed.meta, quarantined: true };
+      logEvent("warn", "sensitive_data.quarantined", { categories: sensitive.categories }, "Remembra: memory quarantined due to sensitive data");
+      metrics.inc("remembra_memory_quarantined_total", { categories: sensitive.categories.join(",") });
+    }
+
+    // V4.4: prompt injection detection (informational flag).
+    const injection = this.injectionDetector.scan(parsed.content);
+    if (injection.flagged) {
+      logEvent("warn", "injection.detected", { matches: injection.matches.length }, "Remembra: prompt injection pattern detected in stored memory");
+      parsed.meta = { ...parsed.meta, injected: true };
+      metrics.inc("remembra_injection_flagged_total");
+    }
+
     const embedding = await this.maybeEmbed(parsed.content);
     // Provenance/trust travel in the input now (plan §4.3): callers that say
     // nothing store as { sourceType: manual } → trusted; digests pass
@@ -510,6 +539,12 @@ export class MemoryService {
   /** Parse-cache stats when the backend exposes them (file backend does). */
   storageStats(): { size: number; capacity: number } | null {
     return this.db.cacheStats?.() ?? null;
+  }
+
+  /** V4.4: query recent audit events. */
+  async getAudit(opts?: { limit?: number; since?: string }): Promise<{ events: Record<string, unknown>[] }> {
+    const events = this.db.getAudit ? await this.db.getAudit(opts) : [];
+    return { events };
   }
 
   /**

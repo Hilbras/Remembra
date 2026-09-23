@@ -173,6 +173,17 @@ if (argv[0] === "export") {
       console.error(`migrate failed: ${err instanceof Error ? err.message : err}`);
       process.exit(1);
     }
+  } else if (argv[0] === "audit") {
+    // V4.4.0: query audit events.
+    const limit = Number(argv[1]) || 50;
+    const since = argv[2] || undefined;
+    if (!(store instanceof SqliteBackend)) {
+      console.error("audit requires SQLite backend");
+      process.exit(1);
+    }
+    const events = await (store as SqliteBackend).getAudit({ limit, since });
+    console.log(JSON.stringify({ events, count: events.length }, null, 2));
+    process.exit(0);
   } else if (maintainFlag) {
   // CLI maintenance: `remembra maintain` — one-shot, prints JSON, exits.
   const result = await service.maintain();

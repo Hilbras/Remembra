@@ -451,6 +451,31 @@ export class SqliteBackend implements MemoryBackend {
     return { size: info.cnt, capacity: 0 };
   }
 
+  /** V4.4: query recent audit events. */
+  async getAudit(opts?: { limit?: number; since?: string }): Promise<Record<string, unknown>[]> {
+    let sql = "SELECT memory_id, action, details, created_at FROM memory_audit";
+    const params: unknown[] = [];
+    if (opts?.since) {
+      sql += " WHERE created_at >= ?";
+      params.push(opts.since);
+    }
+    sql += " ORDER BY created_at DESC";
+    const limit = opts?.limit ?? 50;
+    sql += ` LIMIT ${Number(limit)}`;
+    const rows = this.db.prepare(sql).all(...params) as Array<{
+      memory_id: string;
+      action: string;
+      details: string | null;
+      created_at: string;
+    }>;
+    return rows.map((r) => ({
+      memory_id: r.memory_id,
+      action: r.action,
+      details: r.details ?? undefined,
+      created_at: r.created_at,
+    }));
+  }
+
   /** Close the database connection. Called on shutdown. */
   close(): void {
     try {

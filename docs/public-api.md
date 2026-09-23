@@ -85,7 +85,7 @@ static dashboard shell (`/`, `/ui/*`) are exempt. Errors are JSON with an
 
 Metrics count these under `remembra_errors_total{code}` and requests under
 `remembra_http_requests_total{route,…}` with a fixed route enum
-(`health|metrics|memories|search|digest|maintain|memory_item|memory_sub|data_io|ui|other`).
+(`health|metrics|memories|search|digest|maintain|audit|memory_item|memory_sub|data_io|ui|other`).
 
 ## Snapshot format (export / import)
 
@@ -147,3 +147,25 @@ and final failures are logged as `provider_retry` / `provider_failed`. See
 The canonical index lives in [clients.md](clients.md#environment) (core +
 storage) and [providers.md](providers.md#configuration) (LLM/embeddings).
 New optional variables are always additive; removing one is a breaking change.
+
+### Audit endpoint (V4.4)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/audit` | required | Paginated audit event stream; query params `?limit=50&since=ISO` |
+
+Response envelope: `{ events: [{ memory_id, action, details, created_at }, ...] }`.
+Events include `store`, `update`, `archive`, `revive`, `forget`, `import`.
+
+### Environment variables (V4.4 additions)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `REMEMBRA_RATE_LIMIT` | `60` | max requests per window per key |
+| `REMEMBRA_RATE_WINDOW_MS` | `60000` | sliding window size in ms |
+| `REMEMBRA_REQUEST_TIMEOUT_MS` | `30000` | per-request timeout |
+| `REMEMBRA_MAX_CONCURRENT` | `32` | simultaneous in-flight request cap |
+| `REMEMBRA_CORS_ORIGIN` | *(unset)* | allow origin; `*` rejected when key is set |
+| `REMEMBRA_SECURE_HEADERS` | `1` | set to `0` to disable secure headers |
+| `REMEMBRA_SENSITIVE_POLICY` | `redact` | `allow` · `redact` · `reject` · `quarantine` |
+| `REMEMBRA_INJECTION_PATTERNS` | *(unset)* | custom comma-separated regex patterns |

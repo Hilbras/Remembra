@@ -53,4 +53,6 @@ export interface MemoryBackend {
   importMemory(m: Memory): Promise<boolean>;
   /** Optional (audit Phase 8): superseded pre-images, newest first. */
   history?(id: string): Promise<HistoryEntry[]>;
+  /** V4.4: query audit events (optional; stub returns empty). */
+  getAudit?(opts?: { limit?: number; since?: string }): Promise<Record<string, unknown>[]>;
 }

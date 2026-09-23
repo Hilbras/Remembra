@@ -5,9 +5,10 @@ import { fileURLToPath } from "node:url";
 import { timingSafeEqual } from "node:crypto";
 import { MemoryService } from "./service.js";
 import { DigestInput } from "./types.js";
-import { isRemembraError, statusFor, errorLabel } from "./errors.js";
+import { isRemembraError, statusFor, errorLabel, RemembraError } from "./errors.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
+import { RateLimiter } from "./rate-limiter.js";
 
 interface HttpOptions {
   port?: number;
@@ -31,6 +32,16 @@ const UI_EXT = new Set([".html", ".css", ".js", ".map"]);
 const UI_CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
   "connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+/** Baseline secure headers for every JSON API response (V4.4). */
+const SECURE_HEADERS: Record<string, string> = {
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "strict-transport-security": "max-age=31536000; includeSubDomains",
+  "x-xss-protection": "0",
+  "referrer-policy": "no-referrer",
+  "cache-control": "no-store",
+};
 
 const UI_MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -81,13 +92,67 @@ export function resolveListen(
  *   GET    /snapshot            → full export snapshot (v4, CLI parity)
  *   POST   /import              → idempotent snapshot import (v4, CLI parity)
  *   DELETE /memories/:id        → forget
+ *   GET    /audit               → recent audit events (V4.4, auth required)
  */
 export function createHttpServer(service: MemoryService, opts: HttpOptions = {}): http.Server {
   const maxBody = opts.maxBodyBytes ?? Number(process.env.REMEMBRA_MAX_BODY ?? DEFAULT_MAX_BODY);
   const listenTarget = resolveListen(opts.host ?? process.env.REMEMBRA_HOST, Boolean(opts.apiKey));
   if (listenTarget.error) throw new Error(listenTarget.error);
 
+  // V4.4: rate limiter (per-key sliding window).
+  const rateLimiter = new RateLimiter({
+    limit: Number(process.env.REMEMBRA_RATE_LIMIT ?? 60),
+    windowMs: Number(process.env.REMEMBRA_RATE_WINDOW_MS ?? 60_000),
+  });
+
+  // V4.4: request timeout.
+  const requestTimeoutMs = Number(process.env.REMEMBRA_REQUEST_TIMEOUT_MS ?? 30_000);
+
+  // V4.4: concurrency limit.
+  const maxConcurrent = Number(process.env.REMEMBRA_MAX_CONCURRENT ?? 32);
+  let concurrent = 0;
+
+  // V4.4: CORS origin.
+  const corsOrigin = process.env.REMEMBRA_CORS_ORIGIN;
+  const secureHeadersEnabled = process.env.REMEMBRA_SECURE_HEADERS !== "0";
+
+  /** Apply security headers to a response. */
+  function applySecureHeaders(res: http.ServerResponse): void {
+    if (!secureHeadersEnabled) return;
+    for (const [k, v] of Object.entries(SECURE_HEADERS)) {
+      res.setHeader(k, v);
+    }
+  }
+
+  /** Apply CORS headers to a response. */
+  function applyCorsHeaders(res: http.ServerResponse, allowHeaders = true): void {
+    if (!corsOrigin) return;
+    if (corsOrigin === "*") {
+      if (opts.apiKey) {
+        // CORS wildcard + auth is invalid; fall back to explicit origin.
+        res.setHeader("access-control-allow-origin", "");
+      } else {
+        res.setHeader("access-control-allow-origin", "*");
+      }
+    } else {
+      res.setHeader("access-control-allow-origin", corsOrigin);
+    }
+    if (allowHeaders) {
+      res.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
+      res.setHeader("access-control-allow-headers", "Content-Type, Authorization, x-api-key");
+      res.setHeader("access-control-max-age", "86400");
+    }
+  }
+
   const server = http.createServer(async (req, res) => {
+    // V4.4: concurrency accounting.
+    if (concurrent >= maxConcurrent) {
+      applySecureHeaders(res);
+      applyCorsHeaders(res);
+      return send(res, 503, { error: "Server overloaded — concurrency limit reached" }, { "retry-after": "1" });
+    }
+    concurrent++;
+
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
       const path = url.pathname.replace(/\/+$/, "") || "/";
@@ -107,11 +172,34 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         });
       });
 
+      // V4.4: request timeout enforcement.
+      if (requestTimeoutMs > 0) {
+        res.setTimeout(requestTimeoutMs, () => {
+          if (!res.writableEnded) {
+            metrics.inc("remembra_errors_total", { code: "REQUEST_TIMEOUT", transport: "http" });
+            applySecureHeaders(res);
+            applyCorsHeaders(res);
+            send(res, 504, { error: "Request timeout exceeded" });
+            req.destroy();
+          }
+        });
+      }
+
       // Liveness + readiness (audit Phase 7): 200 when storage is readable,
       // 503 with the failing check when it is not.
       if (path === "/health") {
         const health = await service.health();
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, health.status === "ok" ? 200 : 503, health);
+      }
+
+      // V4.4: CORS preflight — handle before any auth/rate-limit check.
+      if (req.method === "OPTIONS") {
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        res.writeHead(204);
+        return res.end();
       }
 
       // Web UI shell (v4): static files served unauthenticated, like /health —
@@ -121,23 +209,59 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         process.env.REMEMBRA_UI !== "0" &&
         (path === "/" || path === "/ui" || path.startsWith("/ui/"))
       ) {
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return serveStatic(res, req.method ?? "GET", path);
       }
 
+      // V4.4: rate limiting (exempt /health and UI).
+      const clientKey = opts.apiKey ? `key:${opts.apiKey}` : `ip:${url.hostname || "unknown"}`;
+      const rateCheck = rateLimiter.check(clientKey);
+      if (!rateCheck.allowed) {
+        metrics.inc("remembra_errors_total", { code: "RATE_LIMITED", transport: "http" });
+        logEvent("warn", "rate_limit", { key: clientKey }, "Remembra: rate limit exceeded");
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(
+          res,
+          429,
+          { error: "Rate limit exceeded", retryAfterMs: rateCheck.retryAfterMs },
+          { "retry-after": String(Math.ceil(rateCheck.retryAfterMs / 1000)) },
+        );
+      }
+
       if (opts.apiKey && !authorized(req, opts.apiKey)) {
+        metrics.inc("remembra_errors_total", { code: "UNAUTHORIZED", transport: "http" });
+        logEvent("warn", "auth.failure", { remote: url.hostname }, "Remembra: unauthorized access attempt");
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, 401, { error: "Unauthorized: missing or invalid API key" });
       }
 
       // GET /metrics — Prometheus text format. After the auth check on
       // purpose: keyed (incl. public) deployments must not leak counters.
       if (req.method === "GET" && path === "/metrics") {
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         res.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" });
         return res.end(metrics.render());
+      }
+
+      // V4.4: GET /audit — recent audit events.
+      if (req.method === "GET" && path === "/audit") {
+        const limit = intParam(url.searchParams.get("limit"), 1) ?? 50;
+        const since = url.searchParams.get("since") ?? undefined;
+        const result = await service.getAudit({ limit, since });
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return sendListLike(res, 200, result, "events");
       }
 
       // POST /maintain — decay sweep + vector backfill
       if (req.method === "POST" && path === "/maintain") {
         const result = await service.maintain();
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, 200, result);
       }
 
@@ -151,6 +275,8 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           if (!res.writableEnded) ac.abort();
         });
         const result = await service.digest({ ...DigestInput.parse(body), signal: ac.signal });
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, 200, result);
       }
 
@@ -158,6 +284,8 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       if (req.method === "POST" && path === "/memories") {
         const body = await readBody(req, maxBody);
         const result = await service.store(body);
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, 201, result);
       }
 
@@ -172,6 +300,8 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           limit,
           explain: url.searchParams.get("explain") === "true",
         });
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return sendListLike(res, 200, result, "results");
       }
 
@@ -184,6 +314,8 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           offset: intParam(url.searchParams.get("offset"), 0),
           limit: intParam(url.searchParams.get("limit"), 1),
         });
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return sendListLike(res, 200, result, "memories");
       }
 
@@ -191,6 +323,8 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       const del = path.match(/^\/memories\/([^/]+)$/);
       if (req.method === "DELETE" && del) {
         const result = await service.forget(decodeURIComponent(del[1]));
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, result.ok ? 200 : 404, result);
       }
 
@@ -199,6 +333,8 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       if (req.method === "PUT" && singleWrite) {
         const body = await readBody(req, maxBody);
         const result = await service.update(decodeURIComponent(singleWrite[1]), body);
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, 200, result);
       }
 
@@ -207,11 +343,15 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       const sub = path.match(/^\/memories\/([^/]+)\/(relate|history|archive|revive)$/);
       if (sub && req.method === "POST" && (sub[2] === "archive" || sub[2] === "revive")) {
         const result = await service[sub[2]](decodeURIComponent(sub[1]));
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, 200, result);
       }
       if (sub && req.method === "POST" && sub[2] === "relate") {
         const body = (await readBody(req, maxBody)) as Record<string, unknown>;
         const result = await service.relate({ ...body, id: decodeURIComponent(sub[1]) }); // path id wins
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, 200, result);
       }
       if (sub && req.method === "GET" && sub[2] === "history") {
@@ -219,6 +359,8 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           id: decodeURIComponent(sub[1]),
           limit: intParam(url.searchParams.get("limit"), 1) ?? undefined,
         });
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, 200, result);
       }
 
@@ -226,18 +368,26 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       const single = path.match(/^\/memories\/([^/]+)$/);
       if (req.method === "GET" && single) {
         const result = await service.get(decodeURIComponent(single[1]));
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, 200, result);
       }
 
       // Snapshot I/O (v4): HTTP export/import — same handlers the CLI uses.
       if (path === "/snapshot" && req.method === "GET") {
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, 200, await service.exportSnapshot());
       }
       if (path === "/import" && req.method === "POST") {
         const body = await readBody(req, maxBody);
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
         return send(res, 200, await service.importSnapshot(body));
       }
 
+      applySecureHeaders(res);
+      applyCorsHeaders(res);
       send(res, 404, { error: `No route: ${req.method} ${path}` });
     } catch (err) {
       const name = (err as { name?: string }).name;
@@ -248,15 +398,21 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           ? 400
           : name === "PayloadTooLarge"
             ? 413
-            : 500;
+            : name === "TimeoutError"
+              ? 504
+              : 500;
       metrics.inc("remembra_errors_total", {
-        code: name === "PayloadTooLarge" ? "PAYLOAD_TOO_LARGE" : errorLabel(err),
+        code: name === "PayloadTooLarge" ? "PAYLOAD_TOO_LARGE" : name === "TimeoutError" ? "REQUEST_TIMEOUT" : errorLabel(err),
         transport: "http",
       });
+      applySecureHeaders(res);
+      applyCorsHeaders(res);
       send(res, status, {
         error: err instanceof Error ? err.message : String(err),
         ...(isRemembraError(err) ? { code: err.code } : {}),
       });
+    } finally {
+      concurrent--;
     }
   });
 
@@ -287,6 +443,8 @@ function routeLabel(p: string): string {
       return "health";
     case "/metrics":
       return "metrics";
+    case "/audit":
+      return "audit";
     case "/memories":
       return "memories";
     case "/memories/search":
@@ -386,12 +544,19 @@ function authorized(req: http.IncomingMessage, key: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-function send(res: http.ServerResponse, status: number, body: unknown): void {
+function send(
+  res: http.ServerResponse,
+  status: number,
+  body: unknown,
+  extraHeaders?: Record<string, string>,
+): void {
   const data = JSON.stringify(body, null, 2);
-  res.writeHead(status, {
+  const headers: Record<string, string> = {
     "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(data),
-  });
+    "content-length": String(Buffer.byteLength(data)),
+    ...(extraHeaders ?? {}),
+  };
+  res.writeHead(status, headers);
   res.end(data);
 }
 
@@ -415,12 +580,12 @@ function sendListLike(
   res: http.ServerResponse,
   status: number,
   body: Record<string, unknown>,
-  itemKey: "memories" | "results",
+  itemKey: "memories" | "results" | "events",
 ): void {
-  const items = (body[itemKey] as Array<{ content?: string; embedding?: number[] }> | undefined) ?? [];
+  const items = (body[itemKey] as Array<Record<string, unknown>> | undefined) ?? [];
   let est = 256;
   for (const k of Object.keys(body)) est += k.length + 16;
-  for (const it of items) est += (it.content?.length ?? 0) + (it.embedding?.length ?? 0) * 10 + 256;
+  for (const it of items) est += JSON.stringify(it).length + 64;
   if (est < STREAM_THRESHOLD) return send(res, status, body);
 
   const { [itemKey]: _items, ...rest } = body;

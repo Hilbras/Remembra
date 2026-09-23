@@ -256,6 +256,11 @@ export class MemoryStore implements MemoryBackend {
     return out;
   }
 
+  /** V4.4: audit events — file backend has none, returns empty. */
+  async getAudit(): Promise<Record<string, unknown>[]> {
+    return [];
+  }
+
   /**
    * Convert the whole tree (memories + history) between plain and encrypted
    * at rest. Requires REMEMBRA_ENCRYPT_KEY either way (decryption needs it).

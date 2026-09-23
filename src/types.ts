@@ -216,6 +216,10 @@ export const storeInputShape = {
     ),
   retention: retentionInput.optional(),
   provenance: provenanceInput,
+  meta: z
+    .object({ injected: z.boolean().optional(), quarantined: z.boolean().optional() })
+    .optional()
+    .describe("V4.4: security flags set internally"),
 };
 export const StoreInput = z
   .object(storeInputShape)

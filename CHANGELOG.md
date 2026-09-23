@@ -7,6 +7,66 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [4.4.0] — 2026-09-23
+
+**Security & Memory Integrity** — plan §7 of the Master Development Plan.
+Hardens Remembra against malicious input, memory poisoning, and abuse with
+HTTP-level protections and a sensitive-data policy engine.
+
+### Added
+- **Rate limiting** (`src/rate-limiter.ts`): per-API-key sliding window.
+  Configurable via `REMEMBRA_RATE_LIMIT` (default 60) and
+  `REMEMBRA_RATE_WINDOW_MS` (default 60000). Exceeded requests return 429
+  with `Retry-After`. `/health`, `/metrics` unkeyed, and UI shell are exempt.
+- **Secure response headers**: every JSON API response includes
+  `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+  `Strict-Transport-Security`, `X-XSS-Protection: 0`, `Referrer-Policy:
+  no-referrer`, `Cache-Control: no-store`. Toggle off with
+  `REMEMBRA_SECURE_HEADERS=0`.
+- **CORS support** (`REMEMBRA_CORS_ORIGIN`): explicit origin allowed; wildcard
+  rejected when an API key is set. `OPTIONS` preflight handled without auth.
+- **Request timeouts** (`REMEMBRA_REQUEST_TIMEOUT_MS`, default 30s): in-flight
+  requests exceeding the limit return 504.
+- **Concurrency limits** (`REMEMBRA_MAX_CONCURRENT`, default 32): when the cap
+  is reached, new requests return 503.
+- **Prompt injection detection** (`src/injection-detector.ts`): pattern-based
+  scan on every `store()` call flags attempts to override roles, leak system
+  prompts, or manipulate metadata. Flagged memories carry `meta.injected: true`.
+- **Sensitive data policy engine** (`src/sensitive-data.ts`): detects API keys,
+  AWS credentials, private keys, passwords, and financial secrets. Policy modes:
+  `allow` · `redact` · `reject` · `quarantine` (set via
+  `REMEMBRA_SENSITIVE_POLICY`).
+- **`GET /audit` endpoint** (auth-required): paginated audit event stream.
+  Events include `memory.created`, `memory.updated`, `memory.archived`, etc.
+- **New error codes**: `RATE_LIMITED` (429), `REQUEST_TIMEOUT` (504),
+  `SERVICE_UNAVAILABLE` (503), `SENSITIVE_DATA` (400), `INJECTION_DETECTED` (400).
+
+### Changed
+- `MemoryBackend.getAudit()` optional method added to the interface.
+- `Memory.meta` field added for V4.4 security flags (`injected`, `quarantined`).
+- `StoreInput` Zod schema extended with optional `meta` object.
+- HTTP server now applies secure headers and CORS to all JSON responses.
+
+### New env vars
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `REMEMBRA_RATE_LIMIT` | `60` | max requests per window per key |
+| `REMEMBRA_RATE_WINDOW_MS` | `60000` | sliding window size |
+| `REMEMBRA_REQUEST_TIMEOUT_MS` | `30000` | per-request timeout |
+| `REMEMBRA_MAX_CONCURRENT` | `32` | simultaneous in-flight requests |
+| `REMEMBRA_CORS_ORIGIN` | *(unset)* | allow this origin; `*` rejects with key |
+| `REMEMBRA_SECURE_HEADERS` | `1` | set to `0` to disable |
+| `REMEMBRA_SENSITIVE_POLICY` | `redact` | `allow` · `redact` · `reject` · `quarantine` |
+| `REMEMBRA_INJECTION_PATTERNS` | *(unset)* | custom regex patterns, comma-separated |
+
+### Tests
+- 8 new tests in `src/test/security.test.ts`
+- 6 new tests in `src/test/rate-limiter.test.ts`
+- 8 new tests in `src/test/injection-detector.test.ts`
+- 8 new tests in `src/test/sensitive-data.test.ts`
+
+---
+
 ## [4.3.0] — 2026-09-23
 
 **Storage & Index Architecture** — plan §6 of the Master Development Plan.

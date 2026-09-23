@@ -70,6 +70,14 @@ Retrieved memories should be treated as **data with provenance**, not commands
 | **PII redaction (3.8.0, opt-in)** | `REMEMBRA_REDACT=1` strips emails, Luhn-valid card numbers, SSNs, phone numbers and high-entropy secrets at the *ingest layer* (`memory_store`, digest items, merge output) — raw patterns never reach disk, embeddings, or export snapshots |
 | **Encryption at rest (3.8.0, opt-in)** | `REMEMBRA_ENCRYPT_KEY` → AES-256-GCM per file; reading an encrypted file without the key fails **loudly** (`ENCRYPTED_NO_KEY`, HTTP 503, `/health` 503) — never warn-skipped as if the data didn't exist |
 | **Web UI static routes (4.0.0)** | `/` + `/ui/*` serve a fixed extension whitelist (`.html/.css/.js/.map`) with decode-then-containment path checks inside `dist/ui`, regular files only, `nosniff`, and a **CSP with no `unsafe-inline`** (`default-src 'none'`, same-origin scripts/styles/API only). The shell is unauthenticated like `/health` (it holds no data — every API call the page makes still carries the key); `REMEMBRA_UI=0` disables serving entirely |
+| **Rate limiting (4.4.0)** | Per-API-key sliding window (`REMEMBRA_RATE_LIMIT`/`REMEMBRA_RATE_WINDOW_MS`). Exceeded → 429 + `Retry-After`. `/health`, unkeyed `/metrics`, UI exempt |
+| **Secure response headers (4.4.0)** | Every JSON response includes `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Strict-Transport-Security`, `X-XSS-Protection: 0`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. Toggle off with `REMEMBRA_SECURE_HEADERS=0` |
+| **CORS policy (4.4.0)** | `REMEMBRA_CORS_ORIGIN` sets `Access-Control-Allow-Origin`; preflight (`OPTIONS`) handled without auth; wildcard rejected when an API key is configured |
+| **Request timeouts (4.4.0)** | `REMEMBRA_REQUEST_TIMEOUT_MS` (default 30s); in-flight requests exceeding the limit return 504 |
+| **Concurrency limits (4.4.0)** | `REMEMBRA_MAX_CONCURRENT` (default 32); when the cap is reached new requests get 503 |
+| **Prompt injection detection (4.4.0)** | Pattern-based scan on every `memory_store` call flags role overrides, system prompt leaks, jailbreak patterns. Flagged memories carry `meta.injected: true` — informational, not blocked |
+| **Sensitive data policies (4.4.0)** | `REMEMBRA_SENSITIVE_POLICY` (`allow` · `redact` · `reject` · `quarantine`). Detects API keys, AWS creds, private keys, passwords, financial secrets. `reject` → 400; `quarantine` → stored with `trust: unverified` + `meta.quarantined: true` |
+| **Audit event stream (4.4.0)** | `GET /audit` returns recent audit events (`memory.created`, `memory.updated`, `memory.archived`, etc.) with pagination; also emitted to the structured log sink |
 
 ## Web dashboard (4.0.0)
 

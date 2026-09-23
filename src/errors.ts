@@ -17,7 +17,12 @@ export type ErrorCode =
   | "IO_ERROR" // filesystem failure during a store operation
   | "LLM_ERROR" // external provider failure (LLM/embeddings) after retries, cancellation, or malformed response
   | "PROVIDER_TIMEOUT" // provider did not answer within the per-attempt timeout or overall budget
-  | "ENCRYPTED_NO_KEY"; // memory file is encrypted but REMEMBRA_ENCRYPT_KEY is missing/wrong
+  | "ENCRYPTED_NO_KEY" // memory file is encrypted but REMEMBRA_ENCRYPT_KEY is missing/wrong
+  | "RATE_LIMITED" // V4.4: request rate exceeded the per-key window
+  | "REQUEST_TIMEOUT" // V4.4: handler exceeded REMEMBRA_REQUEST_TIMEOUT_MS
+  | "SERVICE_UNAVAILABLE" // V4.4: concurrency limit reached
+  | "SENSITIVE_DATA" // V4.4: sensitive data detected under reject policy
+  | "INJECTION_DETECTED"; // V4.4: prompt injection pattern flagged
 
 export class RemembraError extends Error {
   constructor(
@@ -45,6 +50,11 @@ const HTTP_STATUS: Record<ErrorCode, number> = {
   LLM_ERROR: 502,
   PROVIDER_TIMEOUT: 504, // Gateway Timeout — bounded by the provider policy (§3.7)
   ENCRYPTED_NO_KEY: 503, // Service Unavailable — storage unreadable without the key
+  RATE_LIMITED: 429, // V4.4: Too Many Requests
+  REQUEST_TIMEOUT: 504, // V4.4: Gateway Timeout
+  SERVICE_UNAVAILABLE: 503, // V4.4: Server overloaded
+  SENSITIVE_DATA: 400, // V4.4: Bad Request — sensitive data under reject policy
+  INJECTION_DETECTED: 400, // V4.4: Bad Request — injection detected under strict policy
 };
 
 export function statusFor(err: RemembraError): number {
