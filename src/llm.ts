@@ -5,9 +5,18 @@
  * Keys:   OPENAI_API_KEY / ANTHROPIC_API_KEY / OLLAMA_HOST (default localhost:11434)
  *
  * No SDK dependencies — plain fetch against each provider's HTTP API.
+ * All requests go through the provider policy (src/provider.ts): timeout,
+ * bounded retries, overall budget, cancellation, error normalization (§3.7).
  */
+import { providerFetch } from "./provider.js";
+import { RemembraError } from "./errors.js";
 
 export type LlmProvider = "openai" | "anthropic" | "ollama";
+
+/** Cancellation plumbed from transports (HTTP disconnect) down to fetch. */
+export interface LlmCallOptions {
+  signal?: AbortSignal;
+}
 
 export interface ExtractedMemory {
   type: "fact" | "decision" | "role" | "history";
@@ -43,58 +52,94 @@ Rules:
 export async function extractMemories(
   transcript: string,
   provider: LlmProvider = resolveLlmProvider(),
+  opts?: LlmCallOptions,
 ): Promise<ExtractedMemory[]> {
-  const text = await chat(provider, SYSTEM_PROMPT, transcript);
+  const text = await chat(provider, SYSTEM_PROMPT, transcript, opts?.signal);
   return parseExtraction(text);
 }
 
-async function chat(provider: LlmProvider, system: string, user: string): Promise<string> {
+async function chat(
+  provider: LlmProvider,
+  system: string,
+  user: string,
+  signal?: AbortSignal,
+): Promise<string> {
   switch (provider) {
     case "openai": {
       const key = process.env.OPENAI_API_KEY;
       if (!key) throw new Error("REMEMBRA_LLM=openai requires OPENAI_API_KEY");
-      return postJson("https://api.openai.com/v1/chat/completions", {
-        headers: { authorization: `Bearer ${key}` },
-        body: {
-          model: process.env.REMEMBRA_LLM_MODEL ?? "gpt-4o-mini",
-          temperature: 0,
-          response_format: { type: "json_object" },
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
+      return postJson(
+        "https://api.openai.com/v1/chat/completions",
+        {
+          headers: { authorization: `Bearer ${key}` },
+          body: {
+            model: process.env.REMEMBRA_LLM_MODEL ?? "gpt-4o-mini",
+            temperature: 0,
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: system },
+              { role: "user", content: user },
+            ],
+          },
         },
-      }).then((r: { choices: { message: { content: string } }[] }) => r.choices[0].message.content);
+        signal,
+      ).then((r: { choices?: { message?: { content?: string } }[] }) => {
+        const content = r?.choices?.[0]?.message?.content;
+        if (typeof content !== "string") {
+          throw new RemembraError("LLM_ERROR", "llm returned a malformed response (missing choices[0].message.content)");
+        }
+        return content;
+      });
     }
     case "anthropic": {
       const key = process.env.ANTHROPIC_API_KEY;
       if (!key) throw new Error("REMEMBRA_LLM=anthropic requires ANTHROPIC_API_KEY");
-      return postJson("https://api.anthropic.com/v1/messages", {
-        headers: {
-          "x-api-key": key,
-          "anthropic-version": "2023-06-01",
+      return postJson(
+        "https://api.anthropic.com/v1/messages",
+        {
+          headers: {
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+          },
+          body: {
+            model: process.env.REMEMBRA_LLM_MODEL ?? "claude-haiku-4-5",
+            max_tokens: 4096,
+            system,
+            messages: [{ role: "user", content: user }],
+          },
         },
-        body: {
-          model: process.env.REMEMBRA_LLM_MODEL ?? "claude-haiku-4-5",
-          max_tokens: 4096,
-          system,
-          messages: [{ role: "user", content: user }],
-        },
-      }).then((r: { content: { text: string }[] }) => r.content[0].text);
+        signal,
+      ).then((r: { content?: { text?: string }[] }) => {
+        const text = r?.content?.[0]?.text;
+        if (typeof text !== "string") {
+          throw new RemembraError("LLM_ERROR", "llm returned a malformed response (missing content[0].text)");
+        }
+        return text;
+      });
     }
     case "ollama": {
       const host = process.env.OLLAMA_HOST ?? "http://localhost:11434";
-      return postJson(`${host}/api/chat`, {
-        body: {
-          model: process.env.REMEMBRA_LLM_MODEL ?? "llama3.2",
-          format: "json",
-          stream: false,
-          messages: [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
+      return postJson(
+        `${host}/api/chat`,
+        {
+          body: {
+            model: process.env.REMEMBRA_LLM_MODEL ?? "llama3.2",
+            format: "json",
+            stream: false,
+            messages: [
+              { role: "system", content: system },
+              { role: "user", content: user },
+            ],
+          },
         },
-      }).then((r: { message: { content: string } }) => r.message.content);
+        signal,
+      ).then((r: { message?: { content?: string } }) => {
+        const content = r?.message?.content;
+        if (typeof content !== "string") {
+          throw new RemembraError("LLM_ERROR", "llm returned a malformed response (missing message.content)");
+        }
+        return content;
+      });
     }
   }
 }
@@ -102,17 +147,9 @@ async function chat(provider: LlmProvider, system: string, user: string): Promis
 async function postJson(
   url: string,
   opts: { headers?: Record<string, string>; body: unknown },
+  signal?: AbortSignal,
 ): Promise<any> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...opts.headers },
-    body: JSON.stringify(opts.body),
-  });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => "");
-    throw new Error(`LLM request failed (${res.status} ${url}): ${detail.slice(0, 300)}`);
-  }
-  return res.json();
+  return providerFetch(url, { label: "llm", headers: opts.headers, body: opts.body, signal });
 }
 
 // ---------------------------------------------------------------------------
@@ -138,9 +175,10 @@ export async function resolveMerge(
   newContent: string,
   existing: { type: string; content: string },
   provider: LlmProvider = resolveLlmProvider(),
+  opts?: LlmCallOptions,
 ): Promise<MergeDecision> {
   const user = `EXISTING (${existing.type}): ${existing.content}\nNEW: ${newContent}`;
-  const raw = await chat(provider, MERGE_PROMPT, user);
+  const raw = await chat(provider, MERGE_PROMPT, user, opts?.signal);
   let parsed: { action?: string; content?: string };
   try {
     const text = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");

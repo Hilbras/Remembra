@@ -165,6 +165,8 @@ Full reference: **[docs/tools.md](docs/tools.md)**
 |-----|--------------|
 | [Memory model](docs/memory-model.md) | Types, scopes, ranking, storage format |
 | [Tool reference](docs/tools.md) | Every MCP tool with arguments |
+| [Public API](docs/public-api.md) | Stability contract: tools, HTTP routes, error codes, snapshot format, CLI |
+| [Storage format](docs/storage.md) | On-disk layout, file format, read validation, history |
 | [Web dashboard](docs/ui.md) | Pages, theming, dashboard auth, static-serving security |
 | [Client setup](docs/clients.md) | Config for each supported tool |
 | [ChatGPT setup](docs/chatgpt.md) | HTTP API + Custom GPT walkthrough |

@@ -16,6 +16,8 @@ export interface StoreLockOptions {
   lockStaleMs?: number;
   /** LRU parse-cache capacity in entries. Env: REMEMBRA_CACHE_SIZE. Default 10000; 0 disables. */
   cacheSize?: number;
+  /** Test hook: memory-id factory (default: 12 hex chars from randomUUID). */
+  idGen?: () => string;
 }
 
 /**
@@ -56,6 +58,7 @@ export class MemoryStore implements MemoryBackend {
   private recovered = false;
   private holdsLock = false;
   private readonly cache: ParseCache;
+  private readonly idGen: () => string;
 
   constructor(
     private readonly root: string,
@@ -64,6 +67,7 @@ export class MemoryStore implements MemoryBackend {
     this.lockTimeoutMs = opts.lockTimeoutMs ?? Number(process.env.REMEMBRA_LOCK_TIMEOUT_MS ?? 5000);
     this.lockStaleMs = opts.lockStaleMs ?? Number(process.env.REMEMBRA_LOCK_STALE_MS ?? 10000);
     this.cache = new ParseCache(opts.cacheSize ?? Number(process.env.REMEMBRA_CACHE_SIZE ?? 10_000));
+    this.idGen = opts.idGen ?? genId;
   }
 
   static defaultRoot(): string {
@@ -365,8 +369,8 @@ export class MemoryStore implements MemoryBackend {
   ): Promise<Memory> {
     const now = new Date().toISOString();
     // 12 hex chars (2^48): collision-safe; existence check guards the rest (P2 audit #9).
-    let id = genId();
-    for (let i = 0; i < 10 && (await this.findFile(id)); i++) id = genId();
+    let id = this.idGen();
+    for (let i = 0; i < 10 && (await this.findFile(id)); i++) id = this.idGen();
     if (await this.findFile(id)) {
       throw new RemembraError("CONFLICT", `could not allocate a unique memory id after retries`);
     }
@@ -722,18 +726,60 @@ function render(m: Memory): string {
 /** Files we've already warned about (avoid log spam on every search). */
 const parseWarnings = new Set<string>();
 
-async function parse(file: string): Promise<Memory | null> {
-  const warnOnce = (why: string) => {
-    const key = `${file}:${why}`;
-    if (parseWarnings.has(key)) return;
-    parseWarnings.add(key);
+/** Warn once per file+reason. `skip` = file excluded from reads; `fix` = served after normalization. */
+function warnOnce(file: string, why: string, kind: "skip" | "fix"): void {
+  const key = `${file}:${kind}:${why}`;
+  if (parseWarnings.has(key)) return;
+  parseWarnings.add(key);
+  const base = path.basename(file);
+  if (kind === "skip") {
     logEvent(
       "warn",
       "memory_parse_skipped",
-      { file: path.basename(file), reason: why },
-      `Remembra: skipping unparseable memory file ${path.basename(file)} (${why})`,
+      { file: base, reason: why },
+      `Remembra: skipping unparseable memory file ${base} (${why})`,
     );
+  } else {
+    logEvent(
+      "warn",
+      "memory_normalized",
+      { file: base, reason: why },
+      `Remembra: memory file ${base} had invalid metadata (${why}); normalized on read`,
+    );
+  }
+}
+
+const EPOCH = new Date(0).toISOString();
+
+/** ISO timestamp if parseable, else undefined (invalid → caller decides). */
+function validDate(v: string | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? new Date(t).toISOString() : undefined;
+}
+
+function truncate(s: string, max = 40): string {
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+}
+
+/**
+ * Read-side validation (plan §3.4 / §3.8 "invalid metadata").
+ *
+ * Two outcomes:
+ *  - **skip**: the file's structure or semantics are unusable (unknown schema
+ *    version, bad id/type/scope, empty content). It is excluded from reads and
+ *    logged once as `memory_parse_skipped` — never deleted, never written.
+ *  - **normalize**: the value is out of range but recoverable (importance 9,
+ *    confidence -0.2, malformed date). It is clamped/fallbacked, the memory is
+ *    served, and `memory_normalized` is logged once — so ranking math can
+ *    never see NaN and hand-edited files don't silently vanish.
+ */
+async function parse(file: string): Promise<Memory | null> {
+  const skip = (why: string): null => {
+    warnOnce(file, why, "skip");
+    return null;
   };
+  const fix = (why: string): void => warnOnce(file, why, "fix");
   try {
     const buf = await fs.readFile(file);
     // decryptBuffer passes plain bytes through untouched; encrypted files
@@ -741,46 +787,126 @@ async function parse(file: string): Promise<Memory | null> {
     // warn-skipped: unreadable storage must fail loudly (health → 503).
     const raw = decryptBuffer(buf).toString("utf8");
     const match = raw.match(/^---\n([\s\S]*?)\n---\n\n?([\s\S]*)$/);
-    if (!match) {
-      warnOnce("missing/invalid frontmatter");
-      return null;
-    }
+    if (!match) return skip("missing/invalid frontmatter");
     const meta: Record<string, string> = {};
     for (const line of match[1].split("\n")) {
       const idx = line.indexOf(":");
       if (idx === -1) continue;
       meta[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
     }
+
+    // Schema version: missing = current (legacy files); a version from the
+    // future means data we don't understand — refuse to serve it (the file
+    // stays untouched on disk).
+    const version = meta.version === undefined ? SCHEMA_VERSION : Number(meta.version);
+    if (!Number.isInteger(version)) return skip(`invalid schema version "${truncate(meta.version)}"`);
+    if (version > SCHEMA_VERSION) return skip(`unsupported schema version ${version}`);
+
+    // Id: the filename is the source of truth (findFile matches on it).
+    const baseId = path.basename(file, ".md");
+    let id = baseId;
+    if (meta.id !== undefined) {
+      if (!/^[A-Za-z0-9._-]+$/.test(meta.id)) return skip(`invalid id "${truncate(meta.id)}"`);
+      if (meta.id !== baseId) {
+        fix("id/filename mismatch — using filename");
+        id = baseId;
+      }
+    }
+
+    const type = meta.type ?? "fact";
+    if (type !== "fact" && type !== "decision" && type !== "role" && type !== "history") {
+      return skip(`invalid type "${truncate(type)}"`);
+    }
+
+    const scope = meta.scope ?? "global";
+    if (!scope || /(^|\/)\.\.(\/|$)|\\/.test(scope)) return skip("invalid scope");
+
+    const content = match[2].trim();
+    if (!content) return skip("empty content");
+
     const tagsRaw = (meta.tags ?? "[]").replace(/^\[|\]$/g, "");
+
+    // Ranges: clamp instead of rejecting — never let NaN into ranking math.
+    const impNum = Number(meta.importance ?? 3);
+    let importance = 3;
+    if (Number.isFinite(impNum)) {
+      importance = Math.min(5, Math.max(1, Math.round(impNum)));
+      if (importance !== impNum) fix(`importance ${impNum} clamped to ${importance}`);
+    } else {
+      fix(`invalid importance "${truncate(meta.importance ?? "")}"`);
+    }
+
+    let confidence: number | undefined;
+    if (meta.confidence !== undefined) {
+      const c = Number(meta.confidence);
+      if (!Number.isFinite(c)) {
+        fix(`invalid confidence "${truncate(meta.confidence)}"`);
+      } else {
+        confidence = Math.min(1, Math.max(0, c));
+        if (confidence !== c) fix(`confidence ${c} clamped to ${confidence}`);
+      }
+    }
+
+    const createdOk = validDate(meta.created);
+    if (meta.created !== undefined && !createdOk) fix("invalid created date");
+    const updatedOk = validDate(meta.updated);
+    if (meta.updated !== undefined && !updatedOk) fix("invalid updated date");
+    const createdAt = createdOk ?? EPOCH;
+    const updatedAt = updatedOk ?? createdOk ?? createdAt;
+
+    let lastSeen = validDate(meta.lastSeen);
+    if (meta.lastSeen !== undefined && !lastSeen) {
+      fix("invalid lastSeen date");
+      lastSeen = undefined;
+    }
+    let archivedAt = validDate(meta.archivedAt);
+    if (meta.archivedAt !== undefined && !archivedAt) {
+      fix("invalid archivedAt date");
+      archivedAt = undefined;
+    }
+
+    let provenance: Memory["provenance"];
+    if (meta.provenance === "explicit" || meta.provenance === "auto") {
+      provenance = meta.provenance;
+    } else {
+      if (meta.provenance !== undefined) fix(`invalid provenance "${truncate(meta.provenance)}"`);
+      provenance = undefined;
+    }
+
     let embedding: number[] | undefined;
     if (meta.embedding) {
       const nums = meta.embedding.replace(/^\[|\]$/g, "").split(",").map(Number);
       if (nums.length > 0 && nums.every((n) => Number.isFinite(n))) embedding = nums;
+      else fix("invalid embedding");
     }
+
+    let related = parseList(meta.related);
+    if (related) {
+      const ok = related.filter((r) => /^[A-Za-z0-9._-]+$/.test(r));
+      if (ok.length !== related.length) fix("invalid related id");
+      related = ok.length > 0 ? ok : undefined;
+    }
+
     return {
-      id: meta.id ?? path.basename(file, ".md"),
-      type: (meta.type ?? "fact") as Memory["type"],
-      content: match[2].trim(),
-      scope: meta.scope ?? "global",
+      id,
+      type,
+      content,
+      scope,
       tags: tagsRaw ? tagsRaw.split(",").map((t) => t.trim()) : [],
-      importance: Number(meta.importance ?? 3),
-      createdAt: meta.created ?? new Date(0).toISOString(),
-      updatedAt: meta.updated ?? meta.created ?? new Date(0).toISOString(),
-      lastSeen: meta.lastSeen,
-      archivedAt: meta.archivedAt,
+      importance,
+      createdAt,
+      updatedAt,
+      lastSeen,
+      archivedAt,
       source: meta.source,
-      provenance:
-        meta.provenance === "explicit" || meta.provenance === "auto" ? meta.provenance : undefined,
-      confidence:
-        meta.confidence !== undefined && Number.isFinite(Number(meta.confidence))
-          ? Number(meta.confidence)
-          : undefined,
-      related: parseList(meta.related),
+      provenance,
+      confidence,
+      related,
       embedding,
     };
   } catch (err) {
     if (err instanceof RemembraError) throw err; // ENCRYPTED_NO_KEY etc — loud, never skipped
-    warnOnce(err instanceof Error ? err.message : String(err));
+    warnOnce(file, err instanceof Error ? err.message : String(err), "skip");
     return null;
   }
 }

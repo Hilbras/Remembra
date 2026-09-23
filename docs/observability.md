@@ -24,9 +24,15 @@ Example JSON events:
 ```
 
 Event names in the wild: `http_listening`, `mcp_listening`, `search`,
-`shutdown`, `crash_recovery`, `memory_parse_skipped`, `embedding_failed`,
-`touch_failed`, `merge_llm_failed`, `decay_failed`, `redacted` (3.8.0 — PII
-found at ingest; fields are per-kind counts, never the matched text).
+`shutdown`, `crash_recovery`, `memory_parse_skipped`, `memory_normalized`
+(4.0.1 — invalid metadata fixed at read time; fields: file, reason),
+`embedding_failed`, `touch_failed`, `merge_llm_failed`, `decay_failed`,
+`provider_retry` (4.0.1 — fields: provider, attempt, retries_left, reason),
+`provider_failed` (4.0.1 — final failure: provider, attempts, status/reason),
+`provider_cancelled` (4.0.1 — client disconnected mid-call), `redacted`
+(3.8.0 — PII found at ingest; fields are per-kind counts, never the matched
+text). Provider events carry only low-cardinality fields — no URLs, keys, or
+request bodies (log-hygiene rule).
 
 ## Metrics — `GET /metrics`
 

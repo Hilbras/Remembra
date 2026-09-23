@@ -15,6 +15,10 @@ where possible, so a plain keyword install still works with zero API keys.
 | `OPENAI_API_KEY` | — | — | Required when provider = openai |
 | `ANTHROPIC_API_KEY` | — | — | Required when provider = anthropic |
 | `OLLAMA_HOST` | URL | `http://localhost:11434` | Ollama endpoint (LLM and/or embeddings) |
+| `REMEMBRA_PROVIDER_TIMEOUT_MS` | ms | `60000` | Per-attempt timeout for every provider call (4.0.1, plan §3.7) |
+| `REMEMBRA_PROVIDER_RETRIES` | count | `2` | Retries after the first attempt — network errors, 408/429/5xx only |
+| `REMEMBRA_PROVIDER_BUDGET_MS` | ms | `180000` | Wall-clock cap across all attempts; a hung provider can never block longer |
+| `REMEMBRA_PROVIDER_BACKOFF_MS` | ms | `250` | Retry backoff base (doubles per retry, capped at 2s) |
 
 ### Examples
 
@@ -98,10 +102,28 @@ Memories stored before you enabled embeddings have no vectors. They still
 work (keyword fallback), but to bring them into semantic search, re-store
 them or wait for v3's maintenance commands.
 
-## Failure behavior
+## Failure behavior (bounded since 4.0.1 — plan §3.7)
 
-- **Embedding API fails** → warning logged, write continues without a vector,
-  search degrades to keywords. Never blocks storing.
-- **LLM call fails** → `memory_digest` returns the error; nothing is stored.
+Every outbound call goes through one policy: **per-attempt timeout → bounded
+retries with backoff → overall budget**, with error normalization to stable
+codes. A provider that hangs can delay a request by at most the budget — it
+can never hang the service.
+
+- **Embedding API fails** (after retries/timeout) → warning logged
+  (`embedding_failed`), write continues without a vector, search degrades to
+  keywords. Never blocks storing.
+- **LLM call fails** → `memory_digest` returns `LLM_ERROR` (502); a hung
+  provider returns `PROVIDER_TIMEOUT` (504). Nothing is stored.
+- **Retries**: network failures and HTTP 408/429/5xx only, capped by
+  `REMEMBRA_PROVIDER_RETRIES` and the budget; other 4xx (bad key, bad
+  request) fail immediately. Each retry logs `provider_retry`, the final
+  failure logs `provider_failed` (label/attempt/status/reason only — no
+  URLs, keys, or bodies).
+- **Cancellation**: an HTTP client that disconnects mid-digest aborts the
+  in-flight provider call (and stops retrying) instead of burning tokens on a
+  response nobody will read.
+- **Malformed responses** (non-JSON body, missing `choices[0].message`, junk
+  embedding vectors) are rejected as `LLM_ERROR` — never half-parsed into
+  memories.
 - **No keys configured** → MCP/HTTP servers run normally; only `memory_digest`
   errors if invoked.

@@ -107,6 +107,10 @@ metrics, export/import. See **[ui.md](ui.md)**; disable with
 | `REMEMBRA_HISTORY_LIMIT` | `20` | Max version snapshots kept per memory; `0` disables history |
 | `REMEMBRA_REDACT` | *(unset)* | `1` enables PII redaction at ingest (irreversible) — see [security.md](security.md#pii-redaction-opt-in-380) |
 | `REMEMBRA_ENCRYPT_KEY` | *(unset)* | 64-hex 32-byte key → AES-256-GCM at rest; run `remembra encrypt` — see [security.md](security.md#encryption-at-rest-opt-in-380) |
+| `REMEMBRA_PROVIDER_TIMEOUT_MS` | `60000` | Per-attempt timeout for LLM/embedding calls (4.0.1) |
+| `REMEMBRA_PROVIDER_RETRIES` | `2` | Bounded provider retries (network/408/429/5xx) |
+| `REMEMBRA_PROVIDER_BUDGET_MS` | `180000` | Wall-clock cap across all provider attempts |
+| `REMEMBRA_PROVIDER_BACKOFF_MS` | `250` | Provider retry backoff base |
 | `REMEMBRA_DEBUG` | *(unset)* | `1` logs the storage root path at startup (off by default: log hygiene) |
 | `REMEMBRA_LOG` | *(auto)* | Force log format: `json` or `text`. Unset → auto: JSON when stderr is piped, text on a TTY. See [observability.md](observability.md) |
 

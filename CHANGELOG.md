@@ -7,6 +7,68 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [4.0.1] — 2026-09-23
+
+**Foundation & Correctness** — the non-breaking subset of the Master
+Development Plan's §3 milestone (4.0.0 already shipped as the dashboard
+release; per the split decision, structural items — formal metadata format,
+optimistic `expectedVersion`, UUIDv7 — land in 4.1.0 "Memory Model &
+Provenance" instead).
+
+### Added — provider reliability (plan §3.7)
+- **`src/provider.ts`**: every LLM/embedding call now runs through one
+  policy — per-attempt **timeout** (`REMEMBRA_PROVIDER_TIMEOUT_MS`, 60s),
+  **bounded retries** with capped exponential backoff
+  (`REMEMBRA_PROVIDER_RETRIES`=2, `REMEMBRA_PROVIDER_BACKOFF_MS`=250; only
+  network/408/429/5xx — 4xx fails fast), an **overall wall-clock budget**
+  (`REMEMBRA_PROVIDER_BUDGET_MS`, 180s), and **cancellation** via
+  `AbortSignal`. A hung provider could previously block a store/digest call
+  **forever** (bare `fetch`); now it is bounded and observable.
+- **Error normalization**: new `PROVIDER_TIMEOUT` code (HTTP **504**);
+  exhausted retries, network failures, malformed bodies/vectors and
+  cancellations normalize to `LLM_ERROR` (502). Digest rethrows already-
+  classified errors instead of double-wrapping them.
+- **Cancellation end-to-end**: an HTTP client disconnecting mid-digest aborts
+  the in-flight provider call (and stops retrying) — signal plumbed
+  `res.close → service.digest → extract/merge/embed → fetch`.
+- **Response shape guards**: missing `choices[0].message.content` /
+  `content[0].text` / `message.content`, non-JSON bodies, and junk embedding
+  vectors are rejected as `LLM_ERROR` — never half-parsed.
+- New log events: `provider_retry`, `provider_failed`, `provider_cancelled`
+  (low-cardinality fields only — no URLs/keys/bodies, log-hygiene rule).
+
+### Added — read-side metadata validation (plan §3.4 / §3.8)
+- Every read now validates the parsed object (`store.parse`):
+  - **skip** (file untouched, logged once as `memory_parse_skipped`):
+    broken frontmatter, non-numeric or **future schema version**, bad id,
+    unknown type, scope with `..`, empty content — unknown-version files from
+    a newer Remembra are never served;
+  - **normalize** (served, logged once as `memory_normalized`):
+    importance clamped 1–5 (non-numeric → 3), confidence clamped 0–1,
+    unparseable dates fall back instead of propagating `NaN` into decay
+    math, id/filename mismatch resolves to the filename, bad
+    provenance/embedding/related entries are dropped or filtered.
+- **ID allocation tested** (plan §3.6/§3.8): collision → fresh-id retry
+  (via a new `idGen` store test hook), exhaustion → `CONFLICT`; an existing
+  memory is never overwritten.
+
+### Added — tests & docs (plan §3.8 / §3.1)
+- `src/test/foundation.test.ts` — 23 tests: provider retry/timeout/budget/
+  cancel/normalize, malformed LLM & embedding responses, invalid-type/
+  future-version/unsafe-scope/empty-content skips, NaN-proof clamping,
+  warn-once behavior, simultaneous writes across instances,
+  delete-during-search, archive/revive races (single-tree invariant),
+  ID collision + CONFLICT, a seeded **serialization property test**
+  (40 random memories round-trip byte-faithfully), and HTTP
+  client-disconnect cancellation. **160 → 183 tests.**
+- New **`docs/public-api.md`** (stability contract: tools, HTTP routes,
+  error→status table, snapshot format, CLI, provider policy) and
+  **`docs/storage.md`** (layout, file format field table, read-validation
+  rules, history) — completing the §3.1 audit doc list alongside the existing
+  architecture/memory-model/security/providers docs.
+- Updated: providers (policy envs + bounded failure behavior), clients
+  (env index), observability (new events), README docs table.
+
 ## [4.0.0] — 2026-09-23
 
 **v4 — the complete web dashboard**, shipped as one release: every read and

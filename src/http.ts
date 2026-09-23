@@ -144,7 +144,13 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // POST /memories/digest — must be checked before /memories/:id DELETE patterns
       if (req.method === "POST" && path === "/memories/digest") {
         const body = await readBody(req, maxBody);
-        const result = await service.digest(DigestInput.parse(body));
+        // Cancellation (§3.7): a client that disconnects mid-digest aborts the
+        // in-flight provider calls instead of letting them run to completion.
+        const ac = new AbortController();
+        res.on("close", () => {
+          if (!res.writableEnded) ac.abort();
+        });
+        const result = await service.digest({ ...DigestInput.parse(body), signal: ac.signal });
         return send(res, 200, result);
       }
 

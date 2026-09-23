@@ -37,9 +37,13 @@ interface ServiceDeps {
   embeddingProvider?: EmbeddingProvider;
   llmProvider?: LlmProvider;
   /** Injection points for tests. */
-  embedFn?: (text: string) => Promise<number[]>;
-  extractFn?: (transcript: string) => Promise<ExtractedMemory[]>;
-  mergeFn?: (newContent: string, existing: { type: string; content: string }) => Promise<
+  embedFn?: (text: string, opts?: { signal?: AbortSignal }) => Promise<number[]>;
+  extractFn?: (transcript: string, opts?: { signal?: AbortSignal }) => Promise<ExtractedMemory[]>;
+  mergeFn?: (
+    newContent: string,
+    existing: { type: string; content: string },
+    opts?: { signal?: AbortSignal },
+  ) => Promise<
     { action: "store" } | { action: "skip" } | { action: "merge"; content: string }
   >;
   /** How often the opportunistic decay pass may run on search (ms). Default 1h. */
@@ -57,11 +61,12 @@ interface ServiceDeps {
  * call into this module, so behavior is guaranteed to match.
  */
 export class MemoryService {
-  private readonly embedFn?: (text: string) => Promise<number[]>;
-  private readonly extractFn: (transcript: string) => Promise<ExtractedMemory[]>;
+  private readonly embedFn?: (text: string, opts?: { signal?: AbortSignal }) => Promise<number[]>;
+  private readonly extractFn: (transcript: string, opts?: { signal?: AbortSignal }) => Promise<ExtractedMemory[]>;
   private readonly mergeFn: (
     newContent: string,
     existing: { type: string; content: string },
+    opts?: { signal?: AbortSignal },
   ) => Promise<{ action: "store" } | { action: "skip" } | { action: "merge"; content: string }>;
   private readonly decayIntervalMs: number;
   private readonly archiveAfterDays: number;
@@ -76,10 +81,14 @@ export class MemoryService {
 
     this.embedFn =
       deps.embedFn ??
-      (emb === "none" ? undefined : async (text: string) => embedText(text, emb));
+      (emb === "none"
+        ? undefined
+        : async (text: string, o?: { signal?: AbortSignal }) => embedText(text, emb, { signal: o?.signal }));
 
-    this.extractFn = deps.extractFn ?? (async (t: string) => extractMemories(t, llm));
-    this.mergeFn = deps.mergeFn ?? ((n, e) => resolveMerge(n, e, llm));
+    this.extractFn =
+      deps.extractFn ?? (async (t: string, o?: { signal?: AbortSignal }) => extractMemories(t, llm, { signal: o?.signal }));
+    this.mergeFn =
+      deps.mergeFn ?? ((n, e, o?: { signal?: AbortSignal }) => resolveMerge(n, e, llm, { signal: o?.signal }));
 
     this.decayIntervalMs = deps.decayIntervalMs ?? 3_600_000; // 1h
     this.archiveAfterDays = deps.archiveAfterDays ?? Number(process.env.REMEMBRA_ARCHIVE_AFTER_DAYS ?? 90);
@@ -91,10 +100,10 @@ export class MemoryService {
     return this.embedFn !== undefined;
   }
 
-  private async maybeEmbed(text: string): Promise<number[] | undefined> {
+  private async maybeEmbed(text: string, signal?: AbortSignal): Promise<number[] | undefined> {
     if (!this.embedFn) return undefined;
     try {
-      return await this.embedFn(text);
+      return await this.embedFn(text, { signal });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logEvent("warn", "embedding_failed", { error: msg.slice(0, 200) }, `Remembra: embedding failed (${msg.slice(0, 200)}); continuing without`);
@@ -455,7 +464,13 @@ export class MemoryService {
    * Serialized through a lock: simultaneous digests could otherwise both
    * read the same active set and double-store duplicates.
    */
-  async digest(opts: { transcript: string; scope?: string; source?: string }): Promise<DigestResult> {
+  async digest(opts: {
+    transcript: string;
+    scope?: string;
+    source?: string;
+    /** Cancellation (plan §3.7): HTTP disconnects abort the in-flight provider calls. */
+    signal?: AbortSignal;
+  }): Promise<DigestResult> {
     const t0 = performance.now();
     const run = this.digestLock.then(() => this.doDigest(opts));
     this.digestLock = run.then(
@@ -483,11 +498,17 @@ export class MemoryService {
 
   private digestLock: Promise<unknown> = Promise.resolve();
 
-  private async doDigest(opts: { transcript: string; scope?: string; source?: string }): Promise<DigestResult> {
+  private async doDigest(opts: {
+    transcript: string;
+    scope?: string;
+    source?: string;
+    signal?: AbortSignal;
+  }): Promise<DigestResult> {
     let extracted: ExtractedMemory[];
     try {
-      extracted = await this.extractFn(opts.transcript);
+      extracted = await this.extractFn(opts.transcript, { signal: opts.signal });
     } catch (err) {
+      if (err instanceof RemembraError) throw err; // already classified (PROVIDER_TIMEOUT / LLM_ERROR)
       const msg = err instanceof Error ? err.message : String(err);
       throw new RemembraError("LLM_ERROR", `memory extraction failed: ${msg}`, { cause: err });
     }
@@ -500,6 +521,9 @@ export class MemoryService {
     let merged = 0;
 
     for (const extractedItem of extracted) {
+      // Cancellation (§3.7): stop promptly once the caller is gone — already
+      // stored items stay (dedup makes a retried digest idempotent).
+      if (opts.signal?.aborted) throw new RemembraError("LLM_ERROR", "digest cancelled");
       // PII redaction at the digest boundary: extraction LLM sees the raw
       // transcript (it must, to understand it) — storage never does.
       const clean = this.redactPair(extractedItem.content, extractedItem.tags);
@@ -548,17 +572,21 @@ export class MemoryService {
       }
 
       // Evolved fact → LLM decides: store fresh, skip, or merge.
-      const itemVec = (await this.maybeEmbed(item.content)) ?? null;
+      const itemVec = (await this.maybeEmbed(item.content, opts.signal)) ?? null;
       const candidate = this.findCandidate(item, scope, [...active, ...archived], itemVec);
       if (candidate) {
         // Fail-open: a merge LLM failure must never lose the new fact —
         // store it fresh instead (consistent with extraction fail-open).
         let decision: { action: "store" } | { action: "skip" } | { action: "merge"; content: string };
         try {
-          decision = await this.mergeFn(item.content, {
-            type: candidate.type,
-            content: candidate.content,
-          });
+          decision = await this.mergeFn(
+            item.content,
+            {
+              type: candidate.type,
+              content: candidate.content,
+            },
+            { signal: opts.signal },
+          );
         } catch (err) {
           logEvent(
             "warn",
@@ -580,7 +608,7 @@ export class MemoryService {
             tags: [] as string[],
           };
           const content = `${cleanMerged.content}\n\n> superseded (${now}): ${old}`;
-          const embedding = await this.maybeEmbed(cleanMerged.content);
+          const embedding = await this.maybeEmbed(cleanMerged.content, opts.signal);
           await this.db.update({ ...candidate, content, embedding, source: opts.source ?? candidate.source });
           merged++;
           // Re-index dedup set against the new content.

@@ -5,7 +5,11 @@
  * Keys:   OPENAI_API_KEY / OLLAMA_HOST (default localhost:11434)
  *
  * Vectors are computed once on write and cached in the memory file's frontmatter.
+ * All requests go through the provider policy (src/provider.ts): timeout,
+ * bounded retries, overall budget, cancellation, error normalization (§3.7).
  */
+import { providerFetch } from "./provider.js";
+import { RemembraError } from "./errors.js";
 
 export type EmbeddingProvider = "openai" | "ollama" | "none";
 
@@ -15,41 +19,55 @@ export function resolveEmbeddingProvider(): EmbeddingProvider {
   throw new Error(`Invalid REMEMBRA_EMBEDDINGS "${v}" — expected openai|ollama|none`);
 }
 
+export interface EmbedCallOptions {
+  signal?: AbortSignal;
+}
+
 export async function embedText(
   text: string,
   provider: EmbeddingProvider = resolveEmbeddingProvider(),
+  opts?: EmbedCallOptions,
 ): Promise<number[]> {
   if (provider === "none") throw new Error("embeddings disabled (REMEMBRA_EMBEDDINGS=none)");
 
   if (provider === "openai") {
     const key = process.env.OPENAI_API_KEY;
     if (!key) throw new Error("REMEMBRA_EMBEDDINGS=openai requires OPENAI_API_KEY");
-    const res = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({
+    const data = await providerFetch("https://api.openai.com/v1/embeddings", {
+      label: "embeddings",
+      headers: { authorization: `Bearer ${key}` },
+      body: {
         model: process.env.REMEMBRA_EMBEDDING_MODEL ?? "text-embedding-3-small",
         input: text,
-      }),
+      },
+      signal: opts?.signal,
     });
-    if (!res.ok) throw new Error(`OpenAI embeddings failed: ${res.status}`);
-    const data = (await res.json()) as { data: { embedding: number[] }[] };
-    return data.data[0].embedding;
+    return toVector(data?.data?.[0]?.embedding, "openai");
   }
 
   // ollama
   const host = process.env.OLLAMA_HOST ?? "http://localhost:11434";
-  const res = await fetch(`${host}/api/embeddings`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
+  const data = await providerFetch(`${host}/api/embeddings`, {
+    label: "embeddings",
+    body: {
       model: process.env.REMEMBRA_EMBEDDING_MODEL ?? "nomic-embed-text",
       prompt: text,
-    }),
+    },
+    signal: opts?.signal,
   });
-  if (!res.ok) throw new Error(`Ollama embeddings failed: ${res.status}`);
-  const data = (await res.json()) as { embedding: number[] };
-  return data.embedding;
+  return toVector(data?.embedding, "ollama");
+}
+
+/** Validate the provider's answer: a non-empty array of finite numbers. */
+function toVector(v: unknown, provider: string): number[] {
+  if (
+    !Array.isArray(v) ||
+    v.length === 0 ||
+    !v.every((n): n is number => typeof n === "number" && Number.isFinite(n))
+  ) {
+    throw new RemembraError("LLM_ERROR", `${provider} returned a malformed embedding vector`);
+  }
+  return v;
 }
 
 export function cosine(a: number[], b: number[]): number {
