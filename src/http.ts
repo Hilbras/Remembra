@@ -51,6 +51,9 @@ export function resolveListen(
  *   GET    /memories            → ?scope=&type=&includeArchived=&offset=&limit=
  *   POST   /memories/digest     → LLM extraction
  *   POST   /maintain            → decay sweep + vector backfill
+ *   GET    /memories/:id        → one memory + related + backlinks (Phase 8)
+ *   POST   /memories/:id/relate → link/unlink memories (Phase 8)
+ *   GET    /memories/:id/history→ version history + line diffs (Phase 8)
  *   DELETE /memories/:id        → forget
  */
 export function createHttpServer(service: MemoryService, opts: HttpOptions = {}): http.Server {
@@ -148,6 +151,28 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return send(res, result.ok ? 200 : 404, result);
       }
 
+      // Graph sub-routes (audit Phase 8): POST relate, GET history.
+      const sub = path.match(/^\/memories\/([^/]+)\/(relate|history)$/);
+      if (sub && req.method === "POST" && sub[2] === "relate") {
+        const body = (await readBody(req, maxBody)) as Record<string, unknown>;
+        const result = await service.relate({ ...body, id: decodeURIComponent(sub[1]) }); // path id wins
+        return send(res, 200, result);
+      }
+      if (sub && req.method === "GET" && sub[2] === "history") {
+        const result = await service.history({
+          id: decodeURIComponent(sub[1]),
+          limit: intParam(url.searchParams.get("limit"), 1) ?? undefined,
+        });
+        return send(res, 200, result);
+      }
+
+      // GET /memories/:id — memory with related links + backlinks
+      const single = path.match(/^\/memories\/([^/]+)$/);
+      if (req.method === "GET" && single) {
+        const result = await service.get(decodeURIComponent(single[1]));
+        return send(res, 200, result);
+      }
+
       send(res, 404, { error: `No route: ${req.method} ${path}` });
     } catch (err) {
       const name = (err as { name?: string }).name;
@@ -206,6 +231,7 @@ function routeLabel(p: string): string {
     case "/maintain":
       return "maintain";
     default:
+      if (/^\/memories\/[^/]+\/(relate|history)$/.test(p)) return "memory_sub";
       return /^\/memories\/[^/]+$/.test(p) ? "memory_item" : "other";
   }
 }

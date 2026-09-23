@@ -3,4 +3,4 @@
  * the `/health` readiness payload, and the `remembra_info` metric.
  * package.json is kept in sync by a test (phase7).
  */
-export const VERSION = "3.7.0";
+export const VERSION = "3.8.0";

@@ -7,6 +7,9 @@ import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { VERSION } from "./version.js";
 import { performance } from "node:perf_hooks";
+import { redact, redactTags, redactionEnabled, RedactionKind } from "./redact.js";
+import { unifiedDiff } from "./diff.js";
+import { RelateInput, HistoryInput } from "./types.js";
 import {
   resolveLlmProvider,
   extractMemories,
@@ -45,6 +48,8 @@ interface ServiceDeps {
   archiveAfterDays?: number;
   /** Archived memory older than this gets auto-deleted. Default 365. */
   archiveTtlDays?: number;
+  /** Force the PII redaction filter on/off (default: REMEMBRA_REDACT env). */
+  redact?: boolean;
 }
 
 /**
@@ -61,6 +66,7 @@ export class MemoryService {
   private readonly decayIntervalMs: number;
   private readonly archiveAfterDays: number;
   private readonly archiveTtlDays: number;
+  private readonly redactOn: boolean;
   private lastDecayRun = 0;
   private decayRunning = false;
 
@@ -78,6 +84,7 @@ export class MemoryService {
     this.decayIntervalMs = deps.decayIntervalMs ?? 3_600_000; // 1h
     this.archiveAfterDays = deps.archiveAfterDays ?? Number(process.env.REMEMBRA_ARCHIVE_AFTER_DAYS ?? 90);
     this.archiveTtlDays = deps.archiveTtlDays ?? Number(process.env.REMEMBRA_ARCHIVE_TTL_DAYS ?? 365);
+    this.redactOn = deps.redact ?? redactionEnabled();
   }
 
   get embeddingsEnabled(): boolean {
@@ -105,6 +112,9 @@ export class MemoryService {
     } catch (err) {
       throw inputError(err, "INVALID_INPUT");
     }
+    // PII redaction (audit Phase 8, opt-in REMEMBRA_REDACT): before embed,
+    // before disk, before export — raw patterns never leave this process.
+    if (this.redactOn) parsed = this.applyRedaction(parsed);
     const embedding = await this.maybeEmbed(parsed.content);
     const memory = await this.db.store(parsed, embedding, {
       provenance: opts?.provenance ?? "explicit",
@@ -211,6 +221,166 @@ export class MemoryService {
     return { ok, text: ok ? `Deleted memory ${id}.` : `No memory with id ${id}.` };
   }
 
+  /** Fetch one memory with its links resolved (audit Phase 8: graph view). */
+  async get(id: string) {
+    const memory = await this.db.get(id);
+    if (!memory) throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
+    const all = await this.db.all(true);
+    const brief = (m: Memory) => ({
+      id: m.id,
+      type: m.type,
+      scope: m.scope,
+      content: m.content.split("\n")[0],
+    });
+    const related = (memory.related ?? []).map((rid) => {
+      const target = all.find((m) => m.id === rid);
+      return target ? brief(target) : { id: rid, missing: true as const };
+    });
+    const backlinks = all.filter((m) => m.id !== id && (m.related ?? []).includes(id)).map(brief);
+
+    const meta =
+      `${memory.type} (scope: ${memory.scope}, importance: ${memory.importance}` +
+      `${memory.confidence !== undefined ? `, confidence: ${memory.confidence}` : ""})`;
+    const text =
+      `[${memory.id}] ${meta}\n${memory.content}` +
+      (related.length ? `\n\nRelated: ${related.map((r) => r.id).join(", ")}` : "") +
+      (backlinks.length ? `\nReferenced by: ${backlinks.map((b) => b.id).join(", ")}` : "");
+    return { memory, related, backlinks, text };
+  }
+
+  /**
+   * Manage directed links between memories (audit Phase 8: relationship
+   * graph). Targets are validated on add; backlinks are derived at read
+   * time, so one write keeps the edge consistent.
+   */
+  async relate(input: unknown): Promise<{ id: string; related: string[]; added: string[]; removed: string[]; text: string }> {
+    let parsed;
+    try {
+      parsed = RelateInput.parse(input);
+    } catch (err) {
+      throw inputError(err, "INVALID_INPUT");
+    }
+    const memory = await this.db.get(parsed.id);
+    if (!memory) throw new RemembraError("NOT_FOUND", `No memory with id ${parsed.id}`);
+    if (parsed.related.includes(parsed.id)) {
+      throw new RemembraError("INVALID_INPUT", "a memory cannot be related to itself");
+    }
+    if (parsed.action === "add") {
+      const missing: string[] = [];
+      for (const rid of parsed.related) {
+        if (!(await this.db.get(rid))) missing.push(rid);
+      }
+      if (missing.length > 0) {
+        throw new RemembraError("NOT_FOUND", `related target(s) not found: ${missing.join(", ")}`);
+      }
+    }
+    const current = memory.related ?? [];
+    const added =
+      parsed.action === "add" ? parsed.related.filter((r) => !current.includes(r)) : [];
+    const removed = parsed.action === "remove" ? current.filter((r) => parsed.related.includes(r)) : [];
+    let next =
+      parsed.action === "add" ? [...current, ...added] : current.filter((r) => !parsed.related.includes(r));
+    if (added.length === 0 && removed.length === 0) {
+      next = current; // no-op: don't churn updatedAt for an idempotent call
+    } else {
+      await this.db.update({ ...memory, related: next });
+      metrics.inc("remembra_relate_total", { action: parsed.action });
+    }
+    const verb = parsed.action === "add" ? "Linked" : "Unlinked";
+    const changed = parsed.action === "add" ? added : removed;
+    const text =
+      changed.length > 0
+        ? `${verb} ${parsed.id} ${parsed.action === "add" ? "→" : "⇁"} ${changed.join(", ")}`
+        : `No change: ${parsed.id} links unchanged (${next.length} total)`;
+    return { id: parsed.id, related: next, added, removed, text };
+  }
+
+  /**
+   * Version history with line diffs (audit Phase 8: diff/history view).
+   * Newest first; each past version carries a unified diff against its
+   * predecessor (the current version diffs against the newest snapshot).
+   */
+  async history(input: unknown): Promise<{
+    id: string;
+    versions: {
+      current?: true;
+      file?: string;
+      at?: string;
+      snapshotAt?: string;
+      content: string;
+      diff: string;
+    }[];
+    text: string;
+  }> {
+    let parsed;
+    try {
+      parsed = HistoryInput.parse(input);
+    } catch (err) {
+      throw inputError(err, "INVALID_INPUT");
+    }
+    const memory = await this.db.get(parsed.id);
+    if (!memory) throw new RemembraError("NOT_FOUND", `No memory with id ${parsed.id}`);
+    const entries = (await this.db.history?.(parsed.id)) ?? [];
+    const kept = entries.slice(0, parsed.limit ?? entries.length);
+
+    type VersionBase = { current?: true; file?: string; at?: string; snapshotAt?: string };
+    const chain: { base: VersionBase; content: string }[] = [
+      { base: { current: true, at: memory.updatedAt }, content: memory.content },
+      ...kept.map((e) => ({
+        base: { file: e.file, at: e.at, snapshotAt: e.snapshotAt },
+        content: e.content,
+      })),
+    ];
+    const versions = chain.map((v, i) => {
+      const older = chain[i + 1];
+      const diff = older
+        ? unifiedDiff(older.content, v.content, older.base.at ?? "older", v.base.at ?? "current")
+        : "";
+      return { ...v.base, content: v.content, diff };
+    });
+
+    const lines = [`History for ${parsed.id} — ${versions.length} version(s), newest first:`];
+    for (const v of versions) {
+      const label = v.current
+        ? "current"
+        : `superseded ${v.snapshotAt?.slice(0, 19) ?? "?"} (was current: ${v.at?.slice(0, 19) ?? "?"})`;
+      lines.push("", `# ${label} — ${v.content.split("\n")[0]}`);
+      if (v.diff) lines.push(v.diff.trimEnd());
+    }
+    return { id: parsed.id, versions, text: lines.join("\n") };
+  }
+
+  /**
+   * Redact a content+tags pair, emitting metrics + a log event when anything
+   * was found. Returns null when disabled or clean (callers keep originals).
+   */
+  private redactPair(
+    content: string,
+    tags: string[],
+  ): { content: string; tags: string[] } | null {
+    if (!this.redactOn) return null;
+    const c = redact(content);
+    const t = redactTags(tags);
+    const counts: Partial<Record<RedactionKind, number>> = {};
+    for (const [k, v] of Object.entries(c.counts)) counts[k as RedactionKind] = v as number;
+    for (const [k, v] of Object.entries(t.counts)) {
+      counts[k as RedactionKind] = (counts[k as RedactionKind] ?? 0) + (v as number);
+    }
+    if (Object.keys(counts).length === 0) return null;
+    for (const [kind, n] of Object.entries(counts)) {
+      if (n) metrics.inc("remembra_redactions_total", { kind }, n);
+    }
+    logEvent("info", "redacted", { ...counts }, `Remembra: redacted PII at ingest (${JSON.stringify(counts)})`);
+    return { content: c.text, tags: t.tags };
+  }
+
+  /** PII redaction of a store input (audit Phase 8). */
+  private applyRedaction(parsed: StoreInput): StoreInput {
+    const clean = this.redactPair(parsed.content, parsed.tags);
+    if (!clean) return parsed;
+    return { ...parsed, content: clean.content, tags: clean.tags };
+  }
+
   /** Readiness probe (audit Phase 7): can the backend actually be read? */
   async health(): Promise<{
     status: "ok" | "unready";
@@ -292,7 +462,13 @@ export class MemoryService {
     let skippedDuplicates = 0;
     let merged = 0;
 
-    for (const item of extracted) {
+    for (const extractedItem of extracted) {
+      // PII redaction at the digest boundary: extraction LLM sees the raw
+      // transcript (it must, to understand it) — storage never does.
+      const clean = this.redactPair(extractedItem.content, extractedItem.tags);
+      const item: ExtractedMemory = clean
+        ? { ...extractedItem, content: clean.content, tags: clean.tags }
+        : extractedItem;
       const scope = item.scope ?? opts.scope ?? "global";
       const key = dedupKey(item.type, item.content, scope);
 
@@ -362,13 +538,17 @@ export class MemoryService {
         if (decision.action === "merge") {
           const now = new Date().toISOString().slice(0, 10);
           const old = candidate.content.split("\n")[0];
-          const content = `${decision.content}\n\n> superseded (${now}): ${old}`;
-          const embedding = await this.maybeEmbed(decision.content);
+          const cleanMerged = this.redactPair(decision.content, []) ?? {
+            content: decision.content,
+            tags: [] as string[],
+          };
+          const content = `${cleanMerged.content}\n\n> superseded (${now}): ${old}`;
+          const embedding = await this.maybeEmbed(cleanMerged.content);
           await this.db.update({ ...candidate, content, embedding, source: opts.source ?? candidate.source });
           merged++;
           // Re-index dedup set against the new content.
           seen.delete(dedupKey(candidate.type, candidate.content, candidate.scope));
-          seen.add(dedupKey(candidate.type, decision.content, candidate.scope));
+          seen.add(dedupKey(candidate.type, cleanMerged.content, candidate.scope));
           continue;
         }
         // action: "store" → fall through and store fresh
@@ -383,6 +563,7 @@ export class MemoryService {
           tags: item.tags,
           importance: item.importance,
           source: opts.source,
+          confidence: item.confidence,
         },
         { provenance: "auto" },
       );

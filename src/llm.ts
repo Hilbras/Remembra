@@ -16,6 +16,8 @@ export interface ExtractedMemory {
   importance: number;
   /** Optional scope override; falls back to the digest call's scope. */
   scope?: string;
+  /** Optional 0..1 confidence from the extraction LLM (service default: 0.7). */
+  confidence?: number;
 }
 
 export function resolveLlmProvider(): LlmProvider {
@@ -34,6 +36,7 @@ Rules:
 - Write each content as a self-contained statement (no "we discussed" or "earlier").
 - Skip small talk, pleasantries, and anything already obvious from the transcript's task.
 - importance: 5 = critical, 1 = trivia. Default 3.
+- confidence (optional): 0..1 how sure you are the statement is accurate as written.
 - If nothing is worth keeping, return [].
 - Output must be valid JSON parseable directly.`;
 
@@ -184,12 +187,14 @@ export function parseExtraction(raw: string): ExtractedMemory[] {
     const tags = (item as Record<string, unknown>).tags;
     const importance = Number((item as Record<string, unknown>).importance);
     const scope = (item as Record<string, unknown>).scope;
+    const confidence = Number((item as Record<string, unknown>).confidence);
     out.push({
       type,
       content: content.trim(),
       tags: Array.isArray(tags) ? tags.filter((t): t is string => typeof t === "string") : [],
       importance: Number.isFinite(importance) ? Math.min(5, Math.max(1, Math.round(importance))) : 3,
       scope: typeof scope === "string" && scope.trim() ? scope.trim() : undefined,
+      confidence: Number.isFinite(confidence) ? Math.min(1, Math.max(0, confidence)) : undefined,
     });
   }
   return out;

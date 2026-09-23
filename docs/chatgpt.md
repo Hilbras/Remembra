@@ -83,6 +83,31 @@ curl -X POST http://localhost:8787/memories/digest \
 
 Requires `REMEMBRA_LLM` + key — see [providers.md](providers.md).
 
+### Get one memory (with links)
+
+```bash
+curl http://localhost:8787/memories/<id> \
+  -H "x-api-key: $REMEMBRA_API_KEY"
+# → { "memory": {...}, "related": [...], "backlinks": [...] }
+```
+
+### Link two memories (relationship graph)
+
+```bash
+curl -X POST http://localhost:8787/memories/<id>/relate \
+  -H "content-type: application/json" \
+  -H "x-api-key: $REMEMBRA_API_KEY" \
+  -d '{"related": ["<other-id>"], "action": "add"}'
+```
+
+### Version history with diffs
+
+```bash
+curl "http://localhost:8787/memories/<id>/history?limit=5" \
+  -H "x-api-key: $REMEMBRA_API_KEY"
+# → { "id": "...", "versions": [{ "content": "...", "diff": "--- ..." }, ...] }
+```
+
 ## 3. Create the Custom GPT
 
 1. Go to **chatgpt.com → Explore GPTs → Create a GPT**.

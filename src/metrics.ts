@@ -130,4 +130,8 @@ metrics.counter("remembra_digests_total", "session digest runs");
 metrics.counter("remembra_digest_items_total", "Digest items by outcome (stored|skipped|merged)");
 metrics.histogram("remembra_digest_duration_seconds", "Session digest run latency (seconds)");
 metrics.counter("remembra_cache_events_total", "Parse-cache probes by result (hit|miss)");
+metrics.counter("remembra_redactions_total", "PII placeholders written at ingest by kind (3.8.0)");
+metrics.counter("remembra_relate_total", "memory_relate link writes by action (3.8.0)");
+metrics.counter("remembra_history_snapshots_total", "History pre-images written (3.8.0)");
+metrics.counter("remembra_encryption_migrations_total", "Encryption migration files converted by mode (3.8.0)");
 metrics.gauge("remembra_info", "Build info", () => [{ labels: { version: VERSION }, value: 1 }]);

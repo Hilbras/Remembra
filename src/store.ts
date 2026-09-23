@@ -3,10 +3,11 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { Memory, StoreInput, SCHEMA_VERSION } from "./types.js";
-import type { MemoryBackend } from "./backend.js";
+import type { MemoryBackend, HistoryEntry } from "./backend.js";
 import { RemembraError } from "./errors.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
+import { encryptionEnabled, isEncrypted, encryptBuffer, decryptBuffer } from "./crypto.js";
 
 export interface StoreLockOptions {
   /** Max wait for the cross-process lock (ms). Env: REMEMBRA_LOCK_TIMEOUT_MS. Default 5000. */
@@ -162,10 +163,113 @@ export class MemoryStore implements MemoryBackend {
     return this.withLock(async () => {
       const updated: Memory = { ...memory, updatedAt: new Date().toISOString() };
       const file = this.fileFor(updated);
+      // History (audit Phase 8): content-changing updates snapshot the
+      // on-disk pre-image first. Embedding backfills and `memory_relate`
+      // change no content → no snapshot (find-free: same path, one stat).
+      const current = await this.parseCached(file);
+      if (current && current.content !== memory.content) {
+        await this.snapshotHistory(file);
+      }
       await fs.mkdir(path.dirname(file), { recursive: true });
       await this.writeCached(file, render(updated), updated);
       return updated;
     });
+  }
+
+  /**
+   * Version history for one memory — `.history/<id>/*.md`, newest first.
+   * Entries are raw pre-image copies (byte-for-byte, ciphertext preserved).
+   */
+  async history(id: string): Promise<HistoryEntry[]> {
+    await this.ensureRecovered();
+    const dir = path.join(this.root, ".history", id);
+    let names: string[];
+    try {
+      names = (await fs.readdir(dir)).filter((n) => n.endsWith(".md")).sort().reverse();
+    } catch {
+      return []; // no history yet
+    }
+    const out: HistoryEntry[] = [];
+    for (const name of names) {
+      const file = path.join(dir, name);
+      const m = await parse(file); // decrypts transparently; throws ENCRYPTED_NO_KEY loudly
+      if (!m) continue;
+      const epoch = Number(name.split("-")[0]);
+      out.push({
+        file: name,
+        at: m.updatedAt,
+        ...(Number.isFinite(epoch) && epoch > 0 ? { snapshotAt: new Date(epoch).toISOString() } : {}),
+        content: m.content,
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Convert the whole tree (memories + history) between plain and encrypted
+   * at rest. Requires REMEMBRA_ENCRYPT_KEY either way (decryption needs it).
+   * Idempotent: files already in the target state are skipped.
+   */
+  async migrateEncryption(mode: "encrypt" | "decrypt"): Promise<{ converted: number; skipped: number }> {
+    await this.ensureRecovered();
+    if (!encryptionEnabled()) {
+      throw new RemembraError(
+        "INVALID_INPUT",
+        `remembra ${mode} requires REMEMBRA_ENCRYPT_KEY (64 hex chars) to be set`,
+      );
+    }
+    return this.withLock(async () => {
+      const files = [
+        ...(await walk(
+          path.join(this.root, "global"),
+          path.join(this.root, "scopes"),
+          path.join(this.root, "archived"),
+        )),
+        ...(await walk(path.join(this.root, ".history"))),
+      ];
+      let converted = 0;
+      let skipped = 0;
+      for (const f of files) {
+        const buf = await fs.readFile(f);
+        const enc = isEncrypted(buf);
+        if ((mode === "encrypt" && enc) || (mode === "decrypt" && !enc)) {
+          skipped++;
+          continue;
+        }
+        await writeFileAtomic(f, mode === "encrypt" ? encryptBuffer(buf) : decryptBuffer(buf), fs);
+        this.cache.forget(f);
+        converted++;
+      }
+      metrics.inc("remembra_encryption_migrations_total", { mode }, converted);
+      return { converted, skipped };
+    });
+  }
+
+  /** Copy the current file into `.history/<id>/` and prune beyond the cap. */
+  private async snapshotHistory(file: string): Promise<void> {
+    const limit = Number(process.env.REMEMBRA_HISTORY_LIMIT ?? 20);
+    if (limit <= 0) return; // history disabled
+    const id = path.basename(file, ".md");
+    const dir = path.join(this.root, ".history", id);
+    await fs.mkdir(dir, { recursive: true });
+    const existing = (await fs.readdir(dir)).filter((n) => n.endsWith(".md"));
+    let maxSeq = -1;
+    for (const n of existing) {
+      const m = n.match(/-(\d+)\.md$/);
+      if (m) maxSeq = Math.max(maxSeq, Number(m[1]));
+    }
+    // `${epochMs}-${seq}.md` sorts lexicographically = chronologically
+    // (seq breaks same-millisecond ties; the lock serializes writers).
+    const target = path.join(dir, `${Date.now()}-${String(maxSeq + 1).padStart(4, "0")}.md`);
+    await writeFileAtomic(target, await fs.readFile(file), fs);
+    metrics.inc("remembra_history_snapshots_total");
+    const sorted = existing.concat(path.basename(target)).sort();
+    const excess = sorted.length - limit;
+    if (excess > 0) {
+      for (const name of sorted.slice(0, excess)) {
+        await fs.unlink(path.join(dir, name)).catch(() => {});
+      }
+    }
   }
 
   /** Record that a memory surfaced in search (decay refresh). Cheap: no-op if seen <1h ago. */
@@ -204,7 +308,9 @@ export class MemoryStore implements MemoryBackend {
    * with the on-disk stat, so the next read is a validated hit.
    */
   private async writeCached(file: string, data: string, memory: Memory): Promise<void> {
-    await writeFileAtomic(file, data, fs);
+    // Encrypted mode (Phase 8): ciphertext at rest, plaintext in cache/RAM.
+    const payload = encryptionEnabled() ? encryptBuffer(Buffer.from(data, "utf8")) : data;
+    await writeFileAtomic(file, payload, fs);
     try {
       const st = await fs.stat(file);
       this.cache.remember(file, { mtimeMs: st.mtimeMs, size: st.size }, memory);
@@ -259,6 +365,7 @@ export class MemoryStore implements MemoryBackend {
       updatedAt: now,
       source: input.source,
       provenance: opts?.provenance ?? "explicit",
+      confidence: input.confidence ?? (opts?.provenance === "auto" ? 0.7 : 1),
       embedding,
     };
     const file = this.fileFor(memory);
@@ -532,10 +639,10 @@ function classifyFsError(err: unknown): unknown {
  * then rename() over the target — POSIX-atomic, so a crash mid-write can
  * never leave a half-written memory file.
  */
-async function writeFileAtomic(file: string, data: string, fsmod: typeof fs): Promise<void> {
+async function writeFileAtomic(file: string, data: string | Buffer, fsmod: typeof fs): Promise<void> {
   const tmp = `${file}.${genId().slice(0, 6)}.tmp`;
   try {
-    await fsmod.writeFile(tmp, data, "utf8");
+    await fsmod.writeFile(tmp, data);
     await fsmod.rename(tmp, file);
   } catch (err) {
     await fsmod.unlink(tmp).catch(() => {});
@@ -585,6 +692,8 @@ function render(m: Memory): string {
     m.archivedAt ? `archivedAt: ${m.archivedAt}` : undefined,
     m.source ? `source: ${m.source}` : undefined,
     m.provenance ? `provenance: ${m.provenance}` : undefined,
+    m.confidence !== undefined ? `confidence: ${m.confidence}` : undefined,
+    m.related && m.related.length > 0 ? `related: [${m.related.join(", ")}]` : undefined,
     m.embedding && m.embedding.length > 0 ? `embedding: [${m.embedding.join(",")}]` : undefined,
     "---",
     "",
@@ -610,7 +719,11 @@ async function parse(file: string): Promise<Memory | null> {
     );
   };
   try {
-    const raw = await fs.readFile(file, "utf8");
+    const buf = await fs.readFile(file);
+    // decryptBuffer passes plain bytes through untouched; encrypted files
+    // without/with a wrong key throw ENCRYPTED_NO_KEY — deliberately NOT
+    // warn-skipped: unreadable storage must fail loudly (health → 503).
+    const raw = decryptBuffer(buf).toString("utf8");
     const match = raw.match(/^---\n([\s\S]*?)\n---\n\n?([\s\S]*)$/);
     if (!match) {
       warnOnce("missing/invalid frontmatter");
@@ -642,10 +755,25 @@ async function parse(file: string): Promise<Memory | null> {
       source: meta.source,
       provenance:
         meta.provenance === "explicit" || meta.provenance === "auto" ? meta.provenance : undefined,
+      confidence:
+        meta.confidence !== undefined && Number.isFinite(Number(meta.confidence))
+          ? Number(meta.confidence)
+          : undefined,
+      related: parseList(meta.related),
       embedding,
     };
   } catch (err) {
+    if (err instanceof RemembraError) throw err; // ENCRYPTED_NO_KEY etc — loud, never skipped
     warnOnce(err instanceof Error ? err.message : String(err));
     return null;
   }
+}
+
+/** `[a, b]` frontmatter list → string[] | undefined. */
+function parseList(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  const inner = raw.replace(/^\[|\]$/g, "").trim();
+  if (!inner) return undefined;
+  const items = inner.split(",").map((s) => s.trim()).filter(Boolean);
+  return items.length > 0 ? items : undefined;
 }

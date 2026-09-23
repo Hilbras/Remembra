@@ -85,10 +85,14 @@ Then wire a Custom GPT to the API — full walkthrough in **[docs/chatgpt.md](do
 
 | Method | Route | Purpose |
 |--------|-------|---------|
-| GET | `/health` | Liveness (no auth) |
+| GET | `/health` | Liveness + readiness (no auth) |
+| GET | `/metrics` | Prometheus metrics (auth when keyed) |
 | POST | `/memories` | Store a memory |
 | GET | `/memories/search?query=&scope=` | Search |
 | GET | `/memories?scope=&type=` | List |
+| GET | `/memories/:id` | One memory + related links + backlinks |
+| POST | `/memories/:id/relate` | Link / unlink memories |
+| GET | `/memories/:id/history` | Version history with line diffs |
 | POST | `/memories/digest` | LLM extract + store from a transcript |
 | POST | `/maintain` | Decay sweep + vector backfill |
 | DELETE | `/memories/:id` | Forget |
@@ -123,6 +127,9 @@ tampered snapshot is rejected atomically, never half-imported. Of course,
 | `memory_digest` | Extract + store memories from a transcript (LLM) |
 | `memory_search` | Retrieve relevant memories (pass `scope` = current project) |
 | `memory_list` | Browse stored memories |
+| `memory_get` | Fetch one memory with its links and backlinks |
+| `memory_relate` | Link / unlink memories (relationship graph) |
+| `memory_history` | Version history of a memory with line diffs |
 | `memory_maintain` | Archive decayed / delete expired / backfill vectors |
 | `memory_forget` | Delete by id |
 

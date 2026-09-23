@@ -75,6 +75,12 @@ same type + scope) — the LLM is only called when two memories are plausibly
 about the same thing. If the merge LLM fails, the item is **stored fresh**
 (fail-open: extraction never loses data).
 
+Since 3.8.0 a merge also snapshots the **pre-merge file** into
+`.history/<id>/` first — every past version stays recoverable with
+`memory_history` / `GET /memories/:id/history`, which renders a unified line
+diff of old → new for each version (pruned to `REMEMBRA_HISTORY_LIMIT`,
+default 20).
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -88,7 +94,8 @@ about the same thing. If the merge LLM fails, the item is **stored fresh**
 ~/.remembra/
 ├── global/<id>.md             # active, global
 ├── scopes/<scope>/<id>.md     # active, project-scoped
-└── archived/
-    ├── global/<id>.md         # archived (excluded from search)
-    └── scopes/<scope>/<id>.md
+├── archived/
+│   ├── global/<id>.md         # archived (excluded from search)
+│   └── scopes/<scope>/<id>.md
+└── .history/<id>/<epoch>-<seq>.md   # superseded pre-images (3.8.0)
 ```

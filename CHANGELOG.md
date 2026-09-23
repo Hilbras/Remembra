@@ -7,6 +7,77 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3). Earlier releases used independent semver: 0.1.0 = v1,
 > 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [3.8.0] — 2026-09-23
+
+**Phase 8 of the deep audit — Advanced Capabilities.** All five roadmap
+items covered; both storage-altering features are **opt-in** (scope review:
+plain markdown and byte-faithful storage remain the defaults).
+
+### Added
+- **Relationship graph** — `related: [ids]` frontmatter (directed, single
+  write; backlinks derived at read time), `memory_relate` MCP tool
+  (add/remove, targets validated, self-links rejected, idempotent), plus the
+  missing read surfaces: **`memory_get`** / `GET /memories/:id` return a
+  memory with resolved `related` + `backlinks`. Retrieval ranking untouched —
+  graph is structure for the consumer, not a score.
+- **Confidence scores** — `confidence: 0–1` frontmatter: explicit stores
+  default `1.0`, digest extractions `0.7` (the extraction LLM may supply its
+  own via the extended prompt/schema). Surfaced everywhere and carried through
+  merge/export/import; **deliberately not ranked** — importance answers
+  "relevant?", confidence answers "true?" (Phase 4 weight decisions stay
+  closed).
+- **PII redaction filter** (opt-in `REMEMBRA_REDACT=1`) — pattern filter at
+  the *ingest layer* (`memory_store`, digest items, merge output): emails,
+  Luhn-valid cards, SSNs, phone numbers, provider tokens / ≥40-char entropy
+  blobs → typed placeholders (`<EMAIL>` …). Cards must pass Luhn; phone
+  matching requires separators + 10–15 digits, so dates/versions never match.
+  Irreversible by design; `remembra_redactions_total{kind}` + `redacted`
+  log event (counts only, never matched text). Reverses the former "no PII
+  filter" non-goal — documented with its limits in `docs/security.md`.
+- **Encrypted storage mode** (opt-in `REMEMBRA_ENCRYPT_KEY`) — AES-256-GCM
+  per file via `node:crypto` (zero deps): magic-header detection, transparent
+  decrypt-on-read, encrypt-on-write, mixed plain/cipher trees supported;
+  `remembra encrypt` / `remembra decrypt` migrate the whole tree (incl.
+  history) idempotently under the advisory lock. Missing/wrong key fails
+  **loudly**: `ENCRYPTED_NO_KEY` (HTTP 503, `/health` `storage` field) —
+  never warn-skipped into silent partial results. GCM makes wrong-key ≡
+  tampered. Reverses the former "no encryption at rest" non-goal with an
+  explicit threat-model section (protects stolen backups / copied dirs, not
+  a runtime attacker with your env).
+- **Diff/history view** — content-changing updates snapshot the raw
+  on-disk pre-image into `.history/<id>/<epochMs>-<seq>.md` first (content-
+  equality gate: embedding backfills and linking never snapshot);
+  `memory_history` MCP tool + `GET /memories/:id/history?limit=` return
+  versions newest-first, each with a **unified line diff** against its
+  predecessor (own ~60-line LCS, zero deps, cell-budget fallback for huge
+  contents). Pruned to `REMEMBRA_HISTORY_LIMIT` (default 20, `0` disables);
+  `.history` is never walked by `all()`/search.
+
+### Changed
+- Error classification gains `ENCRYPTED_NO_KEY` (503) and documents why it
+  breaks the skip-malformed-file rule; `metrics` route enum gains
+  `memory_sub` (the relate/history sub-routes).
+- Extraction system prompt optionally returns `confidence` (0–1).
+
+### Docs
+`tools` (+3 tools, 9 total, encrypt/decrypt CLI), `memory-model`
+(relationships, version history, metadata rows, layout incl. `.history`),
+`security` (encryption + redaction sections replace the two reversed
+non-goals, checklist items), `architecture` (encryption format, history
+snapshot design, error table), `clients` (+3 env vars), `observability`
+(+4 counters, `memory_sub`, `redacted` event), `chatgpt` (+3 routes),
+`lifecycle` (merge → history cross-ref), README (9 tools, 11 routes).
+
+### Tests
+- **148 tests** (+16: redaction patterns + false-positive guards + service
+  on/off, digest redaction & confidence pass-through, confidence round-trip,
+  relations incl. backlinks/validation/idempotence/persistence, diff unit,
+  merge → snapshot → diff view, embedding-gate + limit pruning, encryption
+  round-trip / missing-key loud failure / wrong-key / mixed trees /
+  idempotent both-way migration incl. history, HTTP GET/relate/history
+  routes + `memory_sub` metric label). Suite verified stable across 3
+  consecutive runs.
+
 ## [3.7.0] — 2026-09-23
 
 **Phase 7 of the deep audit** — observability. All five roadmap items

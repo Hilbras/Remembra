@@ -61,6 +61,60 @@ Retrieved memories should be treated as **data with provenance**, not commands
 | **ID collisions** | 12-hex IDs (2⁴⁸) + existence check on store |
 | **Content-Length** | Set on every response |
 | **Metrics auth (3.7.0)** | `GET /metrics` sits *after* the API-key check — counters and latencies never leak without the key (`/health` stays exempt for readiness probes) |
+| **PII redaction (3.8.0, opt-in)** | `REMEMBRA_REDACT=1` strips emails, Luhn-valid card numbers, SSNs, phone numbers and high-entropy secrets at the *ingest layer* (`memory_store`, digest items, merge output) — raw patterns never reach disk, embeddings, or export snapshots |
+| **Encryption at rest (3.8.0, opt-in)** | `REMEMBRA_ENCRYPT_KEY` → AES-256-GCM per file; reading an encrypted file without the key fails **loudly** (`ENCRYPTED_NO_KEY`, HTTP 503, `/health` 503) — never warn-skipped as if the data didn't exist |
+
+## Encryption at rest (opt-in, 3.8.0)
+
+Plain markdown stays the default (you can read and edit your memories —
+that's the point). Setting a key flips storage to ciphertext:
+
+```bash
+export REMEMBRA_ENCRYPT_KEY="$(node -p 'require("node:crypto").randomBytes(32).toString("hex")')"
+remembra encrypt    # migrate the existing tree (memories + history) in place
+remembra --http     # from here on, writes are AES-256-GCM
+```
+
+| | |
+|---|---|
+| **Format** | `RMBENC1 │ nonce(12) │ tag(16) │ ciphertext` per file — AES-256-GCM via `node:crypto`, zero dependencies, random nonce per write, same `.md` names (detected by magic bytes) |
+| **Key** | 64 hex chars (32 bytes) used directly — no KDF needed for a high-entropy symmetric key. *Not* a human passphrase |
+| **Mixed trees** | Plain files stay readable while the key is set, and `remembra decrypt` reverses the migration — both directions are idempotent |
+| **Fail-loud** | Encrypted file + missing/wrong key → `ENCRYPTED_NO_KEY` (HTTP 503, MCP `[ENCRYPTED_NO_KEY]`, `/health` 503). GCM auth failure makes a wrong key indistinguishable from tampering |
+| **What it protects** | At-rest exfiltration: stolen backups, copied `~/.remembra`, a leaked git history of the directory |
+| **What it does not** | A runtime attacker on your machine can read the env of the process holding the key — this is not a substitute for OS disk encryption & process isolation; and files stop being human-readable (decrypt first: unset the key after `remembra decrypt`) |
+
+Export snapshots (`remembra export`) contain **decrypted** JSON — they are
+protected by file permissions like any other backup.
+
+## PII redaction (opt-in, 3.8.0)
+
+```bash
+export REMEMBRA_REDACT=1
+```
+
+Everything that enters storage — `memory_store` calls, every digest-extracted
+item, and merge output — runs through a pattern filter first:
+
+| Matches | Placeholder | Guard against false positives |
+|---------|-------------|------------------------------|
+| Emails | `<EMAIL>` | — |
+| Card numbers (13–19 digits) | `<CARD>` | must pass the **Luhn** check |
+| SSNs (`123-45-6789`) | `<SSN>` | dashed format only |
+| Phone numbers | `<PHONE>` | separators required, 10–15 digits — dates (`2026-09-23`, 8 digits) and versions (`3.6.0`) never match |
+| Provider tokens (`sk-…`, `ghp_…`, `AKIA…`) + ≥40-char high-entropy blobs | `<SECRET>` | generic blobs must contain a digit (long English words survive) |
+
+Properties:
+
+- **Irreversible by design** — the original bytes are not kept anywhere;
+  before enabling, assume anything redacted is gone from future exports too.
+- **Not a compliance control** — regex covers the common shapes; names,
+  addresses in free prose, and anything the patterns miss are untouched.
+  Treat it as belt-and-braces on top of not feeding PII to your LLM providers.
+- The **extraction LLM still sees the raw transcript** (it must, to
+  understand it) — redaction guards what Remembra *stores*, not what your
+  `REMEMBRA_LLM` provider receives. Use `memory_store` (not digest) for
+  content you must not send to a third-party model.
 
 ## Deployment checklist
 
@@ -82,17 +136,22 @@ remembra --http
       directory)
 - [ ] Periodic `memory_list {type: "role"}` audit
 - [ ] LLM/embedding keys scoped to least privilege
+- [ ] Consider `REMEMBRA_REDACT=1` before storing content derived from other
+      people's data (redaction is irreversible — decide once, up front)
+- [ ] Consider `REMEMBRA_ENCRYPT_KEY` when the store leaves your machine
+      (backups, shared filesystems) — generate 32 random bytes, store the key
+      in your secret manager, run `remembra encrypt`
 
 ## Known non-goals (current version)
 
 - **No multi-tenancy** — one store per installation; scope isolates *projects*,
   not *users*. Never share one instance between mutually untrusting users.
-- **No encryption at rest** — files are plaintext markdown (by design: you can
-  read and edit them). Use filesystem-level encryption if needed.
-- **No PII redaction** — what you store is what's written to disk.
 - **Single-writer assumption per store, now cross-process safe** — mutations
   take an advisory lockfile (`O_EXCL`, stale-steal, typed `LOCK_TIMEOUT`), so
   an MCP server, the `remembra maintain` CLI, and a session digest can run
   against one store concurrently on one machine. Network filesystems with
   unreliable `O_EXCL` semantics are untested; `remembra export` for backups
   across machines.
+- Encryption-at-rest and PII redaction are **off by default** (both since
+  3.8.0, both opt-in above) — defaults keep files human-readable and
+  byte-faithful to what you stored.

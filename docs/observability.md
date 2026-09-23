@@ -25,7 +25,8 @@ Example JSON events:
 
 Event names in the wild: `http_listening`, `mcp_listening`, `search`,
 `shutdown`, `crash_recovery`, `memory_parse_skipped`, `embedding_failed`,
-`touch_failed`, `merge_llm_failed`, `decay_failed`.
+`touch_failed`, `merge_llm_failed`, `decay_failed`, `redacted` (3.8.0 — PII
+found at ingest; fields are per-kind counts, never the matched text).
 
 ## Metrics — `GET /metrics`
 
@@ -38,7 +39,7 @@ stays exempt so unauthenticated readiness probes keep working.
 
 | Series | Type | Labels | Meaning |
 |---|---|---|---|
-| `remembra_http_requests_total` | counter | `route`, `method`, `status` | Requests. `route` is a fixed low-cardinality label (`health`/`metrics`/`memories`/`search`/`digest`/`maintain`/`memory_item`/`other`) — never the raw path. |
+| `remembra_http_requests_total` | counter | `route`, `method`, `status` | Requests. `route` is a fixed low-cardinality label (`health`/`metrics`/`memories`/`search`/`digest`/`maintain`/`memory_item`/`memory_sub`/`other`) — never the raw path. `memory_sub` = the `relate`/`history` sub-routes (3.8.0). |
 | `remembra_http_request_duration_seconds` | histogram | `route` | Request latency. |
 | `remembra_errors_total` | counter | `code`, `transport` | Classified errors (`http`/`mcp`). Codes: the [error codes](architecture.md#error-classification-audit-phase-2) plus `INVALID_INPUT`, `PAYLOAD_TOO_LARGE`, `INTERNAL`. |
 | `remembra_searches_total` | counter | — | `memory_search` invocations. |
@@ -49,6 +50,10 @@ stays exempt so unauthenticated readiness probes keep working.
 | `remembra_digest_duration_seconds` | histogram | — | Digest run latency (includes lock queueing). |
 | `remembra_cache_events_total` | counter | `result` | Parse-cache probes: `hit` / `miss`. |
 | `remembra_cache_entries` | gauge | — | Parse-cache entries currently held. |
+| `remembra_redactions_total` | counter | `kind` | PII placeholders written at ingest (3.8.0): `email`/`ssn`/`card`/`phone`/`secret`. Zero (absent) unless `REMEMBRA_REDACT=1`. |
+| `remembra_relate_total` | counter | `action` | `memory_relate` link writes (3.8.0): `add` / `remove` (no-op idempotent calls don't count). |
+| `remembra_history_snapshots_total` | counter | — | History pre-images written (3.8.0). Growth rate ≈ content-changing updates. |
+| `remembra_encryption_migrations_total` | counter | `mode` | `remembra encrypt`/`decrypt` files converted (3.8.0). |
 | `remembra_info` | gauge | `version` | Build info, always `1`. |
 
 ### Scrape config

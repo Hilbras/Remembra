@@ -14,6 +14,9 @@ import {
   searchInputShape,
   listInputShape,
   forgetInputShape,
+  getInputShape,
+  relateInputShape,
+  historyInputShape,
 } from "./types.js";
 import { toolFail } from "./errors.js";
 
@@ -65,6 +68,19 @@ if (argv[0] === "export") {
   const result = await service.maintain();
   console.log(JSON.stringify(result, null, 2));
   process.exit(0);
+} else if (argv[0] === "encrypt" || argv[0] === "decrypt") {
+  // CLI encryption migration (audit Phase 8): rewrite the tree in place
+  // under the storage lock. Requires REMEMBRA_ENCRYPT_KEY either way.
+  //   remembra encrypt   → plain files become AES-256-GCM ciphertext
+  //   remembra decrypt   → ciphertext becomes plain markdown again
+  try {
+    const result = await store.migrateEncryption(argv[0]);
+    console.log(`${argv[0]}: ${result.converted} converted, ${result.skipped} already in target state`);
+    process.exit(0);
+  } catch (err) {
+    console.error(`${argv[0]} failed: ${err instanceof Error ? err.message : err}`);
+    process.exit(1);
+  }
 } else if (httpFlag) {
   // HTTP mode: long-running API for non-MCP clients (ChatGPT, scripts, ...).
   const httpServer = createHttpServer(service, {
@@ -208,6 +224,64 @@ async function startMcp(): Promise<void> {
           content: [{ type: "text", text: result.text }],
           isError: !result.ok,
         };
+      } catch (err) {
+        return toolFail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "memory_get",
+    {
+      title: "Get a memory",
+      description:
+        "Fetch one memory by id with its related links and backlinks (memories that point at it). " +
+        "Use after memory_search when you need the full statement, not the snippet.",
+      inputSchema: getInputShape,
+    },
+    async ({ id }) => {
+      try {
+        const result = await service.get(id);
+        return { content: [{ type: "text", text: result.text }] };
+      } catch (err) {
+        return toolFail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "memory_relate",
+    {
+      title: "Link memories",
+      description:
+        "Create or remove directed links between memories (the relationship graph): " +
+        "e.g. tie a decision to the facts it depends on, or a history entry to the decision it records. " +
+        "Targets must exist; backlinks are visible via memory_get.",
+      inputSchema: relateInputShape,
+    },
+    async (args) => {
+      try {
+        const result = await service.relate(args);
+        return { content: [{ type: "text", text: result.text }] };
+      } catch (err) {
+        return toolFail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "memory_history",
+    {
+      title: "Show memory history",
+      description:
+        "Version history of one memory with unified line diffs — every content-changing " +
+        "update (e.g. a contradiction merge) snapshots the previous version. Newest first.",
+      inputSchema: historyInputShape,
+    },
+    async (args) => {
+      try {
+        const result = await service.history(args);
+        return { content: [{ type: "text", text: result.text }] };
       } catch (err) {
         return toolFail(err);
       }

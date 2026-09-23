@@ -33,6 +33,19 @@ export interface Memory {
    * (neutral — scores as neither). Ranked: explicit +10.
    */
   provenance?: "explicit" | "auto";
+  /**
+   * Trust in this claim, 0..1 (audit Phase 8). Defaults on store:
+   * explicit → 1.0, digest-extracted → LLM-provided or 0.7. Preserved through
+   * merge/import/export. Displayed, deliberately NOT ranked — importance
+   * answers "relevant?", confidence answers "true?".
+   */
+  confidence?: number;
+  /**
+   * Ids of related memories (audit Phase 8 — relationship graph). Stored
+   * directed (a→b does not imply b→a); backlinks are derived at read time.
+   * Managed by `memory_relate`.
+   */
+  related?: string[];
   /** Last time the memory surfaced in search results (decay signal). */
   lastSeen?: string;
   /** Set when archived; archived memories are out of search until revived. */
@@ -74,6 +87,12 @@ export const storeInputShape = {
     .default(3)
     .describe("1=minor, 5=critical (default 3)"),
   source: z.string().optional().describe("Originating session or client"),
+  confidence: z
+    .number()
+    .min(0)
+    .max(1)
+    .optional()
+    .describe("Trust in this claim 0..1 (default 1.0 for explicit stores, 0.7 for digests)"),
 };
 export const StoreInput = z
   .object(storeInputShape)
@@ -120,6 +139,34 @@ export const forgetInputShape = {
 export const ForgetInput = z.object(forgetInputShape);
 export type ForgetInput = z.infer<typeof ForgetInput>;
 
+export const getInputShape = {
+  id: z.string().describe("Memory id — returns the memory with related links and backlinks"),
+};
+export const GetInput = z.object(getInputShape);
+export type GetInput = z.infer<typeof GetInput>;
+
+export const relateInputShape = {
+  id: z.string().describe("Source memory id"),
+  related: z
+    .array(z.string().min(1))
+    .min(1)
+    .max(50)
+    .describe("Target memory ids to link to / unlink from"),
+  action: z
+    .enum(["add", "remove"])
+    .default("add")
+    .describe("add (default) creates links, remove deletes them"),
+};
+export const RelateInput = z.object(relateInputShape);
+export type RelateInput = z.infer<typeof RelateInput>;
+
+export const historyInputShape = {
+  id: z.string().describe("Memory id to show version history for"),
+  limit: z.number().int().min(1).max(100).optional().describe("Max past versions to return (newest first)"),
+};
+export const HistoryInput = z.object(historyInputShape);
+export type HistoryInput = z.infer<typeof HistoryInput>;
+
 /** Query accepted by the retrieval layer (retrieval.ts). */
 export interface SearchQuery {
   query?: string;
@@ -149,6 +196,8 @@ export const SnapshotInput = z.object({
         lastSeen: z.string().optional(),
         archivedAt: z.string().optional(),
         provenance: z.enum(["explicit", "auto"]).optional(),
+        confidence: z.number().min(0).max(1).optional(),
+        related: z.array(z.string()).optional(),
         embedding: z.array(z.number()).optional(),
       }),
     )

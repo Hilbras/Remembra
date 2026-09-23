@@ -1,5 +1,16 @@
 import type { Memory, StoreInput } from "./types.js";
 
+/** One superseded pre-image from `.history/<id>/` (audit Phase 8). */
+export interface HistoryEntry {
+  /** Snapshot file name (`${epochMs}-${seq}.md`). */
+  file: string;
+  /** The pre-image's own `updatedAt` — when this version was current. */
+  at?: string;
+  /** When the snapshot was taken (from the file name's epoch prefix). */
+  snapshotAt?: string;
+  content: string;
+}
+
 /**
  * Storage abstraction (audit: Phase 3 — separate MemoryStore abstraction to
  * enable a future DB swap).
@@ -31,4 +42,6 @@ export interface MemoryBackend {
   touch(id: string): Promise<void>;
   forget(id: string): Promise<boolean>;
   importMemory(m: Memory): Promise<boolean>;
+  /** Optional (audit Phase 8): superseded pre-images, newest first. */
+  history?(id: string): Promise<HistoryEntry[]>;
 }

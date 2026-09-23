@@ -15,7 +15,8 @@ export type ErrorCode =
   | "CONFLICT" // id collision / resource state conflict
   | "LOCK_TIMEOUT" // cross-process storage lock not acquired in time
   | "IO_ERROR" // filesystem failure during a store operation
-  | "LLM_ERROR"; // extraction/merge provider failure
+  | "LLM_ERROR" // extraction/merge provider failure
+  | "ENCRYPTED_NO_KEY"; // memory file is encrypted but REMEMBRA_ENCRYPT_KEY is missing/wrong
 
 export class RemembraError extends Error {
   constructor(
@@ -41,6 +42,7 @@ const HTTP_STATUS: Record<ErrorCode, number> = {
   LOCK_TIMEOUT: 423, // Locked
   IO_ERROR: 500,
   LLM_ERROR: 502,
+  ENCRYPTED_NO_KEY: 503, // Service Unavailable — storage unreadable without the key
 };
 
 export function statusFor(err: RemembraError): number {

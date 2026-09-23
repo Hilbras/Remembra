@@ -69,8 +69,38 @@ in `/repo/b`. Global memories are always visible.
 | `importance` | 1–5 | defaults to 3; higher ranks higher (same weight in both modes) |
 | `source` | string | originating session/client (optional) |
 | `provenance` | `explicit \| auto` | set automatically: `explicit` = stored deliberately, `auto` = digest-extracted; pre-3.4.0 files are neutral |
+| `confidence` | 0–1 | trust in this claim (3.8.0): explicit stores default `1.0`, digests `0.7` (the extraction LLM may supply its own). **Displayed, not ranked** — importance answers "relevant?", confidence answers "true?"; preserved through merge/import/export |
+| `related` | string[] | ids of linked memories (3.8.0) — see [Relationships](#relationships-380) |
 | `id` | 12-char id | assigned automatically (collision-safe) |
 | `createdAt` / `updatedAt` | ISO timestamps | assigned automatically |
+
+## Relationships (3.8.0)
+
+Memories can link to each other — a directed `related: [ids]` list in
+frontmatter, managed with `memory_relate`:
+
+```markdown
+related: [7133edba, 9f2e01aa]
+```
+
+- Edges are **stored on the source only**; backlinks are derived at read time
+  (`memory_get` / `GET /memories/:id` return both directions), so a link is a
+  single write with no consistency dance.
+- Targets are validated on `add` (they must exist); self-links are rejected.
+- Links do not affect ranking — retrieval is unchanged; they are structure for
+  the consumer to follow (decision → facts it rests on, history → decision it
+  records).
+
+## Version history (3.8.0)
+
+Any content-changing update (today: contradiction merges) first snapshots the
+on-disk pre-image into `~/.remembra/.history/<id>/<epoch>-<seq>.md` — a
+byte-for-byte copy of the file as it was. `memory_history` /
+`GET /memories/:id/history` return the versions newest-first, each with a
+unified line diff against its predecessor. Snapshots prune to
+`REMEMBRA_HISTORY_LIMIT` (default 20, `0` disables); embedding backfills and
+linking never snapshot (content unchanged). History files are invisible to
+`all()`/search — `.history` is never walked as data.
 
 ## Retrieval ranking
 
@@ -131,7 +161,16 @@ Layout:
 $REMEMBRA_HOME/            # defaults to ~/.remembra
 ├── global/
 │   └── <id>.md
-└── scopes/
-    └── <scope>/
-        └── <id>.md
+├── scopes/
+│   └── <scope>/
+│       └── <id>.md
+├── archived/               # same shape, out of search (lifecycle.md)
+└── .history/<id>/          # superseded pre-images (version history, 3.8.0)
 ```
+
+> Opt-in: with `REMEMBRA_ENCRYPT_KEY` set, every file above is written as
+> AES-256-GCM ciphertext instead (same names, detected by magic bytes) —
+> see [security.md](security.md#encryption-at-rest-opt-in-380). With
+> `REMEMBRA_REDACT=1`, PII patterns are replaced with typed placeholders
+> (`<EMAIL>`, `<CARD>`, …) *before* this file is ever written — see
+> [security.md](security.md#pii-redaction-opt-in-380).

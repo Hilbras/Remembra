@@ -95,6 +95,9 @@ REMEMBRA_API_KEY="your-secret" remembra --http
 | `REMEMBRA_LOCK_TIMEOUT_MS` | `5000` | Max wait for the cross-process storage lock |
 | `REMEMBRA_LOCK_STALE_MS` | `10000` | Age after which a lock with a dead/unknown pid is stolen |
 | `REMEMBRA_CACHE_SIZE` | `10000` | Parse-cache LRU capacity (entries); `0` disables caching |
+| `REMEMBRA_HISTORY_LIMIT` | `20` | Max version snapshots kept per memory; `0` disables history |
+| `REMEMBRA_REDACT` | *(unset)* | `1` enables PII redaction at ingest (irreversible) — see [security.md](security.md#pii-redaction-opt-in-380) |
+| `REMEMBRA_ENCRYPT_KEY` | *(unset)* | 64-hex 32-byte key → AES-256-GCM at rest; run `remembra encrypt` — see [security.md](security.md#encryption-at-rest-opt-in-380) |
 | `REMEMBRA_DEBUG` | *(unset)* | `1` logs the storage root path at startup (off by default: log hygiene) |
 | `REMEMBRA_LOG` | *(auto)* | Force log format: `json` or `text`. Unset → auto: JSON when stderr is piped, text on a TTY. See [observability.md](observability.md) |
 
