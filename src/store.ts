@@ -595,7 +595,18 @@ export class MemoryStore implements MemoryBackend {
 
   private async recover(): Promise<void> {
     const everything = await walkRaw(this.root);
-    const tmps = everything.filter((f) => f.endsWith(".tmp"));
+    // Age-gated sweep: a tmp younger than the stale-lock window belongs to an
+    // in-flight atomic write (its rename is milliseconds away — touching it
+    // would race into a spurious ENOENT), so only tmps old enough to be
+    // provably abandoned — a crash between write and rename — are removed.
+    // Crash orphans are collected by any later startup once they age out.
+    const tmps: string[] = [];
+    for (const t of everything) {
+      if (!t.endsWith(".tmp")) continue;
+      const st = await fs.stat(t).catch(() => null);
+      if (st && Date.now() - st.mtimeMs < this.lockStaleMs) continue;
+      tmps.push(t);
+    }
     for (const t of tmps) await fs.unlink(t).catch(() => {});
 
     // Ids present in both active and archived trees → interrupted archive/revive.

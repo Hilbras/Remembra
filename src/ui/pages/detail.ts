@@ -170,7 +170,7 @@ export async function renderDetail(view: HTMLElement, id: string): Promise<void>
   ) as HTMLSelectElement;
   const kindSel = h(
     "select",
-    { title: "Relation kind (plan §4.7)" },
+    { title: "Relation kind" },
     ...RELATION_KINDS.map((k) => h("option", { value: k, text: k })),
   ) as HTMLSelectElement;
   const addRelBtn = h(

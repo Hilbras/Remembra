@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [4.1.1] — 2026-09-23
+
+### Fixed
+- Dashboard link picker: the relation-kind select no longer leaks the
+  internal plan reference into its label (now just "Relation kind").
+- Crash recovery: the `*.tmp` sweep is now age-gated (files younger than the
+  stale-lock window are treated as in-flight writes, not orphans). The sweep
+  could previously race a live atomic write under load and fail it with a
+  spurious `ENOENT` on rename — a pre-existing intermittent flake in the
+  concurrent-writes test. Crash orphans are still collected once they age
+  past the window.
+
 ## [4.1.0] — 2026-09-23
 
 **Memory Model & Provenance** — plan §4 of the Master Development Plan, plus

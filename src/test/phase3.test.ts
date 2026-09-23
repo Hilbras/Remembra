@@ -230,6 +230,10 @@ test("recovery removes orphaned *.tmp files and logs once", async () => {
   await fs.mkdir(globalDir, { recursive: true });
   const tmpFile = path.join(globalDir, `${hex12()}.md.abc123.tmp`);
   await fs.writeFile(tmpFile, "half-written junk", "utf8");
+  // Recovery's sweep is age-gated: only tmps past the stale-lock window are
+  // provably abandoned — backdate to simulate an orphan from a real crash.
+  const orphanAge = new Date(Date.now() - 60_000);
+  await fs.utimes(tmpFile, orphanAge, orphanAge);
 
   const store = new MemoryStore(dir);
   const orig = console.error;
