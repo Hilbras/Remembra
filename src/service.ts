@@ -139,6 +139,24 @@ export class MemoryService {
     }
   }
 
+  private assertAgentWrite(input: StoreInput, options: AgentReadOptions): void {
+    if (!this.agentMode) return;
+    const requiresAgentIdentity =
+      input.access === "private" ||
+      input.owner === "agent" ||
+      input.provenance?.sourceType === "agent";
+    if (!requiresAgentIdentity) return;
+
+    const verifiedId = options.agent?.agentId;
+    const attributedId = input.provenance?.agentId;
+    if (!verifiedId || (attributedId && attributedId !== verifiedId) || (input.access === "private" && attributedId !== verifiedId)) {
+      throw new RemembraError(
+        "INVALID_INPUT",
+        "private or agent-owned memory requires a matching verified agent context",
+      );
+    }
+  }
+
   private async maybeEmbed(text: string, signal?: AbortSignal): Promise<number[] | undefined> {
     if (!this.embedFn) return undefined;
     try {
@@ -150,13 +168,14 @@ export class MemoryService {
     }
   }
 
-  async store(input: unknown) {
+  async store(input: unknown, options: AgentReadOptions = {}) {
     let parsed: StoreInput;
     try {
       parsed = StoreInput.parse(input);
     } catch (err) {
       throw inputError(err, "INVALID_INPUT");
     }
+    this.assertAgentWrite(parsed, options);
     // PII redaction (audit Phase 8, opt-in REMEMBRA_REDACT): before embed,
     // before disk, before export — raw patterns never leave this process.
     if (this.redactOn) parsed = this.applyRedaction(parsed);
@@ -606,9 +625,21 @@ export class MemoryService {
   }
 
   /** V4.4: query recent audit events. */
-  async getAudit(opts?: { limit?: number; since?: string }): Promise<{ events: Record<string, unknown>[] }> {
+  async getAudit(
+    opts?: { limit?: number; since?: string },
+    options: AgentReadOptions = {},
+  ): Promise<{ events: Record<string, unknown>[] }> {
     const events = this.db.getAudit ? await this.db.getAudit(opts) : [];
-    return { events };
+    if (!this.agentMode) return { events };
+    const visibleIds = new Set(
+      (await this.db.all(true)).filter((m) => this.canRead(m, options)).map((m) => m.id),
+    );
+    return {
+      events: events.filter((event) => {
+        const id = event.memoryId ?? event.memory_id;
+        return typeof id === "string" && visibleIds.has(id);
+      }),
+    };
   }
 
   /**
@@ -625,7 +656,7 @@ export class MemoryService {
     source?: string;
     /** Cancellation (plan §3.7): HTTP disconnects abort the in-flight provider calls. */
     signal?: AbortSignal;
-  }): Promise<DigestResult> {
+  } & AgentReadOptions): Promise<DigestResult> {
     const t0 = performance.now();
     const run = this.digestLock.then(() => this.doDigest(opts));
     this.digestLock = run.then(
@@ -658,7 +689,7 @@ export class MemoryService {
     scope?: string;
     source?: string;
     signal?: AbortSignal;
-  }): Promise<DigestResult> {
+  } & AgentReadOptions): Promise<DigestResult> {
     let extracted: ExtractedMemory[];
     try {
       extracted = await this.extractFn(opts.transcript, { signal: opts.signal });
@@ -667,8 +698,8 @@ export class MemoryService {
       const msg = err instanceof Error ? err.message : String(err);
       throw new RemembraError("LLM_ERROR", `memory extraction failed: ${msg}`, { cause: err });
     }
-    const active = await this.db.all();
-    const archived = await this.db.all(true).then((all) => all.filter((m) => m.archivedAt));
+    const active = (await this.db.all()).filter((m) => this.canRead(m, opts));
+    const archived = (await this.db.all(true)).filter((m) => m.archivedAt && this.canRead(m, opts));
     const seen = new Set(active.map((m) => dedupKey(m.type, m.content, m.scope)));
 
     const stored: Memory[] = [];
@@ -787,9 +818,19 @@ export class MemoryService {
         source: opts.source,
         confidence: item.confidence,
         // Plan §4.3/§4.9: extraction provenance = conversation → stored
-        // trust: unverified (never LLM-classified higher — Rule 2).
-        provenance: { sourceType: "conversation", provider: this.llmName },
-      });
+        // trust: unverified (never LLM-classified higher — Rule 2). When an
+        // authenticated agent requested the digest, retain its attribution.
+        provenance: {
+          sourceType: "conversation",
+          provider: this.llmName,
+          ...(opts.agent?.agentId ? { agentId: opts.agent.agentId } : {}),
+          ...(opts.agent?.agentType ? { agentType: opts.agent.agentType } : {}),
+          ...(opts.agent?.agentVersion ? { agentVersion: opts.agent.agentVersion } : {}),
+          ...(opts.agent?.conversationId ? { conversationId: opts.agent.conversationId } : {}),
+          ...(opts.agent?.taskId ? { taskId: opts.agent.taskId } : {}),
+          ...(opts.agent?.runId ? { runId: opts.agent.runId } : {}),
+        },
+      }, opts);
       stored.push(memory);
       active.push(memory); // so later items in this batch dedup against it
     }
@@ -808,11 +849,11 @@ export class MemoryService {
    * consolidation analysis (V4.5).
    * Exposed as the `memory_maintain` tool, POST /maintain, and the CLI.
    */
-  async maintain(): Promise<MaintainResult> {
-    const result = await this.decayPass();
+  async maintain(options: AgentReadOptions = {}): Promise<MaintainResult> {
+    const result = await this.decayPass(options);
     // Vector backfill: embed active memories stored while embeddings were off.
     if (this.embedFn) {
-      const active = await this.db.all();
+      const active = (await this.db.all()).filter((m) => this.canRead(m, options));
       for (const m of active) {
         if (m.embedding && m.embedding.length > 0) continue;
         const vec = await this.maybeEmbed(m.content);
@@ -824,7 +865,7 @@ export class MemoryService {
     }
 
     // V4.5: consolidation analysis on active memories.
-    const active = await this.db.all();
+    const active = (await this.db.all()).filter((m) => this.canRead(m, options));
     const findings = consolidate(active);
     if (findings.exactDuplicates.length > 0 || findings.nearDuplicates.length > 0 || findings.contradictions.length > 0 || findings.fragments.length > 0) {
       logEvent("info", "consolidation", {
@@ -861,7 +902,7 @@ export class MemoryService {
    * V4.5: memory compression — combine fragmented memories into a compact
    * representation via LLM. Requires scope + type filter + optionally ids.
    */
-  async compress(input: unknown): Promise<{ compressed: Memory[]; sources: string[] }> {
+  async compress(input: unknown, options: AgentReadOptions = {}): Promise<{ compressed: Memory[]; sources: string[] }> {
     let parsed: CompressInput;
     try {
       parsed = CompressInput.parse(input);
@@ -873,6 +914,7 @@ export class MemoryService {
     let pool = parsed.ids
       ? await Promise.all(parsed.ids.map((id) => this.db.get(id))).then((r) => r.filter(Boolean) as Memory[])
       : await this.db.all();
+    pool = pool.filter((m) => this.canRead(m, options));
     if (parsed.scope) pool = pool.filter((m) => m.scope === parsed.scope || m.scope === "global");
     if (parsed.type) pool = pool.filter((m) => m.type === parsed.type);
     if (pool.length < 3) return { compressed: [], sources: [] };
@@ -893,6 +935,7 @@ export class MemoryService {
       compressedContent = `[compressed from ${pool.map((m) => m.id).join(",")}] ${pool.map((m) => m.content).join(". ")}`;
     }
 
+    const hasPrivateSource = pool.some((m) => m.access === "private");
     const compressedMem = await this.store({
       type: parsed.type ?? pool[0].type,
       content: compressedContent,
@@ -900,16 +943,55 @@ export class MemoryService {
       tags: pool.flatMap((m) => m.tags),
       importance: Math.max(...pool.map((m) => m.importance ?? 3)),
       confidence: Math.min(...pool.map((m) => m.confidence ?? 0.8)),
-      provenance: { sourceType: "system", provider: this.llmName },
+      ...(hasPrivateSource ? { owner: "agent" as const, access: "private" as const } : {}),
+      provenance: hasPrivateSource
+        ? {
+            sourceType: "agent",
+            agentId: options.agent?.agentId,
+            agentType: options.agent?.agentType,
+            agentVersion: options.agent?.agentVersion,
+            provider: this.llmName,
+          }
+        : { sourceType: "system", provider: this.llmName },
       meta: { compressedFrom: pool.map((m) => m.id), compressionAt: new Date().toISOString() },
-    });
+    }, options);
 
     metrics.inc("remembra_memory_compressed_total", { count: String(pool.length) });
     return { compressed: [compressedMem.memory], sources: pool.map((m) => m.id) };
   }
 
+  /** V4.7: non-content attribution and count summary for one agent. */
+  async getAgentSummary(
+    agentId: string,
+    options: AgentReadOptions = {},
+  ): Promise<{
+    agentId: string;
+    agentType?: string;
+    agentVersion?: string;
+    memories: { total: number; private: number; shared: number; global: number };
+  }> {
+    if (options.agent?.agentId !== agentId) {
+      throw new RemembraError("NOT_FOUND", `No agent with id ${agentId}`);
+    }
+    const memories = (await this.db.all(true))
+      .filter((m) => this.canRead(m, options))
+      .filter((m) => m.provenance.agentId === agentId);
+    const latest = memories[0];
+    return {
+      agentId,
+      ...(latest?.provenance.agentType ? { agentType: latest.provenance.agentType } : {}),
+      ...(latest?.provenance.agentVersion ? { agentVersion: latest.provenance.agentVersion } : {}),
+      memories: {
+        total: memories.length,
+        private: memories.filter((m) => m.access === "private").length,
+        shared: memories.filter((m) => m.access === "shared").length,
+        global: memories.filter((m) => (m.access ?? "global") === "global").length,
+      },
+    };
+  }
+
   /** V4.6: memory health dashboard (GET /quality). */
-  async quality(): Promise<{
+  async quality(options: AgentReadOptions = {}): Promise<{
     memories: { active: number; archived: number; deleted_total: number; growth_rate_per_day: number };
     duplicate_rate: number;
     conflict_rate: number;
@@ -919,7 +1001,7 @@ export class MemoryService {
     providers: { embeddings: { failures: number; latency_ms_avg: number }; llm: { failures: number; latency_ms_avg: number; tokens_total: number } };
   }> {
     const now = Date.now();
-    const all = await this.db.all(true);
+    const all = (await this.db.all(true)).filter((m) => this.canRead(m, options));
     const active = all.filter((m) => !m.archivedAt && !m.meta?.quarantined);
     const archived = all.filter((m) => m.archivedAt);
     const quarantined = all.filter((m) => m.meta?.quarantined);
@@ -948,7 +1030,12 @@ export class MemoryService {
     let deletedTotal = 0;
     try {
       const audits = await this.db.getAudit?.({ limit: 10000 }).catch(() => []) ?? [];
-      deletedTotal = audits.filter((e) => (e as Record<string, unknown>).action === "delete").length;
+      const visibleIds = new Set(all.map((m) => m.id));
+      deletedTotal = audits.filter((e) => {
+        const event = e as Record<string, unknown>;
+        const id = event.memoryId ?? event.memory_id;
+        return event.action === "delete" && (!this.agentMode || (typeof id === "string" && visibleIds.has(id)));
+      }).length;
     } catch { deletedTotal = 0; }
 
     return {
@@ -998,7 +1085,7 @@ export class MemoryService {
    * snapshot can never half-import. Existing ids and exact duplicates are
    * skipped, making re-import idempotent.
    */
-  async importSnapshot(data: unknown): Promise<{ imported: number; skipped: number }> {
+  async importSnapshot(data: unknown, options: AgentReadOptions = {}): Promise<{ imported: number; skipped: number }> {
     let snap: ReturnType<typeof SnapshotInput.parse>;
     try {
       snap = SnapshotInput.parse(data); // throws before any write
@@ -1033,6 +1120,7 @@ export class MemoryService {
           rest.relations ??
           legacyRelated?.map((rid) => ({ id: rid, kind: "related" as const })),
       };
+      this.assertAgentWrite(m, options);
       if (await this.db.importMemory(m)) {
         imported++;
         ids.add(raw.id);
@@ -1045,13 +1133,13 @@ export class MemoryService {
   }
 
   /** Decay lifecycle: unused actives → archived → auto-deleted past TTL. */
-  private async decayPass(): Promise<MaintainResult> {
+  private async decayPass(options: AgentReadOptions = {}): Promise<MaintainResult> {
     const now = Date.now();
     const archiveCutoff = now - this.archiveAfterDays * 86_400_000;
     const ttlCutoff = now - this.archiveTtlDays * 86_400_000;
     const result: MaintainResult = { archived: [], deleted: [], embedded: 0 };
 
-    const active = await this.db.all();
+    const active = (await this.db.all()).filter((m) => this.canRead(m, options));
     for (const m of active) {
       // Standing instructions never decay (role + instruction, plan §4.9).
       if (m.type === "role" || m.type === "instruction") continue;

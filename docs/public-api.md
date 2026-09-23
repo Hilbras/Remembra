@@ -48,11 +48,18 @@ Server: `remembra --http` (same binary). Auth: `x-api-key` or
 static dashboard shell (`/`, `/ui/*`) are exempt. Errors are JSON with an
 `error` field.
 
+When agent mode is enabled, programmatic HTTP integrations may provide
+`resolveAgentContext(req)` to `createHttpServer`. The resolver runs **after**
+API-key authentication and is the only supported HTTP identity source;
+Remembra does not trust an `agentId` JSON field or public agent header. See
+[multi-agent.md](multi-agent.md).
+
 | Method | Route | Purpose |
 |--------|-------|---------|
 | GET | `/` · `/ui/*` | dashboard shell + assets (static, no auth) |
 | GET | `/health` | liveness/readiness (no auth) |
 | GET | `/metrics` | Prometheus text (auth when keyed) |
+| GET | `/agents/:id` | agent attribution and memory counts (no memory content) |
 | POST | `/memories` | store |
 | PUT | `/memories/:id` | patch |
 | GET | `/memories/search` | search (`query`/`q`, `scope`, `type`, `limit`, `explain`) |

@@ -13,6 +13,8 @@ import {
   Relation,
   RelationKind,
   RetentionMode,
+  MemoryOwner,
+  MemoryAccess,
   TrustLevel,
   defaultTrust,
 } from "./types.js";
@@ -806,6 +808,13 @@ export function render(m: Memory): string {
   if (m.archivedAt) meta.archivedAt = m.archivedAt;
   if (m.source) meta.source = m.source;
   meta.provenance = m.provenance; // required since 4.1.0 (plan §4.3)
+  if (m.owner) meta.owner = m.owner;
+  if (m.access) meta.access = m.access;
+  if (m.meta) meta.meta = m.meta;
+  if (m.validFrom) meta.validFrom = m.validFrom;
+  if (m.validUntil) meta.validUntil = m.validUntil;
+  if (m.observedAt) meta.observedAt = m.observedAt;
+  if (m.supersededBy) meta.supersededBy = m.supersededBy;
   if (m.retention) meta.retention = m.retention;
   if (m.relations && m.relations.length > 0) meta.relations = m.relations;
   if (m.embedding && m.embedding.length > 0) meta.embedding = m.embedding.join(",");
@@ -1017,6 +1026,32 @@ async function parse(file: string): Promise<Memory | null> {
       } else fix(`invalid retention "${truncate(r ?? String(meta.retention))}"`);
     }
 
+    const ownerRaw = asStr(meta.owner);
+    const owner = MemoryOwner.options.includes(ownerRaw as MemoryOwner)
+      ? (ownerRaw as MemoryOwner)
+      : undefined;
+    if (ownerRaw !== undefined && !owner) fix(`invalid owner "${truncate(ownerRaw)}"`);
+    const accessRaw = asStr(meta.access);
+    const access = MemoryAccess.options.includes(accessRaw as MemoryAccess)
+      ? (accessRaw as MemoryAccess)
+      : undefined;
+    if (accessRaw !== undefined && !access) fix(`invalid access "${truncate(accessRaw)}"`);
+
+    const memoryMeta =
+      meta.meta && typeof meta.meta === "object" && !Array.isArray(meta.meta)
+        ? (meta.meta as Record<string, unknown>)
+        : undefined;
+    if (meta.meta !== undefined && !memoryMeta) fix("invalid meta object");
+
+    const validFrom = validDate(asStr(meta.validFrom));
+    if (meta.validFrom !== undefined && !validFrom) fix("invalid validFrom date");
+    const validUntil = validDate(asStr(meta.validUntil));
+    if (meta.validUntil !== undefined && !validUntil) fix("invalid validUntil date");
+    const observedAt = validDate(asStr(meta.observedAt));
+    if (meta.observedAt !== undefined && !observedAt) fix("invalid observedAt date");
+    const supersededBy = asStr(meta.supersededBy);
+    if (meta.supersededBy !== undefined && !supersededBy) fix("invalid supersededBy");
+
     const createdOk = validDate(asStr(meta.created));
     if (meta.created !== undefined && !createdOk) fix("invalid created date");
     const updatedOk = validDate(asStr(meta.updated));
@@ -1095,6 +1130,13 @@ async function parse(file: string): Promise<Memory | null> {
       confidence,
       trust,
       provenance,
+      owner,
+      access,
+      ...(memoryMeta ? { meta: memoryMeta as Memory["meta"] } : {}),
+      ...(validFrom ? { validFrom } : {}),
+      ...(validUntil ? { validUntil } : {}),
+      ...(observedAt ? { observedAt } : {}),
+      ...(supersededBy ? { supersededBy } : {}),
       createdAt,
       updatedAt,
       lastSeen,

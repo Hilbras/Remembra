@@ -16,6 +16,8 @@ export interface AgentContext {
   agentVersion?: string;
   councilId?: string;
   taskId?: string;
+  conversationId?: string;
+  runId?: string;
 }
 
 /** The ownership inferred for a new memory when the caller omits it. */

@@ -9,8 +9,9 @@ import { isRemembraError, statusFor, errorLabel, RemembraError } from "./errors.
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { RateLimiter } from "./rate-limiter.js";
+import type { AgentContext } from "./agent.js";
 
-interface HttpOptions {
+export interface HttpOptions {
   port?: number;
   /** Bind address. Defaults: loopback when no API key, all interfaces when keyed. */
   host?: string;
@@ -18,6 +19,12 @@ interface HttpOptions {
   apiKey?: string;
   /** Max request body bytes (default: REMEMBRA_MAX_BODY or 10 MiB). */
   maxBodyBytes?: number;
+  /**
+   * Resolve a trusted agent identity after API-key authentication. This is the
+   * only supported HTTP source of AgentContext; a public agent-id header is
+   * deliberately not trusted by default.
+   */
+  resolveAgentContext?: (req: http.IncomingMessage) => AgentContext | undefined;
 }
 
 const DEFAULT_MAX_BODY = 10 * 1024 * 1024; // transcripts can be large — 10 MiB
@@ -238,6 +245,13 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return send(res, 401, { error: "Unauthorized: missing or invalid API key" });
       }
 
+      // Identity is established by the embedding application only after the
+      // transport authentication above. Never infer it from request JSON or an
+      // unverified public header.
+      const resolvedAgent = opts.resolveAgentContext?.(req);
+      const agent = resolvedAgent?.agentId?.trim() ? resolvedAgent : undefined;
+      const agentOptions = { agent };
+
       // GET /metrics — Prometheus text format. After the auth check on
       // purpose: keyed (incl. public) deployments must not leak counters.
       if (req.method === "GET" && path === "/metrics") {
@@ -251,7 +265,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       if (req.method === "GET" && path === "/audit") {
         const limit = intParam(url.searchParams.get("limit"), 1) ?? 50;
         const since = url.searchParams.get("since") ?? undefined;
-        const result = await service.getAudit({ limit, since });
+        const result = await service.getAudit({ limit, since }, agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return sendListLike(res, 200, result, "events");
@@ -259,7 +273,16 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 
       // V4.6: GET /quality — memory health dashboard.
       if (req.method === "GET" && path === "/quality") {
-        const result = await service.quality();
+        const result = await service.quality(agentOptions);
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, 200, result);
+      }
+
+      // GET /agents/:id — non-content attribution and memory counts.
+      const agentSummary = path.match(/^\/agents\/([^/]+)$/);
+      if (req.method === "GET" && agentSummary) {
+        const result = await service.getAgentSummary(decodeURIComponent(agentSummary[1]), agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 200, result);
@@ -267,7 +290,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 
       // POST /maintain — decay sweep + vector backfill
       if (req.method === "POST" && path === "/maintain") {
-        const result = await service.maintain();
+        const result = await service.maintain(agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 200, result);
@@ -282,7 +305,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         res.on("close", () => {
           if (!res.writableEnded) ac.abort();
         });
-        const result = await service.digest({ ...DigestInput.parse(body), signal: ac.signal });
+        const result = await service.digest({ ...DigestInput.parse(body), signal: ac.signal, ...agentOptions });
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 200, result);
@@ -291,7 +314,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // POST /memories
       if (req.method === "POST" && path === "/memories") {
         const body = await readBody(req, maxBody);
-        const result = await service.store(body);
+        const result = await service.store(body, agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 201, result);
@@ -311,6 +334,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           includeFuture: url.searchParams.get("includeFuture") === "true",
           includeQuarantined: url.searchParams.get("includeQuarantined") === "true",
           includeArchived: url.searchParams.get("includeArchived") === "true",
+          ...agentOptions,
         });
         applySecureHeaders(res);
         applyCorsHeaders(res);
@@ -328,6 +352,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           includeQuarantined: url.searchParams.get("includeQuarantined") === "true",
           includeExpired: url.searchParams.get("includeExpired") === "true",
           includeFuture: url.searchParams.get("includeFuture") === "true",
+          ...agentOptions,
         });
         applySecureHeaders(res);
         applyCorsHeaders(res);
@@ -337,7 +362,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // POST /memories/compress — V4.5: trigger consolidation compression.
       if (req.method === "POST" && path === "/memories/compress") {
         const body = await readBody(req, maxBody);
-        const result = await service.compress(body);
+        const result = await service.compress(body, agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 200, result);
@@ -346,7 +371,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // DELETE /memories/:id
       const del = path.match(/^\/memories\/([^/]+)$/);
       if (req.method === "DELETE" && del) {
-        const result = await service.forget(decodeURIComponent(del[1]));
+        const result = await service.forget(decodeURIComponent(del[1]), agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, result.ok ? 200 : 404, result);
@@ -356,7 +381,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       const singleWrite = path.match(/^\/memories\/([^/]+)$/);
       if (req.method === "PUT" && singleWrite) {
         const body = await readBody(req, maxBody);
-        const result = await service.update(decodeURIComponent(singleWrite[1]), body);
+        const result = await service.update(decodeURIComponent(singleWrite[1]), body, agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 200, result);
@@ -366,14 +391,14 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // POST archive, POST revive (Phase 8 + v4).
       const sub = path.match(/^\/memories\/([^/]+)\/(relate|history|archive|revive)$/);
       if (sub && req.method === "POST" && (sub[2] === "archive" || sub[2] === "revive")) {
-        const result = await service[sub[2]](decodeURIComponent(sub[1]));
+        const result = await service[sub[2]](decodeURIComponent(sub[1]), agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 200, result);
       }
       if (sub && req.method === "POST" && sub[2] === "relate") {
         const body = (await readBody(req, maxBody)) as Record<string, unknown>;
-        const result = await service.relate({ ...body, id: decodeURIComponent(sub[1]) }); // path id wins
+        const result = await service.relate({ ...body, id: decodeURIComponent(sub[1]) }, agentOptions); // path id wins
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 200, result);
@@ -382,7 +407,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         const result = await service.history({
           id: decodeURIComponent(sub[1]),
           limit: intParam(url.searchParams.get("limit"), 1) ?? undefined,
-        });
+        }, agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 200, result);
@@ -391,7 +416,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // GET /memories/:id — memory with related links + backlinks
       const single = path.match(/^\/memories\/([^/]+)$/);
       if (req.method === "GET" && single) {
-        const result = await service.get(decodeURIComponent(single[1]));
+        const result = await service.get(decodeURIComponent(single[1]), agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 200, result);
@@ -401,13 +426,13 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       if (path === "/snapshot" && req.method === "GET") {
         applySecureHeaders(res);
         applyCorsHeaders(res);
-        return send(res, 200, await service.exportSnapshot());
+        return send(res, 200, await service.exportSnapshot(agentOptions));
       }
       if (path === "/import" && req.method === "POST") {
         const body = await readBody(req, maxBody);
         applySecureHeaders(res);
         applyCorsHeaders(res);
-        return send(res, 200, await service.importSnapshot(body));
+        return send(res, 200, await service.importSnapshot(body, agentOptions));
       }
 
       applySecureHeaders(res);
@@ -471,6 +496,8 @@ function routeLabel(p: string): string {
       return "audit";
     case "/quality":
       return "quality";
+    case "/agents":
+      return "agents";
     case "/memories":
       return "memories";
     case "/memories/search":
@@ -483,6 +510,7 @@ function routeLabel(p: string): string {
       return "compress";
     default:
       if (p === "/" || p === "/ui" || p.startsWith("/ui/")) return "ui";
+      if (/^\/agents\/[^/]+$/.test(p)) return "agents";
       if (/^\/memories\/[^/]+\/(relate|history|archive|revive)$/.test(p)) return "memory_sub";
       if (p === "/snapshot" || p === "/import") return "data_io";
       return /^\/memories\/[^/]+$/.test(p) ? "memory_item" : "other";
