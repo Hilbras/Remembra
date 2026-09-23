@@ -73,6 +73,15 @@ test("search uses complete candidate pages and falls back on partial pages", asy
   assert.equal(allCalls, 1);
 });
 
+test("maintenance can run through the bounded background queue", async () => {
+  const svc = await tempService();
+  const handle = svc.enqueueMaintenance();
+  const result = await handle.done;
+  assert.equal(result.state, "completed");
+  assert.equal(result.value?.archived.length, 0);
+  await svc.shutdownBackgroundJobs();
+});
+
 test("list filters by type and scope", async () => {
   const svc = await tempService();
   await svc.store({ type: "fact", content: "a", scope: "global" });

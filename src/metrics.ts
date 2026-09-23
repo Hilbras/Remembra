@@ -125,6 +125,8 @@ metrics.histogram("remembra_http_request_duration_seconds", "HTTP request durati
 metrics.counter("remembra_errors_total", "Classified errors by code and transport (http|mcp)");
 metrics.counter("remembra_searches_total", "memory_search invocations");
 metrics.histogram("remembra_search_duration_seconds", "memory_search latency (seconds)");
+metrics.counter("remembra_jobs_total", "Background jobs by type and outcome");
+metrics.counter("remembra_job_failures_total", "Background jobs that exhausted retries");
 metrics.counter("remembra_stores_total", "memory_store invocations");
 metrics.counter("remembra_digests_total", "session digest runs");
 metrics.counter("remembra_digest_items_total", "Digest items by outcome (stored|skipped|merged)");

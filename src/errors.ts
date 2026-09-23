@@ -21,6 +21,8 @@ export type ErrorCode =
   | "RATE_LIMITED" // V4.4: request rate exceeded the per-key window
   | "REQUEST_TIMEOUT" // V4.4: handler exceeded REMEMBRA_REQUEST_TIMEOUT_MS
   | "SERVICE_UNAVAILABLE" // V4.4: concurrency limit reached
+  | "QUEUE_FULL" // V4.8: bounded background queue is full
+  | "QUEUE_CLOSED" // V4.8: background queue is shutting down
   | "SENSITIVE_DATA" // V4.4: sensitive data detected under reject policy
   | "INJECTION_DETECTED"; // V4.4: prompt injection pattern flagged
 
@@ -53,6 +55,8 @@ const HTTP_STATUS: Record<ErrorCode, number> = {
   RATE_LIMITED: 429, // V4.4: Too Many Requests
   REQUEST_TIMEOUT: 504, // V4.4: Gateway Timeout
   SERVICE_UNAVAILABLE: 503, // V4.4: Server overloaded
+  QUEUE_FULL: 429, // Background work capacity reached
+  QUEUE_CLOSED: 503, // Background worker is shutting down
   SENSITIVE_DATA: 400, // V4.4: Bad Request — sensitive data under reject policy
   INJECTION_DETECTED: 400, // V4.4: Bad Request — injection detected under strict policy
 };

@@ -22,6 +22,8 @@ import { createSensitiveDetector, SensitivePolicy } from "./sensitive-data.js";
 import { consolidate, ConsolidationFindings } from "./consolidation.js";
 import { computeHealth, getLifecycleState, agingScorePenalty } from "./lifecycle.js";
 import { AgentContext, canReadMemory, canUseScope, defaultAccess, defaultOwner } from "./agent.js";
+import { JobQueue } from "./job-queue.js";
+import type { JobHandle } from "./job-queue.js";
 
 export interface DigestResult {
   extracted: number;
@@ -92,6 +94,7 @@ export class MemoryService {
   private readonly archiveTtlDays: number;
   private readonly redactOn: boolean;
   private readonly agentMode: boolean;
+  private readonly jobs = new JobQueue();
   /** V4.4: prompt injection detector (pattern-based). */
   private readonly injectionDetector = createInjectionDetector();
   /** V4.4: sensitive data policy detector. */
@@ -122,10 +125,24 @@ export class MemoryService {
     this.archiveTtlDays = deps.archiveTtlDays ?? Number(process.env.REMEMBRA_ARCHIVE_TTL_DAYS ?? 365);
     this.redactOn = deps.redact ?? redactionEnabled();
     this.agentMode = deps.agentMode ?? process.env.REMEMBRA_AGENT_MODE === "1";
+    this.jobs.register("maintenance", async (options: AgentReadOptions) => this.maintain(options));
   }
 
   get embeddingsEnabled(): boolean {
     return this.embedFn !== undefined;
+  }
+
+  /** Queue a maintenance pass without blocking the caller. */
+  enqueueMaintenance(options: AgentReadOptions = {}): JobHandle<MaintainResult> {
+    return this.jobs.enqueue<AgentReadOptions, MaintainResult>("maintenance", options);
+  }
+
+  jobStats(): { queued: number; running: number; capacity: number; concurrency: number } {
+    return this.jobs.stats();
+  }
+
+  async shutdownBackgroundJobs(): Promise<void> {
+    await this.jobs.shutdown();
   }
 
   /** Returns false rather than disclosing the existence of a private memory. */

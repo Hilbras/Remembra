@@ -27,6 +27,7 @@ Event names in the wild: `http_listening`, `mcp_listening`, `search`,
 `shutdown`, `crash_recovery`, `memory_parse_skipped`, `memory_normalized`
 (4.0.1 — invalid metadata fixed at read time; fields: file, reason),
 `embedding_failed`, `touch_failed`, `merge_llm_failed`, `decay_failed`,
+`job_failed`, `job_error_callback_failed`,
 `provider_retry` (4.0.1 — fields: provider, attempt, retries_left, reason),
 `provider_failed` (4.0.1 — final failure: provider, attempts, status/reason),
 `provider_cancelled` (4.0.1 — client disconnected mid-call), `redacted`
@@ -61,6 +62,8 @@ stays exempt so unauthenticated readiness probes keep working.
 | `remembra_history_snapshots_total` | counter | — | History pre-images written (3.8.0). Growth rate ≈ content-changing updates. |
 | `remembra_encryption_migrations_total` | counter | `mode` | `remembra encrypt`/`decrypt` files converted (3.8.0). |
 | `remembra_info` | gauge | `version` | Build info, always `1`. |
+| `remembra_jobs_total` | counter | `type`, `outcome` | Background queue lifecycle: `queued`, `completed`, `failed`, or `cancelled`. |
+| `remembra_job_failures_total` | counter | `type` | Jobs that exhausted their bounded retry budget. |
 
 ### Scrape config
 

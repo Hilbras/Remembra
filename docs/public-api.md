@@ -88,6 +88,8 @@ Remembra does not trust an `agentId` JSON field or public agent header. See
 | `LLM_ERROR` | 502 | provider failure after bounded retries / malformed provider response / cancelled |
 | `PROVIDER_TIMEOUT` | 504 | provider exceeded the timeout or overall budget (4.0.1, plan §3.7) |
 | `ENCRYPTED_NO_KEY` | 503 | files encrypted, key missing/wrong |
+| `QUEUE_FULL` | 429 | bounded background job queue is full |
+| `QUEUE_CLOSED` | 503 | background job queue is shutting down |
 | `INTERNAL` | 500 | anything unclassified |
 
 Metrics count these under `remembra_errors_total{code}` and requests under
