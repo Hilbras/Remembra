@@ -7,6 +7,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3). Earlier releases used independent semver: 0.1.0 = v1,
 > 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [3.5.0] — 2026-09-23
+
+**Phase 5 of the deep audit** — performance & scalability.
+
+### Added
+- **mtime-validated LRU parse cache** (audit: in-memory cache for parsed
+  memories + the lazy-loading item deferred from Phase 4) — reads cost one
+  `stat()` when the file hasn't changed (validated by mtime+size, so writers
+  in *other* processes are caught automatically); writes refresh their own
+  entry, deletes/renames evict. Configurable via `REMEMBRA_CACHE_SIZE`
+  (default 10000 entries, `0` disables); `store.cacheStats()` exposes
+  size/capacity. The directory walk still runs every query — discovering
+  new/deleted files is its job.
+- **Pagination** (audit: paginate `/memories`) — `offset`/`limit` on
+  `GET /memories` and the `memory_list` MCP tool (opt-in: absent = full list,
+  so existing clients don't break), `total` always returned, and a
+  `Showing X–Y of Z` text header when paginated. Invalid query params fall
+  back to unpaginated behavior.
+- **Chunked streaming** (audit: streaming large search results) — list/search
+  responses estimated ≥ 64 KiB stream as chunked JSON (no `content-length`,
+  item-per-write); smaller responses keep the Phase-1 Content-Length shape.
+
+### Declined with evidence
+- **Vector index (FAISS/HNSW)** — native dependencies for double-digit-ms
+  savings: the new benchmark measures brute-force cosine over **10,000 ×
+  768-dim vectors in ~32 ms**. Revisit at >50k vectors or p95 >100 ms;
+  rationale and both thresholds documented in `docs/architecture.md`, seam
+  identified (`MemoryBackend` + rebuildable index over frontmatter vectors).
+
+### Added (tests)
+8 Phase-5 tests: cache staleness (external edit), cross-instance coherence,
+validated-hit proof (read is skipped), LRU capacity/disable, pagination
+(service + HTTP + schema), chunked-vs-Content-Length streaming, and the
+10K×768 brute-force benchmark with a <1000 ms ceiling. **104/104 total.**
+
 ## [3.4.0] — 2026-09-23
 
 **Phase 4 of the deep audit** — retrieval & memory quality.

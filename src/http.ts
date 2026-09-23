@@ -45,7 +45,7 @@ export function resolveListen(
  *   GET    /health              → liveness (no auth)
  *   POST   /memories            → store a memory
  *   GET    /memories/search     → ?query=&scope=&type=&limit=
- *   GET    /memories            → ?scope=&type=&includeArchived=
+ *   GET    /memories            → ?scope=&type=&includeArchived=&offset=&limit=
  *   POST   /memories/digest     → LLM extraction
  *   POST   /maintain            → decay sweep + vector backfill
  *   DELETE /memories/:id        → forget
@@ -98,17 +98,19 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           type: (url.searchParams.get("type") as never) ?? undefined,
           limit,
         });
-        return send(res, 200, result);
+        return sendListLike(res, 200, result, "results");
       }
 
-      // GET /memories
+      // GET /memories — ?scope=&type=&includeArchived=&offset=&limit=
       if (req.method === "GET" && path === "/memories") {
         const result = await service.list({
           scope: url.searchParams.get("scope") ?? undefined,
           type: (url.searchParams.get("type") as never) ?? undefined,
           includeArchived: url.searchParams.get("includeArchived") === "true",
+          offset: intParam(url.searchParams.get("offset"), 0),
+          limit: intParam(url.searchParams.get("limit"), 1),
         });
-        return send(res, 200, result);
+        return sendListLike(res, 200, result, "memories");
       }
 
       // DELETE /memories/:id
@@ -172,6 +174,50 @@ function send(res: http.ServerResponse, status: number, body: unknown): void {
     "content-length": Buffer.byteLength(data),
   });
   res.end(data);
+}
+
+/** Responses at or below this estimated size keep Content-Length + pretty JSON. */
+const STREAM_THRESHOLD = 64 * 1024;
+
+/** Parse an integer query param, rejecting non-integers / out-of-range values. */
+function intParam(raw: string | null, min: number): number | undefined {
+  if (raw === null || !/^\d+$/.test(raw.trim())) return undefined;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= min ? n : undefined;
+}
+
+/**
+ * Search/list responses: small bodies go out with Content-Length (pretty
+ * JSON, Phase 1 shape); estimated-large bodies stream as chunked JSON —
+ * each item is written as it is serialized instead of buffering one giant
+ * string first (audit Phase 5: streaming large search results).
+ */
+function sendListLike(
+  res: http.ServerResponse,
+  status: number,
+  body: Record<string, unknown>,
+  itemKey: "memories" | "results",
+): void {
+  const items = (body[itemKey] as Array<{ content?: string; embedding?: number[] }> | undefined) ?? [];
+  let est = 256;
+  for (const k of Object.keys(body)) est += k.length + 16;
+  for (const it of items) est += (it.content?.length ?? 0) + (it.embedding?.length ?? 0) * 10 + 256;
+  if (est < STREAM_THRESHOLD) return send(res, status, body);
+
+  const { [itemKey]: _items, ...rest } = body;
+  const tail =
+    "]" +
+    Object.entries(rest)
+      .map(([k, v]) => `,${JSON.stringify(k)}:${JSON.stringify(v)}`)
+      .join("") +
+    "}";
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8" }); // no length → chunked
+  res.write(`{"${itemKey}":[`);
+  for (let i = 0; i < items.length; i++) {
+    res.write((i > 0 ? "," : "") + JSON.stringify(items[i]));
+  }
+  res.write(tail);
+  res.end();
 }
 
 function readBody(req: http.IncomingMessage, maxBytes: number): Promise<any> {

@@ -108,6 +108,8 @@ export const listInputShape = {
   scope: z.string().optional(),
   type: MemoryType.optional(),
   includeArchived: z.boolean().optional().describe("Include archived memories (flagged)"),
+  offset: z.number().int().min(0).optional().describe("Pagination: skip this many matching memories"),
+  limit: z.number().int().min(1).max(500).optional().describe("Pagination: max memories to return"),
 };
 export const ListInput = z.object(listInputShape);
 export type ListInput = z.infer<typeof ListInput>;

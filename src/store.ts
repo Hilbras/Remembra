@@ -11,6 +11,8 @@ export interface StoreLockOptions {
   lockTimeoutMs?: number;
   /** Lock files older than this with a dead/unknown pid are stolen (ms). Env: REMEMBRA_LOCK_STALE_MS. Default 10000. */
   lockStaleMs?: number;
+  /** LRU parse-cache capacity in entries. Env: REMEMBRA_CACHE_SIZE. Default 10000; 0 disables. */
+  cacheSize?: number;
 }
 
 /**
@@ -34,6 +36,13 @@ export interface StoreLockOptions {
  *     2. reconcile ids present in BOTH active and archived trees (crash
  *        between archive/revive's write and unlink) — newest updatedAt wins,
  *        ties go to the archived copy.
+ *
+ * Parse cache (audit Phase 5: LRU / lazy loading):
+ *   an LRU of parsed memories keyed by file path and validated by
+ *   (mtimeMs, size) on every read. A hit costs one stat() instead of
+ *   read+parse; writes update the entry they produced, deletes evict, and
+ *   cross-process writers are caught by the stat check — so correctness
+ *   never depends on cache coherence, only speed does.
  */
 export class MemoryStore implements MemoryBackend {
   private readonly lockTimeoutMs: number;
@@ -43,6 +52,7 @@ export class MemoryStore implements MemoryBackend {
   private recovery: Promise<void> | null = null;
   private recovered = false;
   private holdsLock = false;
+  private readonly cache: ParseCache;
 
   constructor(
     private readonly root: string,
@@ -50,6 +60,7 @@ export class MemoryStore implements MemoryBackend {
   ) {
     this.lockTimeoutMs = opts.lockTimeoutMs ?? Number(process.env.REMEMBRA_LOCK_TIMEOUT_MS ?? 5000);
     this.lockStaleMs = opts.lockStaleMs ?? Number(process.env.REMEMBRA_LOCK_STALE_MS ?? 10000);
+    this.cache = new ParseCache(opts.cacheSize ?? Number(process.env.REMEMBRA_CACHE_SIZE ?? 10_000));
   }
 
   static defaultRoot(): string {
@@ -77,6 +88,7 @@ export class MemoryStore implements MemoryBackend {
       const file = await this.findFile(id);
       if (!file) return false;
       await fs.unlink(file);
+      this.cache.forget(file);
       return true;
     });
   }
@@ -89,7 +101,7 @@ export class MemoryStore implements MemoryBackend {
       dirs.push(path.join(this.root, "archived", "global"), path.join(this.root, "archived", "scopes"));
     }
     const files = await walk(...dirs);
-    const memories = await Promise.all(files.map((f) => parse(f)));
+    const memories = await Promise.all(files.map((f) => this.parseCached(f)));
     return memories.filter((m): m is Memory => m !== null);
   }
 
@@ -97,7 +109,12 @@ export class MemoryStore implements MemoryBackend {
     await this.ensureRecovered();
     const file = await this.findFile(id);
     if (!file) return null;
-    return parse(file);
+    return this.parseCached(file);
+  }
+
+  /** Parse-cache observability (tests + future /metrics). */
+  cacheStats(): { size: number; capacity: number } {
+    return { size: this.cache.size, capacity: this.cache.capacity };
   }
 
   /** Move a memory to the archived tree (sets archivedAt). */
@@ -112,8 +129,9 @@ export class MemoryStore implements MemoryBackend {
       const newFile = this.fileFor(updated);
       if (oldFile === newFile) return null;
       await fs.mkdir(path.dirname(newFile), { recursive: true });
-      await writeFileAtomic(newFile, render(updated), fs);
+      await this.writeCached(newFile, render(updated), updated);
       await fs.unlink(oldFile);
+      this.cache.forget(oldFile);
       return updated;
     });
   }
@@ -129,8 +147,9 @@ export class MemoryStore implements MemoryBackend {
       const updated: Memory = { ...m, archivedAt: undefined, lastSeen: now, updatedAt: now };
       const newFile = this.fileFor(updated);
       await fs.mkdir(path.dirname(newFile), { recursive: true });
-      await writeFileAtomic(newFile, render(updated), fs);
+      await this.writeCached(newFile, render(updated), updated);
       await fs.unlink(oldFile);
+      this.cache.forget(oldFile);
       return updated;
     });
   }
@@ -142,7 +161,7 @@ export class MemoryStore implements MemoryBackend {
       const updated: Memory = { ...memory, updatedAt: new Date().toISOString() };
       const file = this.fileFor(updated);
       await fs.mkdir(path.dirname(file), { recursive: true });
-      await writeFileAtomic(file, render(updated), fs);
+      await this.writeCached(file, render(updated), updated);
       return updated;
     });
   }
@@ -158,7 +177,7 @@ export class MemoryStore implements MemoryBackend {
       const last = Date.parse(m.lastSeen ?? m.updatedAt);
       if (Number.isFinite(last) && Date.now() - last < 3_600_000) return;
       m.lastSeen = new Date().toISOString();
-      await writeFileAtomic(this.fileFor(m), render(m), fs);
+      await this.writeCached(this.fileFor(m), render(m), m);
     });
   }
 
@@ -169,7 +188,7 @@ export class MemoryStore implements MemoryBackend {
       if (await this.findFile(m.id)) return false;
       const file = this.fileFor(m); // containment check applies (P0)
       await fs.mkdir(path.dirname(file), { recursive: true });
-      await writeFileAtomic(file, render(m), fs);
+      await this.writeCached(file, render(m), m);
       return true;
     });
   }
@@ -177,6 +196,39 @@ export class MemoryStore implements MemoryBackend {
   // -------------------------------------------------------------------------
   // Locked body helpers (no reentrant locking inside these).
   // -------------------------------------------------------------------------
+
+  /**
+   * Atomic write + cache refresh: the entry we just produced is remembered
+   * with the on-disk stat, so the next read is a validated hit.
+   */
+  private async writeCached(file: string, data: string, memory: Memory): Promise<void> {
+    await writeFileAtomic(file, data, fs);
+    try {
+      const st = await fs.stat(file);
+      this.cache.remember(file, { mtimeMs: st.mtimeMs, size: st.size }, memory);
+    } catch {
+      this.cache.forget(file); // vanished between rename and stat → next read re-walks
+    }
+  }
+
+  /**
+   * stat() the file, then either serve the cached parse (validated by
+   * mtime+size — catches writers from other processes too) or read+parse.
+   */
+  private async parseCached(file: string): Promise<Memory | null> {
+    let st: { mtimeMs: number; size: number };
+    try {
+      st = await fs.stat(file);
+    } catch {
+      this.cache.forget(file);
+      return null;
+    }
+    const probe = this.cache.probe(file, st);
+    if (probe.hit) return probe.memory ?? null;
+    const memory = await parse(file);
+    this.cache.remember(file, st, memory);
+    return memory;
+  }
 
   private async storeLocked(
     input: StoreInput,
@@ -205,7 +257,7 @@ export class MemoryStore implements MemoryBackend {
     };
     const file = this.fileFor(memory);
     await fs.mkdir(path.dirname(file), { recursive: true });
-    await writeFileAtomic(file, render(memory), fs);
+    await this.writeCached(file, render(memory), memory);
     return memory;
   }
 
@@ -391,6 +443,44 @@ export class MemoryStore implements MemoryBackend {
 
 function genId(): string {
   return randomUUID().replace(/-/g, "").slice(0, 12);
+}
+
+/**
+ * LRU of parsed memories, keyed by file path, validated by (mtimeMs, size).
+ * Map preserves insertion order → first key is the least-recently-used.
+ * capacity 0 disables caching entirely (every read re-parses).
+ */
+class ParseCache {
+  private readonly entries = new Map<string, { mtimeMs: number; size: number; memory: Memory | null }>();
+
+  constructor(readonly capacity: number) {}
+
+  get size(): number {
+    return this.entries.size;
+  }
+
+  probe(file: string, st: { mtimeMs: number; size: number }): { hit: boolean; memory?: Memory | null } {
+    const e = this.entries.get(file);
+    if (!e || e.mtimeMs !== st.mtimeMs || e.size !== st.size) return { hit: false };
+    this.entries.delete(file); // touch: move to the MRU end
+    this.entries.set(file, e);
+    return { hit: true, memory: e.memory };
+  }
+
+  remember(file: string, st: { mtimeMs: number; size: number }, memory: Memory | null): void {
+    if (this.capacity <= 0) return;
+    this.entries.delete(file);
+    this.entries.set(file, { mtimeMs: st.mtimeMs, size: st.size, memory });
+    while (this.entries.size > this.capacity) {
+      const lru = this.entries.keys().next().value;
+      if (lru === undefined) break;
+      this.entries.delete(lru);
+    }
+  }
+
+  forget(file: string): void {
+    this.entries.delete(file);
+  }
 }
 
 function sleep(ms: number): Promise<void> {

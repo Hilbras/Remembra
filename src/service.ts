@@ -138,21 +138,47 @@ export class MemoryService {
     return { text, results };
   }
 
-  async list(q: { scope?: string; type?: MemoryType; includeArchived?: boolean }) {
+  async list(q: {
+    scope?: string;
+    type?: MemoryType;
+    includeArchived?: boolean;
+    offset?: number;
+    limit?: number;
+  }) {
     let memories = await this.db.all(q.includeArchived ?? false);
     if (q.scope) memories = memories.filter((m) => m.scope === q.scope || m.scope === "global");
     if (q.type) memories = memories.filter((m) => m.type === q.type);
     memories.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    const text =
-      memories.length === 0
+    const total = memories.length;
+
+    // Pagination is opt-in: without offset/limit the full list is returned
+    // (unchanged behavior — existing clients depend on it).
+    const paginated = q.offset !== undefined || q.limit !== undefined;
+    const start = q.offset ?? 0;
+    const page = paginated ? memories.slice(start, q.limit !== undefined ? start + q.limit : undefined) : memories;
+
+    const header =
+      paginated && total > 0
+        ? `Showing ${Math.min(start + 1, total)}–${Math.min(start + page.length, total)} of ${total}\n\n`
+        : "";
+    const body =
+      total === 0
         ? "No memories stored yet."
-        : memories
-            .map(
-              (m) =>
-                `[${m.id}]${m.archivedAt ? " [archived]" : ""} ${m.type} (${m.scope}): ${m.content.split("\n")[0]}`,
-            )
-            .join("\n");
-    return { text, memories };
+        : page.length === 0
+          ? "No memories at this offset."
+          : page
+              .map(
+                (m) =>
+                  `[${m.id}]${m.archivedAt ? " [archived]" : ""} ${m.type} (${m.scope}): ${m.content.split("\n")[0]}`,
+              )
+              .join("\n");
+    return {
+      text: header + body,
+      memories: page,
+      total,
+      ...(q.offset !== undefined ? { offset: q.offset } : {}),
+      ...(q.limit !== undefined ? { limit: q.limit } : {}),
+    };
   }
 
   async forget(id: string) {

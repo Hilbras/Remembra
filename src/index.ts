@@ -83,7 +83,7 @@ if (argv[0] === "export") {
 }
 
 async function startMcp(): Promise<void> {
-  const server = new McpServer({ name: "remembra", version: "3.4.0" });
+  const server = new McpServer({ name: "remembra", version: "3.5.0" });
 
   server.registerTool(
     "memory_store",
@@ -178,7 +178,8 @@ async function startMcp(): Promise<void> {
     "memory_list",
     {
       title: "List memories",
-      description: "List stored memories, optionally filtered by scope or type.",
+      description:
+        "List stored memories, optionally filtered by scope or type; paginate with offset/limit.",
       inputSchema: listInputShape,
     },
     async (args) => {
