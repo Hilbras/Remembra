@@ -91,6 +91,29 @@ curl http://localhost:8787/memories/<id> \
 # → { "memory": {...}, "related": [...], "backlinks": [...] }
 ```
 
+### Update a memory (patch)
+
+```bash
+curl -X PUT http://localhost:8787/memories/<id> \
+  -H "content-type: application/json" \
+  -H "x-api-key: $REMEMBRA_API_KEY" \
+  -d '{"content": "Chose monthly billing with a 14-day trial"}'
+```
+
+Send only the fields to change (`type`, `content`, `scope`, `tags`,
+`importance`, `source`, `confidence`). A `scope` change moves the file; a
+`content` change snapshots the previous version to history.
+
+### Archive / revive a memory
+
+```bash
+curl -X POST http://localhost:8787/memories/<id>/archive -H "x-api-key: $REMEMBRA_API_KEY"
+curl -X POST http://localhost:8787/memories/<id>/revive  -H "x-api-key: $REMEMBRA_API_KEY"
+```
+
+Archived memories drop out of list/search until revived (or listed with
+`includeArchived=true`).
+
 ### Link two memories (relationship graph)
 
 ```bash
@@ -107,6 +130,26 @@ curl "http://localhost:8787/memories/<id>/history?limit=5" \
   -H "x-api-key: $REMEMBRA_API_KEY"
 # → { "id": "...", "versions": [{ "content": "...", "diff": "--- ..." }, ...] }
 ```
+
+### Export / import a snapshot
+
+```bash
+curl http://localhost:8787/snapshot -H "x-api-key: $REMEMBRA_API_KEY" > memories.json
+
+curl -X POST http://localhost:8787/import \
+  -H "content-type: application/json" \
+  -H "x-api-key: $REMEMBRA_API_KEY" \
+  --data-binary @memories.json
+# → { "imported": 2, "skipped": 0 }   (re-import: everything skipped — idempotent)
+```
+
+Same format and handlers as the `remembra export` / `remembra import` CLI
+commands; the whole file is validated before anything is written.
+
+### Web dashboard
+
+The server root also serves the web UI — open `http://localhost:8787/` in a
+browser (enter the API key in the page). See [ui.md](ui.md).
 
 ## 3. Create the Custom GPT
 

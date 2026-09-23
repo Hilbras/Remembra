@@ -139,6 +139,32 @@ export const forgetInputShape = {
 export const ForgetInput = z.object(forgetInputShape);
 export type ForgetInput = z.infer<typeof ForgetInput>;
 
+/** All store fields optional — the patch shape for memory_update / PUT. */
+const patchShape = {
+  type: storeInputShape.type.optional(),
+  content: storeInputShape.content.optional(),
+  scope: storeInputShape.scope.optional(),
+  tags: storeInputShape.tags.optional(),
+  importance: storeInputShape.importance.optional(),
+  source: storeInputShape.source.optional(),
+  confidence: storeInputShape.confidence.optional(),
+};
+
+export const updateInputShape = {
+  id: z.string().describe("Memory id to update"),
+  ...patchShape,
+};
+
+export const UpdateInput = z
+  .object(patchShape)
+  .refine((v) => v.scope === undefined || isSafeScope(v.scope), {
+    message: "scope must not contain '..' path segments",
+  })
+  .refine((v) => Object.keys(v).length > 0, {
+    message: "update must include at least one field",
+  });
+export type UpdateInput = z.infer<typeof UpdateInput>;
+
 export const getInputShape = {
   id: z.string().describe("Memory id — returns the memory with related links and backlinks"),
 };

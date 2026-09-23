@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/remembra",
-  "version": "3.8.0",
+  "version": "4.0.0",
   "description": "External memory for AI assistants — remember facts, decisions, roles and history across sessions. MCP server for OpenCode, Claude Code, Cline, Kimi Code and more.",
   "type": "module",
   "bin": {
@@ -17,7 +17,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-ui.mjs",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "test": "node --test \"dist/test/*.test.js\"",

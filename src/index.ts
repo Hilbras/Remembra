@@ -17,6 +17,7 @@ import {
   getInputShape,
   relateInputShape,
   historyInputShape,
+  updateInputShape,
 } from "./types.js";
 import { toolFail } from "./errors.js";
 
@@ -281,6 +282,63 @@ async function startMcp(): Promise<void> {
     async (args) => {
       try {
         const result = await service.history(args);
+        return { content: [{ type: "text", text: result.text }] };
+      } catch (err) {
+        return toolFail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "memory_update",
+    {
+      title: "Update a memory",
+      description:
+        "Patch an existing memory by id — any subset of type/content/scope/tags/importance/" +
+        "confidence/source. Changing scope moves it between trees; a content change refreshes " +
+        "its embedding and snapshots the old version into memory_history.",
+      inputSchema: updateInputShape,
+    },
+    async (args) => {
+      try {
+        const { id, ...patch } = args;
+        const result = await service.update(id, patch);
+        return { content: [{ type: "text", text: result.text }] };
+      } catch (err) {
+        return toolFail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "memory_archive",
+    {
+      title: "Archive a memory",
+      description:
+        "Move a memory to the archived tree — out of search results but kept (and listed " +
+        "with includeArchived). Prefer this over forgetting when something may be needed again.",
+      inputSchema: forgetInputShape,
+    },
+    async ({ id }) => {
+      try {
+        const result = await service.archive(id);
+        return { content: [{ type: "text", text: result.text }] };
+      } catch (err) {
+        return toolFail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "memory_revive",
+    {
+      title: "Revive an archived memory",
+      description: "Bring an archived memory back to active search.",
+      inputSchema: forgetInputShape,
+    },
+    async ({ id }) => {
+      try {
+        const result = await service.revive(id);
         return { content: [{ type: "text", text: result.text }] };
       } catch (err) {
         return toolFail(err);

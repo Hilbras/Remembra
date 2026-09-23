@@ -1,4 +1,7 @@
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { timingSafeEqual } from "node:crypto";
 import { MemoryService } from "./service.js";
 import { DigestInput } from "./types.js";
@@ -17,6 +20,24 @@ interface HttpOptions {
 }
 
 const DEFAULT_MAX_BODY = 10 * 1024 * 1024; // transcripts can be large — 10 MiB
+
+/** Web UI root: dist/ui (TS from src/ui + HTML/CSS copied by scripts/copy-ui.mjs). */
+const UI_ROOT = path.resolve(fileURLToPath(new URL("./ui/", import.meta.url)));
+
+/** Whitelisted static extensions — anything else is 404 before touching the FS. */
+const UI_EXT = new Set([".html", ".css", ".js", ".map"]);
+
+/** Shell CSP (v4): no inline script/style, same-origin data calls only. */
+const UI_CSP =
+  "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; " +
+  "connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
+const UI_MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".map": "application/json; charset=utf-8",
+};
 
 /**
  * Listen policy (P1 audit: default-deny):
@@ -46,14 +67,19 @@ export function resolveListen(
  * Routes:
  *   GET    /health              → liveness + readiness (no auth): 200 ok / 503 unready
  *   GET    /metrics             → Prometheus text format (auth when keyed)
+ *   GET    / , /ui/*            → web dashboard shell + static assets (no auth, v4)
  *   POST   /memories            → store a memory
  *   GET    /memories/search     → ?query=&scope=&type=&limit=
  *   GET    /memories            → ?scope=&type=&includeArchived=&offset=&limit=
  *   POST   /memories/digest     → LLM extraction
  *   POST   /maintain            → decay sweep + vector backfill
  *   GET    /memories/:id        → one memory + related + backlinks (Phase 8)
+ *   PUT    /memories/:id        → patch fields; scope change moves the file (v4)
  *   POST   /memories/:id/relate → link/unlink memories (Phase 8)
  *   GET    /memories/:id/history→ version history + line diffs (Phase 8)
+ *   POST   /memories/:id/archive / /revive → manual lifecycle (v4)
+ *   GET    /snapshot            → full export snapshot (v4, CLI parity)
+ *   POST   /import              → idempotent snapshot import (v4, CLI parity)
  *   DELETE /memories/:id        → forget
  */
 export function createHttpServer(service: MemoryService, opts: HttpOptions = {}): http.Server {
@@ -86,6 +112,16 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       if (path === "/health") {
         const health = await service.health();
         return send(res, health.status === "ok" ? 200 : 503, health);
+      }
+
+      // Web UI shell (v4): static files served unauthenticated, like /health —
+      // the shell itself holds no data; every API call the SPA makes still
+      // carries the key. REMEMBRA_UI=0 turns serving off entirely.
+      if (
+        process.env.REMEMBRA_UI !== "0" &&
+        (path === "/" || path === "/ui" || path.startsWith("/ui/"))
+      ) {
+        return serveStatic(res, req.method ?? "GET", path);
       }
 
       if (opts.apiKey && !authorized(req, opts.apiKey)) {
@@ -151,8 +187,21 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return send(res, result.ok ? 200 : 404, result);
       }
 
-      // Graph sub-routes (audit Phase 8): POST relate, GET history.
-      const sub = path.match(/^\/memories\/([^/]+)\/(relate|history)$/);
+      // Write routes (v4): PUT patch, archive/revive.
+      const singleWrite = path.match(/^\/memories\/([^/]+)$/);
+      if (req.method === "PUT" && singleWrite) {
+        const body = await readBody(req, maxBody);
+        const result = await service.update(decodeURIComponent(singleWrite[1]), body);
+        return send(res, 200, result);
+      }
+
+      // Graph/history/lifecycle sub-routes: POST relate, GET history,
+      // POST archive, POST revive (Phase 8 + v4).
+      const sub = path.match(/^\/memories\/([^/]+)\/(relate|history|archive|revive)$/);
+      if (sub && req.method === "POST" && (sub[2] === "archive" || sub[2] === "revive")) {
+        const result = await service[sub[2]](decodeURIComponent(sub[1]));
+        return send(res, 200, result);
+      }
       if (sub && req.method === "POST" && sub[2] === "relate") {
         const body = (await readBody(req, maxBody)) as Record<string, unknown>;
         const result = await service.relate({ ...body, id: decodeURIComponent(sub[1]) }); // path id wins
@@ -171,6 +220,15 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       if (req.method === "GET" && single) {
         const result = await service.get(decodeURIComponent(single[1]));
         return send(res, 200, result);
+      }
+
+      // Snapshot I/O (v4): HTTP export/import — same handlers the CLI uses.
+      if (path === "/snapshot" && req.method === "GET") {
+        return send(res, 200, await service.exportSnapshot());
+      }
+      if (path === "/import" && req.method === "POST") {
+        const body = await readBody(req, maxBody);
+        return send(res, 200, await service.importSnapshot(body));
       }
 
       send(res, 404, { error: `No route: ${req.method} ${path}` });
@@ -231,9 +289,76 @@ function routeLabel(p: string): string {
     case "/maintain":
       return "maintain";
     default:
-      if (/^\/memories\/[^/]+\/(relate|history)$/.test(p)) return "memory_sub";
+      if (p === "/" || p === "/ui" || p.startsWith("/ui/")) return "ui";
+      if (/^\/memories\/[^/]+\/(relate|history|archive|revive)$/.test(p)) return "memory_sub";
+      if (p === "/snapshot" || p === "/import") return "data_io";
       return /^\/memories\/[^/]+$/.test(p) ? "memory_item" : "other";
   }
+}
+
+/**
+ * Static UI file server (v4): GET/HEAD only, extension whitelist, decoded-path
+ * containment check inside UI_ROOT, regular files only, CSP on HTML.
+ * Traversal attempts (`..`, %2e%2e, absolute, NUL) all land on the generic 404.
+ */
+function serveStatic(res: http.ServerResponse, method: string, reqPath: string): void {
+  const notFound = (): void => {
+    const data = JSON.stringify({ error: "Not found" });
+    res.writeHead(404, {
+      "content-type": "application/json; charset=utf-8",
+      "content-length": Buffer.byteLength(data),
+      "x-content-type-options": "nosniff",
+    });
+    res.end(method === "HEAD" ? undefined : data);
+  };
+  if (method !== "GET" && method !== "HEAD") {
+    res.writeHead(405, { allow: "GET, HEAD" });
+    res.end();
+    return;
+  }
+
+  let rel: string;
+  try {
+    rel = reqPath === "/" || reqPath === "/ui" ? "index.html" : decodeURIComponent(reqPath.slice(4));
+  } catch {
+    res.writeHead(400, { "content-type": "text/plain" });
+    res.end("Bad request");
+    return;
+  }
+  if (rel.includes("\0")) return notFound();
+  const dot = rel.lastIndexOf(".");
+  if (dot < 0 || !UI_EXT.has(rel.slice(dot))) return notFound();
+
+  let target: string;
+  try {
+    target = path.resolve(UI_ROOT, rel);
+  } catch {
+    return notFound();
+  }
+  // Containment: resolved target must be strictly inside the UI root.
+  if (!target.startsWith(UI_ROOT + path.sep)) return notFound();
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(target);
+  } catch {
+    return notFound();
+  }
+  if (!stat.isFile()) return notFound();
+
+  const headers: Record<string, string> = {
+    "content-type": UI_MIME[path.extname(target)] ?? "application/octet-stream",
+    "content-length": String(stat.size),
+    "x-content-type-options": "nosniff",
+    "cache-control": "no-cache",
+  };
+  if (target.endsWith(".html")) headers["content-security-policy"] = UI_CSP;
+  res.writeHead(200, headers);
+  if (method === "HEAD") {
+    res.end();
+    return;
+  }
+  fs.createReadStream(target).pipe(res);
 }
 
 /** Constant-time API key comparison (P1 audit: timing side-channel). */

@@ -4,8 +4,84 @@ All notable changes to Remembra will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 > **Versioning:** from 3.0.0 on, package versions match roadmap milestones
-> (3.0.0 = v3). Earlier releases used independent semver: 0.1.0 = v1,
-> 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
+> (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
+> 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
+
+## [4.0.0] — 2026-09-23
+
+**v4 — the complete web dashboard**, shipped as one release: every read and
+write surface of Remembra in a modern gold-on-charcoal UI (dark default,
+light-mode toggle), served by the same `--http` binary with zero new
+dependencies.
+
+### Added — dashboard
+- **Full web UI at `/`** — hash-routed SPA, hand-written TypeScript compiled
+  to native ES modules by the existing `tsc` (no bundler, no framework):
+  - **Memories**: debounced search, type/scope/archived filters,
+    pagination, type badges, tags, importance, relative ages.
+  - **Detail**: metadata grid, tag chips, related + backlinks with a link
+    picker, Archive/Revive, Delete (confirm dialog), lazy **History**
+    panel with unified diffs (current version open).
+  - **Forms**: create/edit (type, content, scope, tags, importance,
+    confidence, source) — scope edits move the file, content edits snapshot
+    history.
+  - **Roles auditor** with an instructions-first warning banner.
+  - **Graph**: force-directed canvas of `related()` edges — drag, click to
+    open, legend, gold-ringed role nodes.
+  - **Digest**: transcript box → LLM extraction with result breakdown and
+    provider-setup hints.
+  - **Ops**: health card, stat tiles with 5-minute sparklines (requests,
+    errors, p95 computed from the Prometheus histogram buckets, searches,
+    stores, cache hit %), Run maintain, Export/Import buttons.
+- **Theming** — CSS-variable design system, **dark default**, light mode via
+  the header toggle (persisted in `localStorage`), gold `#d4af37` accents,
+  system fonts, responsive/off-canvas sidebar,
+  `prefers-reduced-motion` respected.
+
+### Added — write API (drives the dashboard; CLI/MCP parity)
+- **`memory_update`** MCP tool + **`PUT /memories/:id`** — partial patch
+  (type/content/scope/tags/importance/source/confidence); empty patch and
+  unsafe scopes rejected; content changes snapshot the pre-image to history
+  and re-embed fail-open; scope changes move the file between trees without
+  dual-homing (old path unlinked, recovery reconciles a crash between the
+  two writes).
+- **`memory_archive` / `memory_revive`** MCP tools + **`POST
+  /memories/:id/archive|revive`** — manual lifecycle alongside automatic
+  decay; archived memories drop out of default list/search until revived
+  (**12 MCP tools total**, was 9).
+- **`GET /snapshot` + `POST /import`** — HTTP parity with `remembra
+  export`/`remembra import` (same handlers; whole-file Zod validation stays
+  atomic, idempotent on re-import).
+
+### Security (dashboard static serving)
+- `/` + `/ui/*` serve an extension whitelist from `dist/ui/` only:
+  decode-then-**path-containment** check, regular files, generic 404 —
+  traversal pen tests (`..`, `%2e%2e`, `%2f`, NUL, absolute, non-whitelisted
+  extensions) in `src/test/ui.test.ts`.
+- **CSP with no `unsafe-inline`** on HTML (`default-src 'none'`,
+  same-origin script/style/API only) + `nosniff`; the shell contains no
+  inline script or style at all.
+- Shell/assets are unauthenticated like `/health` (static bytes, zero data);
+  every API call the page makes still requires the key, entered once and
+  kept in **`sessionStorage`** (per-tab, never persisted).
+  `REMEMBRA_UI=0` disables UI serving entirely.
+- New metrics route labels: `ui` (static shell), `data_io`
+  (`/snapshot`/`/import`); `memory_sub` now also covers `archive`/`revive`.
+
+### Changed
+- Build: `tsc && node scripts/copy-ui.mjs` (copies `src/ui/index.html` +
+  `styles.css` into `dist/ui/`; `dist/ui` ships in the npm package).
+- Docs: new **`docs/ui.md`**; tools reference (now 12 tools), README route/
+  tool tables + dashboard quick start, clients/chatgpt/security/
+  observability updated for the new routes, labels and `REMEMBRA_UI`.
+
+### Tests
+- 148 → **160**: static shell (CSP/nosniff/no inline script), asset MIME +
+  nested modules, traversal pen test, shell-vs-data auth boundary, route
+  labels, `REMEMBRA_UI=0`, service-level patch/scope-move/history/stale-
+  vector clearing, archive/revive visibility, HTTP PUT/archive/revive
+  validation, snapshot export → import roundtrip (same store idempotent +
+  fresh store restore) and atomic invalid-snapshot rejection.
 
 ## [3.8.0] — 2026-09-23
 

@@ -79,6 +79,14 @@ tunneling options).
 REMEMBRA_API_KEY="your-secret" remembra --http
 ```
 
+## Web dashboard
+
+Any `--http` run also serves the full web UI at the server root — point a
+browser at `http://localhost:8787/` (behind the same key, entered in the
+page). Browse, edit, audit roles, view history diffs, run digests, watch
+metrics, export/import. See **[ui.md](ui.md)**; disable with
+`REMEMBRA_UI=0`.
+
 ## Environment
 
 | Variable | Default | Purpose |
@@ -86,6 +94,7 @@ REMEMBRA_API_KEY="your-secret" remembra --http
 | `REMEMBRA_HOME` | `~/.remembra` | Where memory files live |
 | `REMEMBRA_API_KEY` | *(unset)* | Enables auth on the HTTP API |
 | `REMEMBRA_PORT` | `8787` | HTTP API port (`--port` overrides) |
+| `REMEMBRA_UI` | `1` | `0` disables serving the web dashboard (`/`, `/ui/*`) |
 | `REMEMBRA_LLM` | `openai` | Digest LLM: `openai` \| `anthropic` \| `ollama` |
 | `REMEMBRA_EMBEDDINGS` | `none` | Semantic search: `openai` \| `ollama` \| `none` |
 | `REMEMBRA_ARCHIVE_AFTER_DAYS` | `90` | Unused active memory → archived |

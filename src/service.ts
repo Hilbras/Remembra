@@ -9,7 +9,7 @@ import { VERSION } from "./version.js";
 import { performance } from "node:perf_hooks";
 import { redact, redactTags, redactionEnabled, RedactionKind } from "./redact.js";
 import { unifiedDiff } from "./diff.js";
-import { RelateInput, HistoryInput } from "./types.js";
+import { RelateInput, HistoryInput, UpdateInput } from "./types.js";
 import {
   resolveLlmProvider,
   extractMemories,
@@ -219,6 +219,43 @@ export class MemoryService {
   async forget(id: string) {
     const ok = await this.db.forget(id);
     return { ok, text: ok ? `Deleted memory ${id}.` : `No memory with id ${id}.` };
+  }
+
+  /**
+   * Patch an existing memory (v4: memory_update / PUT /memories/:id).
+   * Changing `scope` moves the file between trees (single lock; crash
+   * between write and unlink is reconciled by the recovery pass).
+   * A content change recomputes (or clears) the embedding vector.
+   */
+  async update(id: string, input: unknown): Promise<{ memory: Memory; text: string }> {
+    let patch: Partial<StoreInput>;
+    try {
+      patch = UpdateInput.parse(input);
+    } catch (err) {
+      throw inputError(err, "INVALID_INPUT");
+    }
+    const existing = await this.db.get(id);
+    if (!existing) throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
+    const next: Memory = { ...existing, ...patch };
+    if (patch.content !== undefined && patch.content !== existing.content) {
+      next.embedding = await this.maybeEmbed(patch.content); // fail-open → keyword fallback
+    }
+    const memory = await this.db.update(next);
+    return { memory, text: `Updated ${id}.` };
+  }
+
+  /** Manually archive a memory (v4: memory_archive / POST /memories/:id/archive). */
+  async archive(id: string): Promise<{ memory: Memory; text: string }> {
+    const memory = await this.db.archive(id);
+    if (!memory) throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
+    return { memory, text: `Archived ${id}.` };
+  }
+
+  /** Bring an archived memory back to active (v4: memory_revive / POST). */
+  async revive(id: string): Promise<{ memory: Memory; text: string }> {
+    const memory = await this.db.revive(id);
+    if (!memory) throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
+    return { memory, text: `Revived ${id}.` };
   }
 
   /** Fetch one memory with its links resolved (audit Phase 8: graph view). */

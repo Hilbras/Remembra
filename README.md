@@ -81,24 +81,46 @@ REMEMBRA_API_KEY="your-secret" remembra --http --port 8787
 
 Then wire a Custom GPT to the API — full walkthrough in **[docs/chatgpt.md](docs/chatgpt.md)**.
 
+### Web dashboard
+
+The same `--http` server serves a full **web UI** — open the root:
+
+```bash
+REMEMBRA_API_KEY="your-secret" remembra --http
+# → http://localhost:8787/
+```
+
+Browse & search with filters and pagination, open a memory to edit / archive /
+link / view its diff history, audit roles, explore the force-directed
+relationship graph, run session digests, watch health + request sparklines,
+and export/import snapshots — dark by default with a gold theme and a
+light-mode toggle. Guide: **[docs/ui.md](docs/ui.md)**.
+
 ### HTTP API
 
 | Method | Route | Purpose |
 |--------|-------|---------|
+| GET | `/` · `/ui/*` | Web dashboard shell + assets (static, no auth) |
 | GET | `/health` | Liveness + readiness (no auth) |
 | GET | `/metrics` | Prometheus metrics (auth when keyed) |
 | POST | `/memories` | Store a memory |
+| PUT | `/memories/:id` | Patch fields — scope change moves the file (v4) |
 | GET | `/memories/search?query=&scope=` | Search |
 | GET | `/memories?scope=&type=` | List |
 | GET | `/memories/:id` | One memory + related links + backlinks |
 | POST | `/memories/:id/relate` | Link / unlink memories |
 | GET | `/memories/:id/history` | Version history with line diffs |
+| POST | `/memories/:id/archive` · `/revive` | Manual lifecycle (v4) |
 | POST | `/memories/digest` | LLM extract + store from a transcript |
 | POST | `/maintain` | Decay sweep + vector backfill |
+| GET | `/snapshot` | Full export snapshot (v4, CLI parity) |
+| POST | `/import` | Idempotent snapshot import (v4, CLI parity) |
 | DELETE | `/memories/:id` | Forget |
 
-All routes except `/health` require `x-api-key` (or `Authorization: Bearer`) when
-`REMEMBRA_API_KEY` is set.
+All data routes require `x-api-key` (or `Authorization: Bearer`) when
+`REMEMBRA_API_KEY` is set — only `/health` and the static dashboard shell are
+exempt (the shell holds no data; every API call it makes still carries the
+key). `REMEMBRA_UI=0` disables serving the UI entirely.
 
 > 🔒 **Auth is now default-deny**: without `REMEMBRA_API_KEY` the server binds
 > to `127.0.0.1` only, and a non-loopback `REMEMBRA_HOST` without a key refuses
@@ -124,6 +146,8 @@ tampered snapshot is rejected atomically, never half-imported. Of course,
 | Tool | Purpose |
 |------|---------|
 | `memory_store` | Save a fact / decision / role / history |
+| `memory_update` | Patch a memory — content, scope, tags, importance, … |
+| `memory_archive` / `memory_revive` | Manually park a memory aside / bring it back |
 | `memory_digest` | Extract + store memories from a transcript (LLM) |
 | `memory_search` | Retrieve relevant memories (pass `scope` = current project) |
 | `memory_list` | Browse stored memories |
@@ -141,6 +165,7 @@ Full reference: **[docs/tools.md](docs/tools.md)**
 |-----|--------------|
 | [Memory model](docs/memory-model.md) | Types, scopes, ranking, storage format |
 | [Tool reference](docs/tools.md) | Every MCP tool with arguments |
+| [Web dashboard](docs/ui.md) | Pages, theming, dashboard auth, static-serving security |
 | [Client setup](docs/clients.md) | Config for each supported tool |
 | [ChatGPT setup](docs/chatgpt.md) | HTTP API + Custom GPT walkthrough |
 | [AI providers](docs/providers.md) | Digest LLM + embeddings configuration |
@@ -179,9 +204,10 @@ npm test        # run tests
 - **v1** — MCP server for coding tools, file storage, layered retrieval ✅
 - **v1.5** — HTTP API + ChatGPT Custom GPT action ✅
 - **v2** — automatic session-digest extraction, embeddings behind `memory_search` ✅
-- **v3** *(current)* — memory lifecycle (archive/decay), contradiction merging, maintenance CLI ✅
+- **v3** — memory lifecycle (archive/decay), contradiction merging, maintenance CLI ✅
+- **v4** *(current)* — full web dashboard, write API (`PUT`/archive/revive), HTTP snapshot I/O ✅
 
-> Package versions match milestones: `3.0.0` = v3, next ships as `4.0.0`.
+> Package versions match milestones: `3.0.0` = v3, `4.0.0` = v4.
 
 ## License
 

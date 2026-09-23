@@ -1,6 +1,6 @@
 # Tool Reference
 
-Remembra exposes nine MCP tools. All of them work the same way across every
+Remembra exposes twelve MCP tools. All of them work the same way across every
 MCP-compatible client.
 
 ## `memory_store`
@@ -24,6 +24,28 @@ Persist a memory so it survives context-window resets.
 - A summary of *what happened* → `history`
 
 Returns the assigned memory id.
+
+## `memory_update`
+
+Patch an existing memory in place — the write path behind the web dashboard's
+edit form (`PUT /memories/:id`). Pass only the fields you want to change;
+everything else is preserved.
+
+| Argument | Type | Required | Description |
+|----------|------|----------|-------------|
+| `id` | string | ✅ | Memory id |
+| `type` | memory type | no | Change the type |
+| `content` | string | no | New content — snapshots the previous version to history first |
+| `scope` | string | no | New scope — **moves the file** between trees (same id) |
+| `tags` | string[] | no | Replace tags |
+| `importance` | 1–5 | no | New ranking weight |
+| `source` | string | no | New provenance string |
+| `confidence` | 0–1 | no | New trust score |
+
+Rules: at least one field is required (empty patch → `INVALID_INPUT`), scopes
+with `..` are rejected, unknown ids return `NOT_FOUND`. Content changes
+re-embed (or clear the stale vector when embeddings are off); non-content
+changes never touch history. See [lifecycle.md](lifecycle.md#contradiction-merging).
 
 ## `memory_search`
 
@@ -64,6 +86,20 @@ Permanently delete a memory.
 | `id` | string | ✅ | Memory id (from `memory_store` or `memory_list`) |
 
 Returns an error result if no memory matches the id.
+
+## `memory_archive` / `memory_revive`
+
+Manual lifecycle — the same two operations the dashboard's Archive/Revive
+buttons call (`POST /memories/:id/archive` / `…/revive`):
+
+- **`memory_archive`** `{ id }` — sets `archivedAt: now`. Archived memories
+  drop out of default `memory_list` / `memory_search` results (opt back in
+  with `includeArchived: true`) but nothing is deleted.
+- **`memory_revive`** `{ id }` — clears `archivedAt`, back to active.
+
+Automatic decay (`memory_maintain`) still owns time-based archiving/deletion;
+these are for when *you* decide something is dormant or should return.
+Unknown ids return `NOT_FOUND`.
 
 ## `memory_get`
 

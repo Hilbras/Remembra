@@ -63,6 +63,28 @@ Retrieved memories should be treated as **data with provenance**, not commands
 | **Metrics auth (3.7.0)** | `GET /metrics` sits *after* the API-key check — counters and latencies never leak without the key (`/health` stays exempt for readiness probes) |
 | **PII redaction (3.8.0, opt-in)** | `REMEMBRA_REDACT=1` strips emails, Luhn-valid card numbers, SSNs, phone numbers and high-entropy secrets at the *ingest layer* (`memory_store`, digest items, merge output) — raw patterns never reach disk, embeddings, or export snapshots |
 | **Encryption at rest (3.8.0, opt-in)** | `REMEMBRA_ENCRYPT_KEY` → AES-256-GCM per file; reading an encrypted file without the key fails **loudly** (`ENCRYPTED_NO_KEY`, HTTP 503, `/health` 503) — never warn-skipped as if the data didn't exist |
+| **Web UI static routes (4.0.0)** | `/` + `/ui/*` serve a fixed extension whitelist (`.html/.css/.js/.map`) with decode-then-containment path checks inside `dist/ui`, regular files only, `nosniff`, and a **CSP with no `unsafe-inline`** (`default-src 'none'`, same-origin scripts/styles/API only). The shell is unauthenticated like `/health` (it holds no data — every API call the page makes still carries the key); `REMEMBRA_UI=0` disables serving entirely |
+
+## Web dashboard (4.0.0)
+
+`remembra --http` also serves the UI at `/`. The trust split:
+
+- **The shell is static, trusted bytes** — HTML/CSS/JS from your own install,
+  served from one whitelisted root with a path-containment check; traversal
+  attempts (`..`, `%2e%2e`, absolute, NUL) and non-whitelisted extensions all
+  land on a generic 404. It carries **no memory data** — opening `/` on a
+  keyed server works without a key, exactly like `/health`.
+- **Data stays behind the key** — the page prompts for `REMEMBRA_API_KEY` and
+  sends it on every API call (`x-api-key`, same header the Custom GPT uses).
+  The key lives in **`sessionStorage`**: per-tab, discarded when the tab
+  closes, never written to disk or `localStorage`.
+- **CSP as the backstop** — no inline scripts or styles anywhere in the
+  shell, `script-src 'self'` / `style-src 'self'` / `connect-src 'self'`, so
+  injected markup can't execute and the page can only talk to your server.
+- **Off switch** — `REMEMBRA_UI=0` serves no UI routes at all (pure API
+  server), useful for public deployments that never want the dashboard.
+
+Full page-by-page guide: [ui.md](ui.md).
 
 ## Encryption at rest (opt-in, 3.8.0)
 

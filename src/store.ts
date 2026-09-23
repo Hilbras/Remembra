@@ -162,16 +162,32 @@ export class MemoryStore implements MemoryBackend {
     await this.ensureRecovered();
     return this.withLock(async () => {
       const updated: Memory = { ...memory, updatedAt: new Date().toISOString() };
-      const file = this.fileFor(updated);
+      const target = this.fileFor(updated);
+      // Locate the current file. Same path (scope unchanged — the common
+      // case: merge, embedding backfill) = one stat; a scope move via
+      // memory_update lives elsewhere → findFile (manual edits, rare).
+      const samePath = await fs
+        .stat(target)
+        .then(() => true, () => false);
+      const existingFile = samePath ? target : await this.findFile(memory.id);
       // History (audit Phase 8): content-changing updates snapshot the
       // on-disk pre-image first. Embedding backfills and `memory_relate`
-      // change no content → no snapshot (find-free: same path, one stat).
-      const current = await this.parseCached(file);
-      if (current && current.content !== memory.content) {
-        await this.snapshotHistory(file);
+      // change no content → no snapshot.
+      if (existingFile) {
+        const current = await this.parseCached(existingFile);
+        if (current && current.content !== memory.content) {
+          await this.snapshotHistory(existingFile);
+        }
       }
-      await fs.mkdir(path.dirname(file), { recursive: true });
-      await this.writeCached(file, render(updated), updated);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await this.writeCached(target, render(updated), updated);
+      if (existingFile && existingFile !== target) {
+        // Scope move: unlink the old tree entry (crash between write and
+        // unlink leaves a dual-homed id → the recovery pass reconciles it,
+        // same as archive/revive).
+        await fs.unlink(existingFile).catch(() => {});
+        this.cache.forget(existingFile);
+      }
       return updated;
     });
   }
