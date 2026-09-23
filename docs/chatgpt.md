@@ -55,7 +55,7 @@ curl "http://localhost:8787/memories/search?query=billing&scope=global&limit=5" 
 |-------------|-------------|
 | `query` (or `q`) | keywords to match |
 | `scope` | project/workspace filter |
-| `type` | `fact` \| `decision` \| `role` \| `history` |
+| `type` | `fact` \| `preference` \| `decision` \| `constraint` \| `instruction` \| `role` \| `entity` \| `relationship` \| `event` \| `history` \| `observation` |
 | `limit` | max results (default 10) |
 
 ### List memories
@@ -101,8 +101,10 @@ curl -X PUT http://localhost:8787/memories/<id> \
 ```
 
 Send only the fields to change (`type`, `content`, `scope`, `tags`,
-`importance`, `source`, `confidence`). A `scope` change moves the file; a
-`content` change snapshots the previous version to history.
+`importance`, `source`, `confidence`, `trust`, `retention`). A `scope`
+change moves the file; a `content` change snapshots the previous version to
+history — optionally guarded with `expectedVersion` (mismatch → `409`) and
+annotated with a `reason`.
 
 ### Archive / revive a memory
 
@@ -120,8 +122,11 @@ Archived memories drop out of list/search until revived (or listed with
 curl -X POST http://localhost:8787/memories/<id>/relate \
   -H "content-type: application/json" \
   -H "x-api-key: $REMEMBRA_API_KEY" \
-  -d '{"related": ["<other-id>"], "action": "add"}'
+  -d '{"related": ["<other-id>"], "action": "add", "kind": "supports"}'
 ```
+
+Optional `kind`: `supports · contradicts · supersedes · refines · duplicates ·
+related` (default `related`).
 
 ### Version history with diffs
 
@@ -176,7 +181,7 @@ browser (enter the API key in the page). See [ui.md](ui.md).
     "/memories": {
       "post": {
         "operationId": "store_memory",
-        "summary": "Store a fact, decision, role or history",
+        "summary": "Store a memory (any of the 11 types)",
         "requestBody": {
           "required": true,
           "content": {
@@ -185,7 +190,7 @@ browser (enter the API key in the page). See [ui.md](ui.md).
                 "type": "object",
                 "required": ["type", "content"],
                 "properties": {
-                  "type": { "type": "string", "enum": ["fact", "decision", "role", "history"] },
+                  "type": { "type": "string", "enum": ["fact", "preference", "decision", "constraint", "instruction", "role", "entity", "relationship", "event", "history", "observation"] },
                   "content": { "type": "string", "description": "Standalone statement" },
                   "scope": { "type": "string", "default": "global" },
                   "tags": { "type": "array", "items": { "type": "string" } },

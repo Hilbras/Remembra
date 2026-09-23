@@ -23,7 +23,8 @@ and how to deploy safely.
 
 ### Role memories are instructions — the prompt-injection surface
 
-`role` memories always surface (+1000) **within their scope** and are meant
+`role`/`instruction` memories always surface (+1000) **within their scope** —
+when their `trust` is at least `trusted` — and are meant
 to be **followed**, not merely recalled. That is the feature — and the risk:
 
 - **Via MCP**: whoever can call `memory_store` in your session is already the
@@ -37,10 +38,15 @@ to be **followed**, not merely recalled. That is the feature — and the risk:
 **Rules:**
 1. Never expose HTTP without `REMEMBRA_API_KEY` (enforced — see below).
 2. Treat the API key as root access to your assistant's standing instructions.
-3. Audit roles periodically: `memory_list { type: "role", includeArchived: true }`.
+3. Audit standing guidance periodically:
+   `memory_list { type: "role", includeArchived: true }` — and the same for
+   `type: "instruction"`.
 4. If you ingest transcripts from other people (shared ChatGPT GPT, public bot),
-   remember the digest LLM can extract `role` items from *their* text — review
-   before trusting a multi-user deployment.
+   remember the digest LLM can extract `role`/`instruction` items from *their*
+   text. Since 4.1.0 they land `unverified` — listed and searchable, but they
+   never earn the +1000 boost until approved (dashboard **Approve** or
+   `memory_update { trust }`) — still review before trusting a multi-user
+   deployment.
 
 Retrieved memories should be treated as **data with provenance**, not commands
 — but Remembra cannot enforce how the consuming model interprets them.
@@ -58,7 +64,7 @@ Retrieved memories should be treated as **data with provenance**, not commands
 | **Advisory locking** | `<root>/.remembra.lock` (`O_EXCL`) + in-process FIFO — cross-process writes serialize; stale locks (dead pid / older than `REMEMBRA_LOCK_STALE_MS`) are stolen; a fresh lock with this process's own pid is treated as a live sibling instance and waited on; waiters fail with typed `LOCK_TIMEOUT` (HTTP 423) |
 | **Crash recovery** | one-time pass on first access: removes orphaned `*.tmp`, reconciles ids left in both active+archived trees by an interrupted archive/revive |
 | **Structured errors** | every actionable failure has a stable code (`INVALID_INPUT`, `LOCK_TIMEOUT`, `LLM_ERROR`, …) mapped to HTTP statuses / MCP `[CODE]` prefixes |
-| **ID collisions** | 12-hex IDs (2⁴⁸) + existence check on store |
+| **ID collisions** | UUIDv7 ids (4.1.0) — unique from entropy, no existence scan |
 | **Content-Length** | Set on every response |
 | **Metrics auth (3.7.0)** | `GET /metrics` sits *after* the API-key check — counters and latencies never leak without the key (`/health` stays exempt for readiness probes) |
 | **PII redaction (3.8.0, opt-in)** | `REMEMBRA_REDACT=1` strips emails, Luhn-valid card numbers, SSNs, phone numbers and high-entropy secrets at the *ingest layer* (`memory_store`, digest items, merge output) — raw patterns never reach disk, embeddings, or export snapshots |
@@ -156,7 +162,7 @@ remembra --http
 - [ ] `REMEMBRA_HOME` lives on a filesystem you back up — use
       `remembra export <file>.json` for portable snapshots (or `rsync`/git the
       directory)
-- [ ] Periodic `memory_list {type: "role"}` audit
+- [ ] Periodic `memory_list {type: "role"}` / `{type: "instruction"}` audit
 - [ ] LLM/embedding keys scoped to least privilege
 - [ ] Consider `REMEMBRA_REDACT=1` before storing content derived from other
       people's data (redaction is irreversible — decide once, up front)

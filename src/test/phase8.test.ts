@@ -182,7 +182,7 @@ test("relate: links persist across instances and do not snapshot history", async
   await svc.relate({ id: a.id, related: [b.id] });
 
   const fresh = new MemoryService(new MemoryStore(root), { embeddingProvider: "none" });
-  assert.deepEqual((await fresh.get(a.id)).memory.related, [b.id]);
+  assert.deepEqual((await fresh.get(a.id)).memory.relations, [{ id: b.id, kind: "related" }]);
   assert.equal((await fresh.history({ id: a.id })).versions.length, 1, "linking changes no content");
 });
 
@@ -223,7 +223,7 @@ test("history: content-changing digest merge snapshots the pre-image with a line
   const mem = (await store.all())[0];
   assert.ok(mem.content.includes("platform team"), "merged text stored");
   assert.ok(mem.content.includes("<EMAIL>"), `merge output redacted: ${mem.content}`);
-  assert.ok(mem.content.includes("> superseded ("), "supersession note kept");
+  assert.ok(!mem.content.includes("> superseded"), "superseded text not inlined (plan §4.6)");
 
   // Pre-image exists on disk, but only the real memory counts in all().
   const hist = await new MemoryService(new MemoryStore(root), { embeddingProvider: "none" }).history({
@@ -232,6 +232,11 @@ test("history: content-changing digest merge snapshots the pre-image with a line
   assert.equal(hist.versions.length, 2, "current + one snapshot");
   assert.equal(hist.versions[0].current, true);
   assert.equal(hist.versions[1].content, oldContent, "snapshot is the pre-image");
+  assert.equal(
+    hist.versions[1].reason,
+    "digest merge (superseded by a newer extraction)",
+    "history entry carries the supersession reason (plan §4.6)",
+  );
   assert.ok(hist.versions[0].diff.includes("-deployment window is tuesday"), "old line removed");
   assert.ok(hist.versions[0].diff.includes("+deployment window is tuesday"), "new line added");
   assert.ok(hist.text.includes(`History for ${mem.id}`));

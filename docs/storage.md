@@ -15,15 +15,17 @@ crash-recovery mechanics, the backend interface) live in
 ├── archived/global/<id>.md         archived (removed from default list/search)
 ├── archived/scopes/<scope>/...     archived scoped memories
 ├── .history/<id>/<epochMs>-<seq>.md   version snapshots (raw pre-images)
+├── .history/<id>/reasons.json         why each snapshot was superseded (4.1.0)
 ├── .remembra.lock                  advisory cross-process lock (transient)
 └── <id>.<rand>.tmp                 atomic-write staging files (transient;
                                     orphans are deleted by the recovery pass)
 ```
 
-- The **id is the filename**: 12 hex chars (2⁴⁸) from `randomUUID`.
-  Collisions are detected with an existence check and retried (up to 10
-  times), then rejected with `CONFLICT` — an existing memory is never
-  overwritten.
+- The **id is the filename**: a **UUIDv7** since 4.1.0 (plan §3.6) — a
+  48-bit millisecond timestamp plus entropy, so ids sort by creation time
+  and are unique from randomness alone (no collision scan, no retry loop;
+  an existing memory can never be overwritten). Legacy 8–32 hex ids stay
+  valid forever — files are never renamed on read.
 - Active vs archived is encoded in the **tree**, and `archivedAt` in the
   metadata mirrors it. A crash between the two writes of an archive/revive
   move can dual-home an id — the recovery pass reconciles it (newest
@@ -36,40 +38,55 @@ content body:
 
 ```text
 ---
-id: 7133edba0c44
-version: 1
+id: 01a0cdfe-9306-7453-9558-72a8bab41162
+version: 2
+revision: 3
 type: decision
 scope: /home/me/project
-tags: [storage, md]
+tags:
+  - storage
+  - md
 importance: 4
-created: 2026-09-23T05:53:50.366Z
-updated: 2026-09-23T06:10:00.000Z
-lastSeen: 2026-09-23T07:00:00.000Z
-source: opencode
-provenance: explicit
 confidence: 1
-related: [a1b2c3d4e5f6]
+trust: trusted
+created: 2026-09-23T11:20:08.197Z
+updated: 2026-09-23T11:20:08.227Z
+source: opencode
+provenance:
+  sourceType: manual
+  sessionId: sess-8f1c
+retention: pinned
+relations:
+  - id: 01a0cdfe-930f-7b25-962f-b2f64bf48a90
+    kind: supports
 embedding: [0.012,-0.045,...]
 ---
 
-Chose file-based storage for v1.
+Chose file-based storage for markdown greppability.
 ```
+
+YAML is spec-parsed (`yaml@^2`) and zod-validated on every read since 4.1.0,
+so scopes/tags/sources containing YAML-ambiguous characters round-trip.
 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
-| `id` | `[A-Za-z0-9._-]+` | ✅ | equals the filename (path is the source of truth) |
-| `version` | int | ✅ on new files | schema version (`SCHEMA_VERSION = 1`); missing on legacy v1-era files (treated as 1) |
-| `type` | `fact \| decision \| role \| history` | ✅ | memory semantics — see [memory-model.md](memory-model.md) |
+| `id` | hex8–32 or UUIDv7 | ✅ | equals the filename (path is the source of truth); UUIDv7 since 4.1.0 |
+| `version` | int | ✅ on new files | **schema** version (`SCHEMA_VERSION = 2`); missing on legacy files (treated as 1); readers refuse anything higher |
+| `revision` | int | ✅ on new files | this memory's write counter — the JSON `version` used for optimistic concurrency (§3.5); missing on legacy files → 1 |
+| `type` | 11 semantic types | ✅ | `fact · preference · decision · constraint · instruction · role · entity · relationship · event · history · observation` — see [memory-model.md](memory-model.md) |
 | `scope` | string | ✅ | `global` or a project path/id; no `..` segments |
-| `tags` | `[a, b]` | ✅ | comma-separated inside brackets |
+| `tags` | YAML list | ✅ | one `- item` per line |
 | `importance` | int 1–5 | ✅ | ranking weight |
+| `confidence` | 0–1 | ✅ | trust in the claim; displayed, not ranked |
+| `trust` | `unverified \| trusted \| verified \| system` | ✅ | gates instruction injection + ranks (4.1.0, §4.5); legacy files derive it from `provenance` on read |
 | `created` / `updated` | ISO 8601 | ✅ | written as UTC with milliseconds |
 | `lastSeen` | ISO 8601 | — | decay refresh (set when a memory surfaces in search) |
+| `lastValidated` | ISO 8601 | — | stamped when `trust` changes (4.1.0, §4.2) |
 | `archivedAt` | ISO 8601 | — | present ⇔ the file lives in the archived tree |
 | `source` | string | — | originating session/client |
-| `provenance` | `explicit \| auto` | — | manually stored vs digest-extracted |
-| `confidence` | 0–1 | — | trust in the claim; displayed, not ranked |
-| `related` | `[id, id]` | — | relationship-graph links |
+| `provenance` | nested object | ✅ | `{ sourceType, sessionId?, messageId?, agentId?, provider? }` — where it came from (4.1.0, §4.3); legacy `explicit`/`auto` strings migrate on read |
+| `retention` | decay mode | — | `pinned \| persistent \| ephemeral \| neverExpire` — omit = `decaying` (4.1.0, §4.8) |
+| `relations` | list of `{id, kind}` | — | typed edges `supports · contradicts · supersedes · refines · duplicates · related` (4.1.0, §4.7); legacy `related: [ids]` migrates on read |
 | `embedding` | `[f,f,…]` | — | vector cache (comma-separated, no spaces) |
 
 **Encryption (opt-in, 3.8.0):** with `REMEMBRA_ENCRYPT_KEY` set, the entire
@@ -94,9 +111,15 @@ from `get`/`all`/`search`, **left untouched on disk**, and logged once as
 | missing/invalid frontmatter | no well-formed `---` block |
 | invalid/unsupported schema version | non-numeric, or `version > SCHEMA_VERSION` (data from a newer Remembra) |
 | invalid id | fails `[A-Za-z0-9._-]+` |
-| invalid type | not one of the four memory types |
+| invalid type | not one of the eleven memory types |
 | invalid scope | empty, `..` segment, or backslash |
 | empty content | nothing after the frontmatter |
+
+**Downgrade contract (4.1.0):** files are written with `version: 2`.
+Older readers (4.0.x) **skip** those files — logged, never deleted — because
+they cannot honor `trust` when gating instructions; upgrading again restores
+them untouched. 4.1.0 reads every pre-4.1 file (`version: 1` or absent)
+as-is, normalizing the legacy shapes below.
 
 **Normalized** — recoverable value problems are fixed at read time and logged
 once as `memory_normalized`, so the memory is still served and ranking math
@@ -105,12 +128,13 @@ can never see `NaN`:
 | Field | Rule |
 |-------|------|
 | `importance` | non-numeric → `3`; otherwise clamped to 1–5 |
-| `confidence` | non-numeric → dropped; otherwise clamped to 0–1 |
+| `confidence` | missing/non-numeric → `0.7` (conversation provenance) or `1.0`; otherwise clamped to 0–1 |
+| `trust` | missing/invalid → derived from `provenance` (`conversation` → `unverified`, `system` → `system`, else `trusted`) |
 | `created`/`updated`/`lastSeen`/`archivedAt` | unparseable → epoch fallback / dropped |
 | `id` ≠ filename | filename wins |
-| `provenance` | unknown value → dropped |
+| `provenance` | legacy string `auto` → `{ sourceType: conversation }`, `explicit` → `{ sourceType: manual }`; invalid object → `{ sourceType: manual }` |
 | `embedding` | non-finite entries → dropped (keyword fallback) |
-| `related` | entries failing the id pattern are filtered out |
+| `relations` | entries failing the id pattern are filtered out; legacy `related` entries → kind `related` |
 
 Skipped files become readable again by fixing them by hand or re-storing them
 through the API — nothing is ever deleted automatically for being invalid.
@@ -119,9 +143,15 @@ through the API — nothing is ever deleted automatically for being invalid.
 
 Content-changing updates (`memory_update`, `PUT`, merge) copy the on-disk
 pre-image to `.history/<id>/<epochMs>-<seq>.md` **before** writing —
-byte-for-byte (ciphertext preserved in encrypted mode). Pruned beyond
-`REMEMBRA_HISTORY_LIMIT` (default 20, `0` disables). Non-content changes
-(tags, importance, embedding backfill, scope moves) never snapshot.
+byte-for-byte (ciphertext preserved in encrypted mode). When the update
+supplies a `reason`, it plus a `supersededAt` timestamp is recorded in
+`.history/<id>/reasons.json` (encrypted with the rest of the store in 4.1.0,
+plan §4.6) — the superseded text is **never inlined into the new content**;
+`memory_history` returns both beside each version. Pruned beyond
+`REMEMBRA_HISTORY_LIMIT` (default 20, `0` disables — snapshots and their
+reasons go together). Non-content changes (tags, importance, trust-only
+writes, embedding backfill, scope moves, linking) never snapshot — content
+changed or it didn't.
 
 ## Environment
 

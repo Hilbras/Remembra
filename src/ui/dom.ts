@@ -137,11 +137,48 @@ export function confirmModal(title: string, message: string, confirmLabel = "Con
   });
 }
 
+/** The 11 semantic memory types (plan §4.1) — mirrors MemoryType in types.ts. */
+export const MEMORY_TYPES = [
+  "fact",
+  "preference",
+  "decision",
+  "constraint",
+  "instruction",
+  "role",
+  "entity",
+  "relationship",
+  "event",
+  "history",
+  "observation",
+] as const;
+
+/** Plural labels for filters/legends. */
+export const TYPE_LABELS: Record<string, string> = {
+  fact: "facts",
+  preference: "preferences",
+  decision: "decisions",
+  constraint: "constraints",
+  instruction: "instructions",
+  role: "roles",
+  entity: "entities",
+  relationship: "relationships",
+  event: "events",
+  history: "history",
+  observation: "observations",
+};
+
 export const TYPE_COLORS: Record<string, string> = {
   fact: "var(--info)",
+  preference: "var(--ok)",
   decision: "var(--violet)",
+  constraint: "var(--danger)",
+  instruction: "var(--warn)",
   role: "var(--gold)",
+  entity: "var(--teal)",
+  relationship: "var(--pink)",
+  event: "var(--orange)",
   history: "var(--text-3)",
+  observation: "var(--cyan)",
 };
 
 export function typeBadge(type: string): HTMLElement {

@@ -7,6 +7,99 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [4.1.0] — 2026-09-23
+
+**Memory Model & Provenance** — plan §4 of the Master Development Plan, plus
+the structural §3 leftovers folded in per the version-collision decision
+(formal metadata format, optimistic `expectedVersion`, UUIDv7). Backward
+compatible for every pre-4.1 store: all new fields are additive, legacy shapes
+migrate on read, and nothing is rewritten behind your back.
+
+### Added — eleven semantic types (plan §4.1)
+- **Type vocabulary 4 → 11**: `fact · preference · decision · constraint ·
+  instruction · role · entity · relationship · event · history · observation`
+  (was `fact · decision · role · history`). The four old types keep their
+  exact semantics; new-type files are skipped — never deleted — by downgrade.
+- Digest extraction, MCP tool schemas, HTTP validation, the dashboard
+  (type filter, edit form, per-type badge colors ×11, graph legend derived
+  from present types) and the Custom GPT action enum all cover the full set.
+
+### Added — provenance & trust (plan §4.3, §4.5, §4.9)
+- **`provenance` is a required object**: `{ sourceType, sessionId?,
+  messageId?, agentId?, provider? }` — legacy `explicit`/`auto` strings
+  migrate on read (`explicit` → `manual`, `auto` → `conversation`); digest
+  extractions stamp **which LLM produced them** (`provider`).
+- **Required `trust` classification**: `system +8 / verified +6 / trusted +2 /
+  unverified −8` ranking points (`TRUST_POINTS`), derived from provenance when
+  absent (conversation → `unverified`, system → `system`, else `trusted`).
+  Direct stores stay `trusted`; digest extraction always lands `unverified`.
+- **Instruction gate**: `role`/`instruction` memories earn the +1000 standing
+  boost only at `trust ≥ trusted` — unverified ones stay listed, searchable
+  and badged, but never surface first. Promote via the dashboard **Approve**
+  button (→ `verified`) or `memory_update { trust }`; a trust change stamps
+  `lastValidated` (new metadata field).
+- **Required `confidence`** with sane legacy defaults (0.7 conversation /
+  1.0 otherwise).
+
+### Added — retention modes (plan §4.8)
+- **`retention`**: `pinned · persistent · ephemeral · neverExpire` (absent =
+  `decaying`). `pinned`/`neverExpire` are fully exempt from decay sweeps,
+  `pinned` also gets +50 rank points, `persistent` is archivable but never
+  auto-deleted; `role`/`instruction` never decay regardless. Editable from the
+  dashboard form and `memory_store`/`memory_update`.
+
+### Added — typed relations (plan §4.7)
+- **`memory_relate` gains `kind`**: `supports · contradicts · supersedes ·
+  refines · duplicates · related` (default `related`). Re-linking retypes the
+  edge in place (never duplicates); backlinks carry the kind; legacy
+  `related: [ids]` frontmatter migrates to kind `related` on read. Dashboard
+  link picker shows a kind selector and kind chips.
+
+### Added — storage & concurrency (plan §3.4, §3.5, §3.6, §4.2)
+- **Spec-parsed YAML frontmatter** (`yaml@^2.9.1`) + zod validation on every
+  read — YAML-ambiguous scopes/tags/sources now round-trip; the hand-rolled
+  parser remains only as the legacy fallback.
+- **Schema `version: 1 → 2`**: 4.0.x readers skip `version: 2` files (logged,
+  never deleted) instead of honoring them without trust gating — downgrades
+  can no longer silently bypass the instruction gate. 4.1.0 reads all
+  pre-4.1 files unchanged.
+- **Optimistic concurrency**: `memory_update`/`PUT` accept `expectedVersion`
+  (compared against the fresh on-disk counter *inside the lock*) — mismatch →
+  `CONFLICT` (HTTP 409), nothing written; every write bumps `revision`
+  (exposed as JSON `version`).
+- **UUIDv7 ids**: time-ordered, unique from entropy — the collision-scan
+  retry loop is gone (legacy 8–32 hex ids remain valid).
+
+### Changed
+- **History reasons (plan §4.6)**: updates accept `reason` (≤500 chars),
+  recorded as `{ reason, supersededAt }` in `.history/<id>/reasons.json`
+  (encrypted with the tree) and returned by `memory_history` /
+  `GET /memories/:id/history`.
+- **Digest merges no longer inline** the `> superseded (…)` note into the new
+  content — the pre-image snapshot in version history carries it, with the
+  reason `digest merge (superseded by a newer extraction)`.
+- **Retrieval ranking** gains the trust layer and pinned boost on top of the
+  existing provenance/importance/recency/keyword layers.
+- **Frontmatter layout**: `version` = schema guard, `revision` = per-memory
+  write counter; `tags`, `provenance`, `relations` serialize as proper YAML
+  structures; `embedding` as a comma scalar.
+- Snapshot envelope exports `version: 2`; pre-4.1 snapshots (string
+  provenance, untyped `related`) still import cleanly.
+
+### Docs
+- `storage.md` rewritten for the v2 format (field table, downgrade contract,
+  reasons.json); `memory-model.md` covers all 11 types + provenance/trust/
+  retention sections; `tools.md`, `public-api.md`, `architecture.md`,
+  `lifecycle.md`, `ui.md`, `providers.md`, `chatgpt.md`, `security.md`,
+  `clients.md` and the README updated to match.
+
+### Verification
+- **198 tests, 0 failures** — 15 new behavioral tests in
+  `src/test/model.test.ts` (type round-trips, trust derivation + gate,
+  expectedVersion CAS at service and HTTP level, legacy frontmatter/snapshot
+  migration, relation retype/removal, retention decay exemptions, ranking
+  layers, snapshot round-trip) on top of the existing suite.
+
 ## [4.0.1] — 2026-09-23
 
 **Foundation & Correctness** — the non-breaking subset of the Master

@@ -524,31 +524,30 @@ test("archive/revive racing search keeps exactly one copy (never dual-homed)", a
 // §3.6/§3.8 ID allocation
 // ---------------------------------------------------------------------------
 
-test("an id collision retries with a fresh id instead of failing", async () => {
-  const root = await tmp("remembra-f-coll-");
-  const a = new MemoryStore(root, { idGen: () => "collide0001" });
-  await a.store({ type: "fact", content: "occupant", scope: "global", tags: [], importance: 3 });
-
-  const ids = ["collide0001", "freshid0002"];
-  let i = 0;
-  const b = new MemoryStore(root, { idGen: () => ids[Math.min(i++, ids.length - 1)] });
-  const m = await b.store({ type: "fact", content: "newcomer", scope: "global", tags: [], importance: 3 });
-  assert.equal(m.id, "freshid0002", "collision detected and retried");
-  assert.ok(await b.get("freshid0002"));
-  assert.ok(await b.get("collide0001"), "the occupant is untouched");
+test("the idGen test hook yields its exact id (plan §3.6: uniqueness comes from the id, not a scan)", async () => {
+  const root = await tmp("remembra-f-hook-");
+  const store = new MemoryStore(root, { idGen: () => "hookid0042" });
+  const m = await store.store({
+    type: "fact",
+    content: "deterministic id",
+    scope: "global",
+    tags: [],
+    importance: 3,
+  });
+  assert.equal(m.id, "hookid0042");
+  assert.ok(await store.get("hookid0042"));
 });
 
-test("persistent id collision fails with CONFLICT instead of overwriting", async () => {
-  const root = await tmp("remembra-f-conf-");
-  const a = new MemoryStore(root, { idGen: () => "dupeid0001" });
-  await a.store({ type: "fact", content: "occupant", scope: "global", tags: [], importance: 3 });
-  const b = new MemoryStore(root, { idGen: () => "dupeid0001" });
-  await assert.rejects(
-    b.store({ type: "fact", content: "cannot win", scope: "global", tags: [], importance: 3 }),
-    expectRemembra("CONFLICT", /unique memory id/),
-  );
-  const occupant = await b.get("dupeid0001");
-  assert.equal(occupant?.content, "occupant", "the existing memory is never overwritten");
+test("ids are UUIDv7: versioned + time-ordered prefix, no collision scan (plan §3.6)", async () => {
+  const root = await tmp("remembra-f-v7-");
+  const store = new MemoryStore(root);
+  const a = await store.store({ type: "fact", content: "first", scope: "global", tags: [], importance: 3 });
+  const b = await store.store({ type: "fact", content: "second", scope: "global", tags: [], importance: 3 });
+  const v7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  assert.match(a.id, v7, "version-7 + RFC4122 variant bits");
+  assert.match(b.id, v7);
+  // 48-bit millisecond prefix never decreases → lexicographic sort = creation order.
+  assert.ok(b.id.slice(0, 8) >= a.id.slice(0, 8), "monotonic timestamp prefix");
 });
 
 // ---------------------------------------------------------------------------
@@ -598,7 +597,9 @@ test("store → get round-trips random memories byte-faithfully (property)", asy
     assert.equal(loaded.confidence, input.confidence, `iteration ${n}: confidence`);
     assert.equal(loaded.source, input.source, `iteration ${n}: source`);
     assert.equal(loaded.createdAt, stored.createdAt, `iteration ${n}: createdAt`);
-    assert.equal(loaded.provenance, "explicit", `iteration ${n}: provenance`);
+    assert.deepEqual(loaded.provenance, { sourceType: "manual" }, `iteration ${n}: provenance`);
+    assert.equal(loaded.trust, "trusted", `iteration ${n}: trust`);
+    assert.equal(loaded.version, 1, `iteration ${n}: fresh memory is version 1`);
   }
   assert.equal((await store.all()).length, 40, "all 40 stored memories read back");
 });

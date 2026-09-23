@@ -5,7 +5,7 @@ import { h, mount, toast } from "../dom.js";
 export async function renderDigest(view: HTMLElement): Promise<void> {
   const transcript = h("textarea", {
     rows: 12,
-    placeholder: "Paste a session transcript…\n\nThe extractor keeps facts, decisions, roles and history worth remembering across sessions.",
+    placeholder: "Paste a session transcript…\n\nThe extractor keeps the facts, decisions, preferences, roles and other memories worth remembering across sessions.",
   }) as HTMLTextAreaElement;
   const scopeInput = h("input", { placeholder: "global or a project path" }) as HTMLInputElement;
   const sourceInput = h("input", { placeholder: "e.g. opencode session 2026-09-23" }) as HTMLInputElement;

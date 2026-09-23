@@ -8,6 +8,10 @@ export interface HistoryEntry {
   at?: string;
   /** When the snapshot was taken (from the file name's epoch prefix). */
   snapshotAt?: string;
+  /** Why this version superseded the pre-image (plan §4.6); from reasons.json. */
+  reason?: string;
+  /** When it was superseded (reason record), if a reason was given. */
+  supersededAt?: string;
   content: string;
 }
 
@@ -27,16 +31,21 @@ export interface HistoryEntry {
  *  - `importMemory` must refuse ids that already exist (return false).
  */
 export interface MemoryBackend {
-  store(
-    input: StoreInput,
-    embedding?: number[],
-    opts?: { provenance?: Memory["provenance"] },
-  ): Promise<Memory>;
+  store(input: StoreInput, embedding?: number[]): Promise<Memory>;
   /** Optional observability hook — the file backend exposes parse-cache stats. */
   cacheStats?(): { size: number; capacity: number };
   get(id: string): Promise<Memory | null>;
   all(includeArchived?: boolean): Promise<Memory[]>;
-  update(memory: Memory): Promise<Memory>;
+  /**
+   * Persist an update. Implementations MUST apply optimistic concurrency
+   * (plan §3.5): when `opts.expectedVersion` is set, compare it against the
+   * stored version inside the write lock and throw CONFLICT on mismatch;
+   * the written version is stored+1 either way.
+   */
+  update(
+    memory: Memory,
+    opts?: { expectedVersion?: number; reason?: string },
+  ): Promise<Memory>;
   archive(id: string): Promise<Memory | null>;
   revive(id: string): Promise<Memory | null>;
   touch(id: string): Promise<void>;

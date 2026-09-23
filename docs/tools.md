@@ -9,19 +9,29 @@ Persist a memory so it survives context-window resets.
 
 | Argument | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
-| `type` | `fact \| decision \| role \| history` | ✅ | — | What kind of memory this is |
+| `type` | one of 11 types | ✅ | — | What kind of memory: `fact · preference · decision · constraint · instruction · role · entity · relationship · event · history · observation` |
 | `content` | string | ✅ | — | The memory, written as a standalone statement |
 | `scope` | string | no | `global` | `global`, or a project path/id |
 | `tags` | string[] | no | `[]` | Keywords that boost retrieval |
 | `importance` | 1–5 | no | `3` | Ranking weight |
 | `source` | string | no | — | Originating session/client |
-| `confidence` | 0–1 | no | auto | Trust in this claim — defaults to `1.0` for explicit stores, `0.7` for digest extractions (the LLM may supply its own) |
+| `confidence` | 0–1 | no | auto | Confidence in this claim (not the `trust` gate) — defaults to `1.0` for deliberate stores, `0.7` for digest extractions (the LLM may supply its own) |
+| `provenance` | object | no | `{ sourceType: manual }` | Where it came from: `sourceType` = `manual \| conversation \| agent \| import \| system`, plus optional `sessionId`/`messageId`/`agentId`/`provider` (plan §4.3) |
+| `trust` | level | no | derived from `provenance` | Override `unverified \| trusted \| verified \| system` — usually leave alone; digest extraction always lands `unverified` (plan §4.5) |
+| `retention` | mode | no | `decaying` | Decay protection: `pinned \| persistent \| ephemeral \| neverExpire` (plan §4.8) |
 
 **When to use which type:**
 - Something the model should *know* → `fact`
+- How the user *likes things* → `preference`
 - Something already *decided* → `decision`
-- A standing *instruction* or persona → `role`
-- A summary of *what happened* → `history`
+- A hard *limit / must-not* → `constraint`
+- A standing *directive* ("always X") → `instruction`
+- A standing *persona / rule set* → `role`
+- A named *person, service, repo* → `entity`
+- How two entities *relate* → `relationship`
+- A dated *thing that happened* → `event`
+- A *chronology* of past work → `history`
+- Raw signal *not yet validated* → `observation`
 
 Returns the assigned memory id.
 
@@ -39,13 +49,18 @@ everything else is preserved.
 | `scope` | string | no | New scope — **moves the file** between trees (same id) |
 | `tags` | string[] | no | Replace tags |
 | `importance` | 1–5 | no | New ranking weight |
-| `source` | string | no | New provenance string |
-| `confidence` | 0–1 | no | New trust score |
+| `source` | string | no | New source label |
+| `confidence` | 0–1 | no | New confidence |
+| `trust` | level | no | New trust level — `memory_update { trust }` is the approval path for unverified digests (see [memory-model.md](memory-model.md#trust-410-plan-45)) |
+| `retention` | mode | no | New decay protection mode |
+| `expectedVersion` | int ≥ 1 | no | Optimistic concurrency: pass the `version` you read; mismatch → `CONFLICT` (HTTP 409), nothing written |
+| `reason` | string ≤ 500 | no | Why this version supersedes the last — recorded beside the history snapshot (plan §4.6) |
 
 Rules: at least one field is required (empty patch → `INVALID_INPUT`), scopes
 with `..` are rejected, unknown ids return `NOT_FOUND`. Content changes
 re-embed (or clear the stale vector when embeddings are off); non-content
-changes never touch history. See [lifecycle.md](lifecycle.md#contradiction-merging).
+changes never touch history. A `trust` change stamps `lastValidated`.
+See [lifecycle.md](lifecycle.md#contradiction-merging).
 
 ## `memory_search`
 
@@ -103,8 +118,9 @@ Unknown ids return `NOT_FOUND`.
 
 ## `memory_get`
 
-Fetch one memory by id with its full content, its `related` links resolved,
-and its **backlinks** (memories that point at it). Use after `memory_search`
+Fetch one memory by id with its full content, its typed `relations`
+resolved (`{ id, kind }`), and its **backlinks** (memories that point at it,
+each with its kind). Use after `memory_search`
 when you need the whole statement, not the snippet.
 
 | Argument | Type | Required | Description |
@@ -115,26 +131,31 @@ Returns `[NOT_FOUND] …` with `isError: true` if no memory matches.
 
 ## `memory_relate`
 
-Create or remove directed links between memories — the relationship graph.
-Tie a decision to the facts it depends on, or a history entry to the decision
-it records. Targets must exist; backlinks are derived at read time, so one
-write keeps the edge consistent. See [memory-model.md](memory-model.md#relationships-380).
+Create, remove, or **retype** directed links between memories — the
+relationship graph. Tie a decision to the facts it depends on, or a history
+entry to the decision it records. Targets must exist; backlinks are derived
+at read time, so one write keeps the edge consistent. See
+[memory-model.md](memory-model.md#relationships-410-plan-47).
 
 | Argument | Type | Required | Default | Description |
 |----------|------|----------|---------|-------------|
 | `id` | string | ✅ | — | Source memory id |
 | `related` | string[] | ✅ | — | Target memory ids (1–50; must exist on `add`) |
 | `action` | `add \| remove` | no | `add` | Create or delete the links |
+| `kind` | `supports \| contradicts \| supersedes \| refines \| duplicates \| related` | no | `related` | Edge kind (plan §4.7) — linking an already-linked target with a new kind **retypes the edge in place** |
 
-Idempotent: re-linking what's already linked is a no-op (no `updatedAt` churn).
-A memory cannot be related to itself (`INVALID_INPUT`).
+Idempotent: re-linking what's already linked with the same kind is a no-op
+(no `updatedAt` churn). A memory cannot be related to itself
+(`INVALID_INPUT`).
 
 ## `memory_history`
 
 Version history of one memory with unified line diffs — every
 content-changing update (e.g. a contradiction merge) snapshots the previous
 version first. Newest version first; each entry diffs against its
-predecessor. See [lifecycle.md](lifecycle.md#contradiction-merging).
+predecessor and carries the `reason` + `supersededAt` recorded when it was
+superseded (4.1.0, plan §4.6). See
+[lifecycle.md](lifecycle.md#contradiction-merging).
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
@@ -143,7 +164,8 @@ predecessor. See [lifecycle.md](lifecycle.md#contradiction-merging).
 
 Snapshots live in `~/.remembra/.history/<id>/`, pruned to
 `REMEMBRA_HISTORY_LIMIT` (default 20) per memory; `0` disables history.
-Non-content updates (embedding backfills, linking) never snapshot.
+Non-content updates (embedding backfills, trust-only writes, linking) never
+snapshot.
 
 ## `memory_digest`
 
@@ -164,7 +186,9 @@ extracted / stored / duplicates skipped, plus stored ids.
 Run maintenance on demand: archive memories unused past
 `REMEMBRA_ARCHIVE_AFTER_DAYS` (default 90), auto-delete archived memories past
 `REMEMBRA_ARCHIVE_TTL_DAYS` (default 365), and backfill missing embedding
-vectors. Roles never decay. Takes no arguments. See [lifecycle.md](lifecycle.md).
+vectors. Roles and instructions never decay; `pinned`/`neverExpire` are
+exempt from archiving entirely and `persistent` is never auto-deleted
+(plan §4.8). Takes no arguments. See [lifecycle.md](lifecycle.md).
 
 Returns counts + affected ids. Also available as `POST /maintain` and the
 `remembra maintain` CLI command.

@@ -20,6 +20,10 @@ function mem(over: Partial<Memory>): Memory {
     scope: "global",
     tags: [],
     importance: 3,
+    confidence: 1,
+    trust: "trusted",
+    provenance: { sourceType: "manual" },
+    version: 1,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...over,
@@ -73,8 +77,10 @@ test("importance delta is identical in keyword and semantic mode", () => {
 test("explicit provenance adds the same +10 in both modes", () => {
   const now = Date.now();
   const terms: string[] = [];
-  const auto = mem({ content: "a fact", embedding: [1, 0] });
-  const explicit = mem({ content: "a fact", embedding: [1, 0], provenance: "explicit" });
+  // Trust held constant (both trusted) so this isolates the provenance layer;
+  // the trust layer itself is exercised in the 4.1.0 model tests.
+  const auto = mem({ content: "a fact", embedding: [1, 0], provenance: { sourceType: "conversation" } });
+  const explicit = mem({ content: "a fact", embedding: [1, 0], provenance: { sourceType: "manual" } });
 
   const keywordDelta =
     score(explicit, terms, undefined, now) - score(auto, terms, undefined, now);
@@ -86,15 +92,15 @@ test("explicit provenance adds the same +10 in both modes", () => {
 
 test("an older explicit store outranks a fresh auto-extract", () => {
   const store = [
-    mem({ id: "auto", content: "auto extracted fact", updatedAt: aged(0) }),
-    mem({ id: "explicit", content: "deliberately stored", updatedAt: aged(5), provenance: "explicit" }),
+    mem({ id: "auto", content: "auto extracted fact", updatedAt: aged(0), provenance: { sourceType: "conversation" } }),
+    mem({ id: "explicit", content: "deliberately stored", updatedAt: aged(5), provenance: { sourceType: "manual" } }),
   ];
   const results = search(store, {});
   assert.equal(results[0].id, "explicit", "+10 provenance beats 5 days of recency");
   assert.equal(results[1].id, "auto");
 });
 
-test("direct stores stamp `explicit`, digest stores stamp `auto` (persisted)", async () => {
+test("direct stores stamp manual/trusted, digests stamp conversation/unverified (persisted)", async () => {
   const store = await tempStore();
   const svc = new MemoryService(store, {
     embeddingProvider: "none",
@@ -104,16 +110,20 @@ test("direct stores stamp `explicit`, digest stores stamp `auto` (persisted)", a
   });
 
   const direct = await svc.store(storeInput("stored on purpose"));
-  assert.equal(direct.memory.provenance, "explicit");
-  assert.match(
-    await fs.readFile(path.join(store["root"], "global", `${direct.memory.id}.md`), "utf8"),
-    /^provenance: explicit$/m,
+  assert.deepEqual(direct.memory.provenance, { sourceType: "manual" });
+  assert.equal(direct.memory.trust, "trusted");
+  const raw = await fs.readFile(
+    path.join(store["root"], "global", `${direct.memory.id}.md`),
+    "utf8",
   );
+  assert.match(raw, /^trust: trusted$/m, "trust persisted in frontmatter");
+  assert.match(raw, /^ {2}sourceType: manual$/m, "provenance object serialized as YAML");
 
   const digested = await svc.digest({ transcript: "session" });
-  assert.equal(digested.stored[0].provenance, "auto");
+  assert.equal(digested.stored[0].provenance?.sourceType, "conversation");
+  assert.equal(digested.stored[0].trust, "unverified", "digest extraction is never trusted by itself (§4.9)");
   const reloaded = await store.get(digested.stored[0].id);
-  assert.equal(reloaded?.provenance, "auto", "survives a file round trip");
+  assert.equal(reloaded?.trust, "unverified", "survives a file round trip");
 });
 
 // --- fuzzy dedup fast path (audit: exact-match only) ---
@@ -209,12 +219,11 @@ test("export/import round trip keeps provenance", async () => {
   const src = await tempStore();
   const dst = await tempStore();
   const auto = await new MemoryService(src, { embeddingProvider: "none" }).store(
-    storeInput("auto memory"),
-    { provenance: "auto" },
+    storeInput("auto memory", { provenance: { sourceType: "conversation" } }),
   );
   const snapshot = await new MemoryService(src, { embeddingProvider: "none" }).exportSnapshot();
-  assert.equal(snapshot.memories[0].provenance, "auto");
+  assert.deepEqual(snapshot.memories[0].provenance, { sourceType: "conversation" });
 
   await new MemoryService(dst, { embeddingProvider: "none" }).importSnapshot(snapshot);
-  assert.equal((await dst.get(auto.memory.id))?.provenance, "auto");
+  assert.deepEqual((await dst.get(auto.memory.id))?.provenance, { sourceType: "conversation" });
 });

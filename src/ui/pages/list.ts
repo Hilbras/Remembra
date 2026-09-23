@@ -1,6 +1,6 @@
 // Memories list — search, filters, pagination, rows.
 import { api, MemoryRec } from "../api.js";
-import { clear, fmtAgo, h, icon, mount, typeBadge } from "../dom.js";
+import { clear, fmtAgo, h, icon, mount, MEMORY_TYPES, TYPE_LABELS, typeBadge } from "../dom.js";
 
 /** Shared memory row (also used by the roles page). */
 export function mrow(m: MemoryRec): HTMLElement {
@@ -18,6 +18,7 @@ export function mrow(m: MemoryRec): HTMLElement {
       "span",
       { class: "meta" },
       m.archivedAt ? h("span", { class: "chip archived", text: "archived" }) : null,
+      m.trust === "unverified" ? h("span", { class: "chip trust-unverified", text: "unverified" }) : null,
       m.scope !== "global" ? h("span", { class: "chip", text: m.scope }) : null,
       (m.tags ?? []).slice(0, 2).map((t) => h("span", { class: "chip", text: `#${t}` })),
       h("span", { class: "imp", text: "★".repeat(m.importance) }),
@@ -97,10 +98,7 @@ export async function renderList(view: HTMLElement): Promise<void> {
       },
     },
     h("option", { value: "", text: "all types" }),
-    h("option", { value: "fact", text: "facts" }),
-    h("option", { value: "decision", text: "decisions" }),
-    h("option", { value: "role", text: "roles" }),
-    h("option", { value: "history", text: "history" }),
+    ...MEMORY_TYPES.map((t) => h("option", { value: t, text: TYPE_LABELS[t] ?? t })),
   );
   const scopeInput = h("input", {
     placeholder: "scope",

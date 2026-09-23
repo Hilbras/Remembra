@@ -30,13 +30,14 @@ printf '%s\n' \
 
 ## Versioning
 
-Package versions match roadmap milestones: **3.0.0 = v3**, next milestone ships as **4.0.0**.
+Package versions match roadmap milestones: **3.0.0 = v3**, **4.0.0 = v4**,
+**4.1.0 = v4.1** — the next milestone ships as its own `.0` version.
 (Earlier releases: 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.)
 
 To cut a release:
 
 ```bash
-npm version 4.0.0        # bumps package.json + creates the tag
+npm version 4.2.0        # bumps package.json + creates the tag
 git push origin main --tags
 gh release create v4.0.0 --title "Remembra v4.0.0 — <headline>" --notes "<see CHANGELOG>"
 npm publish              # prepublishOnly runs build + tests

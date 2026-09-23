@@ -1,11 +1,21 @@
 // Memory detail — content, metadata, links, history diffs, lifecycle actions.
-import { api, Brief } from "../api.js";
+import { api, Brief, MemoryRec } from "../api.js";
 import { clear, confirmModal, fmtAgo, fmtDate, h, icon, mount, toast, typeBadge } from "../dom.js";
 
 function briefLabel(b: Brief): string {
   if (b.missing) return `${b.id} (missing)`;
   const line = (b.content ?? "").split("\n")[0];
   return line ? `${b.id} · ${line}` : b.id;
+}
+
+/** Typed relation kinds (plan §4.7) — mirrors RelationKind in types.ts. */
+const RELATION_KINDS = ["related", "supports", "contradicts", "supersedes", "refines", "duplicates"] as const;
+
+/** Provenance object → "manual" / "conversation · openai" label. */
+function provLabel(m: MemoryRec): string {
+  const p = m.provenance;
+  if (!p) return "—";
+  return p.provider ? `${p.sourceType} · ${p.provider}` : p.sourceType;
 }
 
 function diffBlock(diff: string): HTMLElement {
@@ -133,7 +143,12 @@ export async function renderDetail(view: HTMLElement, id: string): Promise<void>
             {},
             v.current
               ? h("b", { text: "Current" })
-              : h("span", { text: `Superseded ${fmtDate(v.snapshotAt ?? v.at ?? "")}` }),
+              : h(
+                  "span",
+                  {
+                    text: `Superseded ${fmtDate(v.snapshotAt ?? v.at ?? "")}${v.reason ? ` — ${v.reason}` : ""}`,
+                  },
+                ),
             h("span", { class: "dim small", text: ` — ${v.content.split("\n")[0].slice(0, 80)}` }),
           ),
           v.diff ? diffBlock(v.diff) : h("p", { class: "dim small", text: "(no line changes vs older version)" }),
@@ -144,7 +159,7 @@ export async function renderDetail(view: HTMLElement, id: string): Promise<void>
 
   // --- relate editor ---
   const candidateList = await api.list({ limit: 500 });
-  const linked = new Set(m.related ?? []);
+  const linked = new Set((m.relations ?? []).map((r) => r.id));
   const options = candidateList.memories.filter((c) => c.id !== id && !linked.has(c.id));
   const targetSel = h(
     "select",
@@ -152,6 +167,11 @@ export async function renderDetail(view: HTMLElement, id: string): Promise<void>
     ...options.map((c) =>
       h("option", { value: c.id, text: `${c.id} · ${c.content.split("\n")[0].slice(0, 60)}` }),
     ),
+  ) as HTMLSelectElement;
+  const kindSel = h(
+    "select",
+    { title: "Relation kind (plan §4.7)" },
+    ...RELATION_KINDS.map((k) => h("option", { value: k, text: k })),
   ) as HTMLSelectElement;
   const addRelBtn = h(
     "button",
@@ -161,7 +181,7 @@ export async function renderDetail(view: HTMLElement, id: string): Promise<void>
       onclick: async () => {
         if (!targetSel.value) return;
         try {
-          await api.relate(id, { related: [targetSel.value], action: "add" });
+          await api.relate(id, { related: [targetSel.value], action: "add", kind: kindSel.value });
           toast("Linked", "ok");
           await refresh();
         } catch (err) {
@@ -198,6 +218,7 @@ export async function renderDetail(view: HTMLElement, id: string): Promise<void>
       "div",
       { class: "rel-item" },
       icon("i-link"),
+      b.kind && b.kind !== "related" ? h("span", { class: "chip rel-kind", text: b.kind }) : null,
       b.missing
         ? h("span", { class: "label dim", text: briefLabel(b) })
         : h("a", { class: "label", href: `#/memories/${b.id}`, text: briefLabel(b) }),
@@ -250,14 +271,46 @@ export async function renderDetail(view: HTMLElement, id: string): Promise<void>
             h("dd", { class: "imp", text: "★".repeat(m.importance) + "☆".repeat(5 - m.importance) }),
             h("dt", { text: "Confidence" }),
             h("dd", { text: m.confidence !== undefined ? String(m.confidence) : "—" }),
+            h("dt", { text: "Trust" }),
+            h(
+              "dd",
+              { class: "trust-cell" },
+              h("span", { class: `chip trust-${m.trust ?? "trusted"}`, text: m.trust ?? "trusted" }),
+              m.trust === "unverified"
+                ? h(
+                    "button",
+                    {
+                      class: "btn btn-sm",
+                      title: "Approve: trust → verified, so this may act as a standing instruction",
+                      onclick: async () => {
+                        try {
+                          await api.update(id, { trust: "verified" });
+                          toast("Approved — trust set to verified", "ok");
+                          await refresh();
+                        } catch (err) {
+                          fail(err);
+                        }
+                      },
+                    },
+                    icon("i-shield"),
+                    "Approve",
+                  )
+                : null,
+            ),
             h("dt", { text: "Provenance" }),
-            h("dd", { text: m.provenance ?? "—" }),
+            h("dd", { text: provLabel(m) }),
+            h("dt", { text: "Retention" }),
+            h("dd", { text: m.retention ?? "decaying (default)" }),
+            h("dt", { text: "Version" }),
+            h("dd", { text: m.version !== undefined ? String(m.version) : "—" }),
             h("dt", { text: "Source" }),
             h("dd", { text: m.source ?? "—" }),
             h("dt", { text: "Created" }),
             h("dd", { text: fmtDate(m.createdAt) }),
             h("dt", { text: "Updated" }),
             h("dd", { title: fmtDate(m.updatedAt), text: fmtAgo(m.updatedAt) }),
+            m.lastValidated ? h("dt", { text: "Last validated" }) : null,
+            m.lastValidated ? h("dd", { text: fmtDate(m.lastValidated) }) : null,
           ),
         ),
         h(
@@ -282,6 +335,7 @@ export async function renderDetail(view: HTMLElement, id: string): Promise<void>
             "div",
             { class: "btn-row" },
             targetSel,
+            kindSel,
             addRelBtn,
           ),
         ),

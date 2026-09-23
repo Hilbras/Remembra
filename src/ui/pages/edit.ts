@@ -1,8 +1,6 @@
 // Create / edit form.
 import { api, MemoryRec } from "../api.js";
-import { h, mount, toast } from "../dom.js";
-
-const TYPES = ["fact", "decision", "role", "history"] as const;
+import { h, mount, toast, MEMORY_TYPES } from "../dom.js";
 
 export async function renderEdit(view: HTMLElement, id: string | null): Promise<void> {
   let existing: MemoryRec | undefined;
@@ -12,7 +10,7 @@ export async function renderEdit(view: HTMLElement, id: string | null): Promise<
   const typeSel = h(
     "select",
     {},
-    ...TYPES.map((t) => h("option", { value: t, text: t })),
+    ...MEMORY_TYPES.map((t) => h("option", { value: t, text: t })),
   ) as HTMLSelectElement;
   typeSel.value = existing?.type ?? query.get("type") ?? "fact";
 
@@ -47,6 +45,29 @@ export async function renderEdit(view: HTMLElement, id: string | null): Promise<
   const sourceInput = h("input", { placeholder: "e.g. opencode, claude-code…" }) as HTMLInputElement;
   sourceInput.value = existing?.source ?? "";
 
+  // Retention mode (plan §4.8). Trust (§4.5) is an edit-time classification —
+  // the approve flow lives on the detail page.
+  const retSel = h(
+    "select",
+    {},
+    h("option", { value: "decaying", text: "decaying (default)" }),
+    h("option", { value: "pinned", text: "pinned — never decays, ranked first" }),
+    h("option", { value: "persistent", text: "persistent — kept forever" }),
+    h("option", { value: "ephemeral", text: "ephemeral — fast decay" }),
+    h("option", { value: "neverExpire", text: "never expire — no archive, no delete" }),
+  ) as HTMLSelectElement;
+  retSel.value = existing?.retention ?? "decaying";
+
+  const trustSel = h(
+    "select",
+    {},
+    h("option", { value: "unverified", text: "unverified — never surfaces first" }),
+    h("option", { value: "trusted", text: "trusted" }),
+    h("option", { value: "verified", text: "verified" }),
+    h("option", { value: "system", text: "system" }),
+  ) as HTMLSelectElement;
+  trustSel.value = existing?.trust ?? "trusted";
+
   let saving = false;
   const save = async (): Promise<void> => {
     const text = content.value.trim();
@@ -74,6 +95,8 @@ export async function renderEdit(view: HTMLElement, id: string | null): Promise<
       ...(conf !== undefined && Number.isFinite(conf) && conf >= 0 && conf <= 1
         ? { confidence: conf }
         : {}),
+      ...(retSel.value ? { retention: retSel.value } : {}),
+      ...(existing && trustSel.value !== existing.trust ? { trust: trustSel.value } : {}),
     };
     try {
       const r = existing ? await api.update(existing.id, payload) : await api.store(payload);
@@ -132,6 +155,26 @@ export async function renderEdit(view: HTMLElement, id: string | null): Promise<
         h("span", { class: "hint", text: "Optional; leave as-is to keep." }),
       ),
       h("div", { class: "field" }, h("label", { text: "Source" }), sourceInput),
+    ),
+    h(
+      "div",
+      { class: "field-row" },
+      h(
+        "div",
+        { class: "field" },
+        h("label", { text: "Retention" }),
+        retSel,
+        h("span", { class: "hint", text: "Decay protection — pinned memories never fade." }),
+      ),
+      existing
+        ? h(
+            "div",
+            { class: "field" },
+            h("label", { text: "Trust" }),
+            trustSel,
+            h("span", { class: "hint", text: "Unverified roles/instructions never surface first." }),
+          )
+        : null,
     ),
     h(
       "div",

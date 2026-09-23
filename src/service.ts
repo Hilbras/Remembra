@@ -1,6 +1,6 @@
 import type { MemoryBackend } from "./backend.js";
 import { search } from "./retrieval.js";
-import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION } from "./types.js";
+import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, Provenance, defaultTrust } from "./types.js";
 import { RemembraError, inputError, errorLabel } from "./errors.js";
 import { resolveEmbeddingProvider, embedText, EmbeddingProvider, cosine } from "./embeddings.js";
 import { logEvent } from "./log.js";
@@ -72,12 +72,15 @@ export class MemoryService {
   private readonly archiveAfterDays: number;
   private readonly archiveTtlDays: number;
   private readonly redactOn: boolean;
+  /** Resolved extraction LLM — recorded as provenance.provider on digests (§4.3). */
+  private readonly llmName: LlmProvider;
   private lastDecayRun = 0;
   private decayRunning = false;
 
   constructor(readonly db: MemoryBackend, deps: ServiceDeps = {}) {
     const emb = deps.embeddingProvider ?? resolveEmbeddingProvider();
     const llm = deps.llmProvider ?? resolveLlmProvider();
+    this.llmName = llm;
 
     this.embedFn =
       deps.embedFn ??
@@ -111,10 +114,7 @@ export class MemoryService {
     }
   }
 
-  async store(
-    input: unknown,
-    opts?: { provenance?: Memory["provenance"] },
-  ) {
+  async store(input: unknown) {
     let parsed: StoreInput;
     try {
       parsed = StoreInput.parse(input);
@@ -125,9 +125,10 @@ export class MemoryService {
     // before disk, before export — raw patterns never leave this process.
     if (this.redactOn) parsed = this.applyRedaction(parsed);
     const embedding = await this.maybeEmbed(parsed.content);
-    const memory = await this.db.store(parsed, embedding, {
-      provenance: opts?.provenance ?? "explicit",
-    });
+    // Provenance/trust travel in the input now (plan §4.3): callers that say
+    // nothing store as { sourceType: manual } → trusted; digests pass
+    // conversation provenance below and land unverified (§4.9).
+    const memory = await this.db.store(parsed, embedding);
     metrics.inc("remembra_stores_total");
     return {
       id: memory.id,
@@ -237,19 +238,25 @@ export class MemoryService {
    * A content change recomputes (or clears) the embedding vector.
    */
   async update(id: string, input: unknown): Promise<{ memory: Memory; text: string }> {
-    let patch: Partial<StoreInput>;
+    let patch: UpdateInput;
     try {
       patch = UpdateInput.parse(input);
     } catch (err) {
       throw inputError(err, "INVALID_INPUT");
     }
+    // Concurrency + history guards (plan §3.5/§4.6) — never spread onto Memory.
+    const { expectedVersion, reason, ...fields } = patch;
     const existing = await this.db.get(id);
     if (!existing) throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
-    const next: Memory = { ...existing, ...patch };
-    if (patch.content !== undefined && patch.content !== existing.content) {
-      next.embedding = await this.maybeEmbed(patch.content); // fail-open → keyword fallback
+    const next: Memory = { ...existing, ...fields };
+    if (fields.content !== undefined && fields.content !== existing.content) {
+      next.embedding = await this.maybeEmbed(fields.content); // fail-open → keyword fallback
     }
-    const memory = await this.db.update(next);
+    // A trust change is a (re)validation event (plan §4.2 lastValidated).
+    if (fields.trust !== undefined && fields.trust !== existing.trust) {
+      next.lastValidated = new Date().toISOString();
+    }
+    const memory = await this.db.update(next, { expectedVersion, reason });
     return { memory, text: `Updated ${id}.` };
   }
 
@@ -278,19 +285,27 @@ export class MemoryService {
       scope: m.scope,
       content: m.content.split("\n")[0],
     });
-    const related = (memory.related ?? []).map((rid) => {
-      const target = all.find((m) => m.id === rid);
-      return target ? brief(target) : { id: rid, missing: true as const };
+    // Typed outgoing edges (plan §4.7) + derived backlinks, kind included.
+    const related = (memory.relations ?? []).map((r) => {
+      const target = all.find((m) => m.id === r.id);
+      return { kind: r.kind, ...(target ? brief(target) : { id: r.id, missing: true as const }) };
     });
-    const backlinks = all.filter((m) => m.id !== id && (m.related ?? []).includes(id)).map(brief);
+    const backlinks = all
+      .filter((m) => m.id !== id && m.relations?.some((r) => r.id === id))
+      .map((m) => ({
+        kind: m.relations!.find((r) => r.id === id)!.kind,
+        ...brief(m),
+      }));
 
     const meta =
-      `${memory.type} (scope: ${memory.scope}, importance: ${memory.importance}` +
-      `${memory.confidence !== undefined ? `, confidence: ${memory.confidence}` : ""})`;
+      `${memory.type} (scope: ${memory.scope}, importance: ${memory.importance}, ` +
+      `confidence: ${memory.confidence}, trust: ${memory.trust})`;
+    const relLabel = (r: { id: string; kind?: string }) =>
+      r.kind && r.kind !== "related" ? `${r.id} (${r.kind})` : r.id;
     const text =
       `[${memory.id}] ${meta}\n${memory.content}` +
-      (related.length ? `\n\nRelated: ${related.map((r) => r.id).join(", ")}` : "") +
-      (backlinks.length ? `\nReferenced by: ${backlinks.map((b) => b.id).join(", ")}` : "");
+      (related.length ? `\n\nRelated: ${related.map(relLabel).join(", ")}` : "") +
+      (backlinks.length ? `\nReferenced by: ${backlinks.map(relLabel).join(", ")}` : "");
     return { memory, related, backlinks, text };
   }
 
@@ -320,24 +335,48 @@ export class MemoryService {
         throw new RemembraError("NOT_FOUND", `related target(s) not found: ${missing.join(", ")}`);
       }
     }
-    const current = memory.related ?? [];
-    const added =
-      parsed.action === "add" ? parsed.related.filter((r) => !current.includes(r)) : [];
-    const removed = parsed.action === "remove" ? current.filter((r) => parsed.related.includes(r)) : [];
-    let next =
-      parsed.action === "add" ? [...current, ...added] : current.filter((r) => !parsed.related.includes(r));
-    if (added.length === 0 && removed.length === 0) {
-      next = current; // no-op: don't churn updatedAt for an idempotent call
+    const current = memory.relations ?? [];
+    const currentIds = current.map((r) => r.id);
+    const added: string[] = [];
+    const removed: string[] = [];
+    let relations = current.map((r) => ({ ...r }));
+    if (parsed.action === "add") {
+      for (const rid of parsed.related) {
+        const edge = relations.find((r) => r.id === rid);
+        if (!edge) {
+          relations.push({ id: rid, kind: parsed.kind });
+          added.push(rid);
+        } else if (edge.kind !== parsed.kind) {
+          edge.kind = parsed.kind; // retype an existing edge
+          added.push(rid);
+        }
+        // same id + same kind → idempotent no-op
+      }
     } else {
-      await this.db.update({ ...memory, related: next });
+      relations = relations.filter((r) => {
+        if (parsed.related.includes(r.id)) {
+          removed.push(r.id);
+          return false;
+        }
+        return true;
+      });
+    }
+    if (added.length > 0 || removed.length > 0) {
+      await this.db.update({
+        ...memory,
+        relations: relations.length > 0 ? relations : undefined,
+      });
       metrics.inc("remembra_relate_total", { action: parsed.action });
     }
+    const next = relations.map((r) => r.id);
     const verb = parsed.action === "add" ? "Linked" : "Unlinked";
     const changed = parsed.action === "add" ? added : removed;
     const text =
       changed.length > 0
-        ? `${verb} ${parsed.id} ${parsed.action === "add" ? "→" : "⇁"} ${changed.join(", ")}`
-        : `No change: ${parsed.id} links unchanged (${next.length} total)`;
+        ? `${verb} ${parsed.id} ${parsed.action === "add" ? "→" : "⇁"} ${changed.join(", ")}${
+            parsed.action === "add" ? ` [${parsed.kind}]` : ""
+          }`
+        : `No change: ${parsed.id} links unchanged (${currentIds.length} total)`;
     return { id: parsed.id, related: next, added, removed, text };
   }
 
@@ -353,6 +392,8 @@ export class MemoryService {
       file?: string;
       at?: string;
       snapshotAt?: string;
+      reason?: string;
+      supersededAt?: string;
       content: string;
       diff: string;
     }[];
@@ -369,11 +410,24 @@ export class MemoryService {
     const entries = (await this.db.history?.(parsed.id)) ?? [];
     const kept = entries.slice(0, parsed.limit ?? entries.length);
 
-    type VersionBase = { current?: true; file?: string; at?: string; snapshotAt?: string };
+    type VersionBase = {
+      current?: true;
+      file?: string;
+      at?: string;
+      snapshotAt?: string;
+      reason?: string;
+      supersededAt?: string;
+    };
     const chain: { base: VersionBase; content: string }[] = [
       { base: { current: true, at: memory.updatedAt }, content: memory.content },
       ...kept.map((e) => ({
-        base: { file: e.file, at: e.at, snapshotAt: e.snapshotAt },
+        base: {
+          file: e.file,
+          at: e.at,
+          snapshotAt: e.snapshotAt,
+          reason: e.reason,
+          supersededAt: e.supersededAt,
+        },
         content: e.content,
       })),
     ];
@@ -389,7 +443,9 @@ export class MemoryService {
     for (const v of versions) {
       const label = v.current
         ? "current"
-        : `superseded ${v.snapshotAt?.slice(0, 19) ?? "?"} (was current: ${v.at?.slice(0, 19) ?? "?"})`;
+        : `superseded ${v.snapshotAt?.slice(0, 19) ?? "?"} (was current: ${
+            v.at?.slice(0, 19) ?? "?"
+          }${v.reason ? `; reason: ${v.reason}` : ""})`;
       lines.push("", `# ${label} — ${v.content.split("\n")[0]}`);
       if (v.diff) lines.push(v.diff.trimEnd());
     }
@@ -601,15 +657,18 @@ export class MemoryService {
           continue;
         }
         if (decision.action === "merge") {
-          const now = new Date().toISOString().slice(0, 10);
-          const old = candidate.content.split("\n")[0];
           const cleanMerged = this.redactPair(decision.content, []) ?? {
             content: decision.content,
             tags: [] as string[],
           };
-          const content = `${cleanMerged.content}\n\n> superseded (${now}): ${old}`;
+          // Plan §4.6: superseded text is NEVER inlined into current content —
+          // the pre-image snapshot in history() carries it, with this reason.
+          const content = cleanMerged.content;
           const embedding = await this.maybeEmbed(cleanMerged.content, opts.signal);
-          await this.db.update({ ...candidate, content, embedding, source: opts.source ?? candidate.source });
+          await this.db.update(
+            { ...candidate, content, embedding, source: opts.source ?? candidate.source },
+            { reason: "digest merge (superseded by a newer extraction)" },
+          );
           merged++;
           // Re-index dedup set against the new content.
           seen.delete(dedupKey(candidate.type, candidate.content, candidate.scope));
@@ -620,18 +679,18 @@ export class MemoryService {
       }
 
       seen.add(key);
-      const { memory } = await this.store(
-        {
-          type: item.type,
-          content: item.content,
-          scope,
-          tags: item.tags,
-          importance: item.importance,
-          source: opts.source,
-          confidence: item.confidence,
-        },
-        { provenance: "auto" },
-      );
+      const { memory } = await this.store({
+        type: item.type,
+        content: item.content,
+        scope,
+        tags: item.tags,
+        importance: item.importance,
+        source: opts.source,
+        confidence: item.confidence,
+        // Plan §4.3/§4.9: extraction provenance = conversation → stored
+        // trust: unverified (never LLM-classified higher — Rule 2).
+        provenance: { sourceType: "conversation", provider: this.llmName },
+      });
       stored.push(memory);
       active.push(memory); // so later items in this batch dedup against it
     }
@@ -697,15 +756,32 @@ export class MemoryService {
     const keys = new Set(existing.map((m) => dedupKey(m.type, m.content, m.scope)));
     let imported = 0;
     let skipped = 0;
-    for (const m of snap.memories) {
-      const key = dedupKey(m.type, m.content, m.scope);
-      if (ids.has(m.id) || keys.has(key)) {
+    for (const raw of snap.memories) {
+      const key = dedupKey(raw.type, raw.content, raw.scope);
+      if (ids.has(raw.id) || keys.has(key)) {
         skipped++;
         continue;
       }
+      // Normalize pre-4.1 snapshot shapes (plan §4.3/§4.7): legacy string
+      // provenance, untyped `related`, missing trust/version.
+      const { related: legacyRelated, provenance: prov, ...rest } = raw;
+      const provenance: Provenance =
+        typeof prov === "string"
+          ? { sourceType: prov === "auto" ? "conversation" : "manual" }
+          : (prov ?? { sourceType: "manual" });
+      const m: Memory = {
+        ...rest,
+        provenance,
+        confidence: rest.confidence ?? (provenance.sourceType === "conversation" ? 0.7 : 1),
+        trust: rest.trust ?? defaultTrust(provenance),
+        version: rest.version ?? 1,
+        relations:
+          rest.relations ??
+          legacyRelated?.map((rid) => ({ id: rid, kind: "related" as const })),
+      };
       if (await this.db.importMemory(m)) {
         imported++;
-        ids.add(m.id);
+        ids.add(raw.id);
         keys.add(key);
       } else {
         skipped++;
@@ -723,7 +799,12 @@ export class MemoryService {
 
     const active = await this.db.all();
     for (const m of active) {
-      if (m.type === "role") continue; // standing instructions never decay
+      // Standing instructions never decay (role + instruction, plan §4.9).
+      if (m.type === "role" || m.type === "instruction") continue;
+      // Protected memories (plan §4.8): pinned / neverExpire are fully exempt.
+      // persistent still archives but is never auto-deleted below. `ephemeral`
+      // accelerates nothing yet — its clock lands with §8/4.5.0.
+      if (m.retention === "pinned" || m.retention === "neverExpire") continue;
       const lastActive = Date.parse(m.lastSeen ?? m.updatedAt);
       if (Number.isFinite(lastActive) && lastActive < archiveCutoff) {
         await this.db.archive(m.id);
@@ -733,6 +814,15 @@ export class MemoryService {
 
     const archived = (await this.db.all(true)).filter((m) => m.archivedAt);
     for (const m of archived) {
+      // §4.8: critical memories must not disappear — persistent is
+      // archived-but-kept; pinned / neverExpire are never touched.
+      if (
+        m.retention === "persistent" ||
+        m.retention === "pinned" ||
+        m.retention === "neverExpire"
+      ) {
+        continue;
+      }
       const archivedAt = Date.parse(m.archivedAt!);
       if (Number.isFinite(archivedAt) && archivedAt < ttlCutoff) {
         await this.db.forget(m.id);

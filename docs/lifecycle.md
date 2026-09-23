@@ -24,7 +24,12 @@ active ──(unused 90d)──► archived ──(365d past archive)──► d
 - **Search hits refresh the clock** — a memory that surfaces in results gets its
   `lastSeen` bumped (throttled to once/hour), pushing its archive date out.
   Used memories stay alive; forgotten ones fade.
-- **Roles never decay** — standing instructions are excluded from archiving.
+- **Standing guidance never decays** — `role`/`instruction` memories are
+  excluded from archiving.
+- **Retention modes override the clocks** (4.1.0, plan §4.8) — `pinned` and
+  `neverExpire` are fully exempt (never archived or deleted), `persistent` is
+  archivable but never auto-deleted; see
+  [memory-model.md](memory-model.md#retention-410-plan-48).
 - **Only archived memories are ever auto-deleted** — an active memory must
   survive the full 90 + 365 days of neglect first.
 - **Revival is automatic** — digesting an exact duplicate of an archived memory
@@ -62,13 +67,10 @@ When a digest extracts something that *evolved* from a stored memory
 | `skip` | same fact, paraphrased — counted as duplicate, nothing written |
 | `merge` | newer version of the same fact — stored memory **updated in place** |
 
-Merged files preserve the old value:
-
-```markdown
-API rate limit is 500 rpm
-
-> superseded (2026-09-23): API rate limit is 100 rpm
-```
+Since 4.1.0 (plan §4.6) merges **don't inline** the old value into the new
+text — the superseded pre-image stays recoverable from version history with
+`reason: "digest merge (superseded by a newer extraction)"` recorded beside
+it, instead of polluting the current content with a `> superseded` note.
 
 Candidate detection is cheap (keyword overlap or cosine similarity ≥ 0.4,
 same type + scope) — the LLM is only called when two memories are plausibly
@@ -78,7 +80,8 @@ about the same thing. If the merge LLM fails, the item is **stored fresh**
 Since 3.8.0 a merge also snapshots the **pre-merge file** into
 `.history/<id>/` first — every past version stays recoverable with
 `memory_history` / `GET /memories/:id/history`, which renders a unified line
-diff of old → new for each version (pruned to `REMEMBRA_HISTORY_LIMIT`,
+diff of old → new for each version plus the `reason`/`supersededAt` recorded
+in `.history/<id>/reasons.json` (pruned to `REMEMBRA_HISTORY_LIMIT`,
 default 20).
 
 ## Configuration
@@ -98,4 +101,5 @@ default 20).
 │   ├── global/<id>.md         # archived (excluded from search)
 │   └── scopes/<scope>/<id>.md
 └── .history/<id>/<epoch>-<seq>.md   # superseded pre-images (3.8.0)
+    └── reasons.json                 # {reason, supersededAt} per snapshot (4.1.0)
 ```

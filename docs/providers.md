@@ -52,10 +52,15 @@ memory_digest {
 }
 ```
 
-Remembra asks the configured LLM to extract **facts, decisions, roles, and
-history**, then stores each one — **skipping exact duplicates** that are
-already present (normalized by type + scope + content). Running a digest twice
-over the same conversation is a no-op.
+Remembra asks the configured LLM to extract memories of all **11 types**, then
+stores each one — **skipping exact duplicates** that are already present
+(normalized by type + scope + content). Running a digest twice over the same
+conversation is a no-op.
+
+Every extraction is stored with `provenance: { sourceType: "conversation",
+provider: <llm> }` and `trust: unverified` (4.1.0, plan §4.3/§4.9) —
+extracted roles/instructions never steer anything until someone approves
+them; see [memory-model.md](memory-model.md#trust-410-plan-45).
 
 HTTP equivalent:
 
@@ -88,7 +93,8 @@ With `REMEMBRA_EMBEDDINGS=openai|ollama`:
   frontmatter (`embedding: [...]`) — computed once, never re-embedded.
 - **On search**: the query is embedded and **cosine similarity becomes the
   primary ranking signal**. Importance and recency remain small modifiers.
-- **Gates stay absolute**: in-scope `role` memories always surface, and
+- **Gates stay absolute**: in-scope `role`/`instruction` memories with
+  `trust ≥ trusted` always surface, and
   memories from other scopes are never returned, no matter how similar.
 - **Memories without vectors** (stored while embeddings were off) fall back
   to keyword matching.

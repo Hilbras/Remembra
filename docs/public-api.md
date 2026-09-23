@@ -13,8 +13,10 @@ here, it's internal and may change in any release.
 | Removing/renaming a tool, route, field, or env var; changing a type/range/meaning; storage format breaks | major (`x.0.0`) |
 
 Package versions match roadmap milestones for `.0` releases (4.0.0 = v4 …).
-Current schema version: `SCHEMA_VERSION = 1` (see [storage.md](storage.md));
-files with a **higher** version are refused on read, never served partially.
+Current schema version: `SCHEMA_VERSION = 2` (see [storage.md](storage.md));
+files with a **higher** version are refused on read, never served partially —
+older readers skip newer files (logged, never deleted) instead of serving
+them half-understood.
 
 ## MCP tools (12)
 
@@ -23,13 +25,13 @@ tables: [tools.md](tools.md).
 
 | Tool | Purpose |
 |------|---------|
-| `memory_store` | persist a fact / decision / role / history |
-| `memory_update` | patch fields (scope change = file move; content change = history snapshot) |
+| `memory_store` | persist a memory (11 semantic types) |
+| `memory_update` | patch fields incl. `trust`/`retention`; `expectedVersion` → `CONFLICT`; scope change = file move; content change = history snapshot with `reason` |
 | `memory_archive` / `memory_revive` | manual lifecycle |
-| `memory_search` | layered retrieval (roles/scope hard gates → importance → provenance → recency → keywords) |
+| `memory_search` | layered retrieval (standing-instruction + scope gates → provenance → trust → pinned → importance → recency → match) |
 | `memory_list` | browse with filters |
-| `memory_get` | one memory + related + backlinks |
-| `memory_relate` | link / unlink |
+| `memory_get` | one memory + typed relations + backlinks |
+| `memory_relate` | add / remove / retype typed edges |
 | `memory_history` | version history with line diffs |
 | `memory_digest` | LLM extraction from a transcript |
 | `memory_maintain` | decay sweep + vector backfill |
@@ -73,7 +75,7 @@ static dashboard shell (`/`, `/ui/*`) are exempt. Errors are JSON with an
 | `SNAPSHOT_INVALID` | 400 | import file failed validation (nothing written) |
 | `SCOPE_ESCAPES_ROOT` | 400 | scope resolves outside the storage root |
 | `NOT_FOUND` | 404 | unknown id / route |
-| `CONFLICT` | 409 | id collision / state conflict |
+| `CONFLICT` | 409 | stale `expectedVersion` on update (CAS, plan §3.5) / state conflict |
 | `LOCK_TIMEOUT` | 423 | storage lock not acquired in time |
 | `IO_ERROR` | 500 | filesystem failure |
 | `LLM_ERROR` | 502 | provider failure after bounded retries / malformed provider response / cancelled |
@@ -92,15 +94,20 @@ Envelope written by `remembra export` and `GET /snapshot`:
 ```json
 {
   "format": "remembra-export",
-  "version": 1,
+  "version": 2,
   "exportedAt": "2026-09-23T00:00:00.000Z",
-  "memories": [ { "id": "12hex…", "type": "fact", "content": "…", "scope": "global",
+  "memories": [ { "id": "01a0cdfe-930f-7b25-962f-b2f64bf48a90", "type": "fact", "content": "…", "scope": "global",
                   "tags": [], "importance": 3, "createdAt": "…", "updatedAt": "…",
-                  "confidence": 1, "provenance": "explicit", "related": ["…"] } ]
+                  "confidence": 1, "trust": "trusted", "version": 1,
+                  "provenance": { "sourceType": "manual" },
+                  "relations": [ { "id": "…", "kind": "supports" } ] } ]
 }
 ```
 
-- ids must match `^[a-f0-9]{8,32}$`; ≤ 100 000 memories per file.
+- ids must match [storage.md](storage.md)'s id pattern (legacy 8–32 hex or
+  UUIDv7); ≤ 100 000 memories per file.
+- Pre-4.1.0 snapshots (string `provenance`, untyped `related: […]`, no
+  `trust`) import cleanly — those shapes are normalized on read/import.
 - Import validates the **whole file before writing** (atomic), preserves ids,
   and is idempotent — re-importing skips existing ids (`{imported, skipped}`).
 

@@ -161,7 +161,7 @@ function svcWithExtractMerge(
   );
 }
 
-test("digest merges evolved fact and preserves superseded note", async () => {
+test("digest merges evolved fact; pre-image + reason live in history (plan §4.6)", async () => {
   const merge = async (): Promise<{ action: string; content?: string }> => ({
     action: "merge",
     content: "API rate limit is 500 rpm",
@@ -181,7 +181,15 @@ test("digest merges evolved fact and preserves superseded note", async () => {
   const all = await svc.db.all();
   const merged = all.find((m) => m.content.includes("500"));
   assert.ok(merged);
-  assert.match(merged.content, /superseded \(\d{4}-\d{2}-\d{2}\): API rate limit is 100 rpm/);
+  assert.ok(!merged.content.includes("superseded"), "no inline superseded note — §4.6 keeps content clean");
+  const hist = (await svc.db.history?.(merged.id)) ?? [];
+  assert.equal(hist.length, 1, "pre-image snapshotted");
+  assert.ok(hist[0].content.includes("API rate limit is 100 rpm"), "snapshot holds the old truth");
+  assert.equal(
+    hist[0].reason,
+    "digest merge (superseded by a newer extraction)",
+    "reason recorded beside the snapshot",
+  );
 });
 
 test("digest skip decision counts as duplicate", async () => {

@@ -14,18 +14,39 @@ export class ApiError extends Error {
 
 const KEY_STORAGE = "remembra.key";
 
+/** Provenance object (plan §4.3) — legacy pre-4.1.0 strings arrive normalized. */
+export interface ProvenanceRec {
+  sourceType: string;
+  sessionId?: string;
+  messageId?: string;
+  agentId?: string;
+  provider?: string;
+}
+
+/** Typed outgoing edge (plan §4.7). */
+export interface RelationRec {
+  id: string;
+  kind: string;
+}
+
 export interface MemoryRec {
   id: string;
-  type: "fact" | "decision" | "role" | "history";
+  /** One of the 11 semantic types (see MEMORY_TYPES in dom.ts). */
+  type: string;
   content: string;
   scope: string;
   tags: string[];
   importance: number;
   source?: string;
   confidence?: number;
-  provenance?: string;
+  trust?: string;
+  retention?: string;
+  /** Optimistic-concurrency counter (plan §3.5), exposed as `version`. */
+  version?: number;
+  lastValidated?: string;
+  provenance?: ProvenanceRec;
   embedding?: number[];
-  related?: string[];
+  relations?: RelationRec[];
   createdAt: string;
   updatedAt: string;
   archivedAt?: string;
@@ -46,6 +67,8 @@ export interface SearchResult {
 
 /** First-line brief of a linked memory (service.get). */
 export interface Brief {
+  /** Relation kind of this edge (plan §4.7); absent on older servers. */
+  kind?: string;
   id: string;
   type?: string;
   scope?: string;
@@ -63,6 +86,9 @@ export interface HistoryVersion {
   file?: string;
   at?: string;
   snapshotAt?: string;
+  /** Why this version was superseded (plan §4.6). */
+  reason?: string;
+  supersededAt?: string;
   content: string;
   diff: string;
 }

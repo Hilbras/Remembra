@@ -1,17 +1,35 @@
-import { Memory, SearchQuery } from "./types.js";
+import { Memory, SearchQuery, TrustLevel } from "./types.js";
 import { cosine } from "./embeddings.js";
 
+/** Additive trust weights (plan §4.5 / 4.1.0-Q3). `unverified` sinks but stays findable. */
+export const TRUST_POINTS: Record<TrustLevel, number> = {
+  system: 8,
+  verified: 6,
+  trusted: 2,
+  unverified: -8,
+};
+
+/** Role/instruction allowed to steer responses — trust ≥ trusted (plan §4.9). */
+function isStandingInstruction(m: Memory): boolean {
+  return (m.type === "role" || m.type === "instruction") && m.trust !== "unverified";
+}
+
 /**
- * Layered retrieval (decisions Q4 + v2-Q3, Phase 4 quality pass):
+ * Layered retrieval (decisions Q4 + v2-Q3, Phase 4 quality pass, plan §4.5):
  *
  * Hard gates (never bypassed by scores):
- *   - roles always pass (+1000) — within their scope; foreign-scope roles
- *     are gated like every other memory (isolation beats instructions)
- *   - other scopes' memories are excluded entirely
+ *   - standing instructions (role + instruction) at trust ≥ trusted always
+ *     pass (+1000); unverified ones (digest-extracted, not yet approved —
+ *     plan §4.9) rank like ordinary memories instead
+ *   - foreign-scope memories are excluded entirely (isolation beats
+ *     instructions)
  *
  * Ranking (additive terms are identical in keyword and semantic mode so a
  * memory ranks consistently whether embeddings are on or off — audit #2):
- *   - provenance: deliberate `explicit` stores +10 over auto-extracted (#4)
+ *   - provenance: manual stores +10 over everything else (#4)
+ *   - trust: additive layer — system +8, verified +6, trusted +2, unverified
+ *     −8 (4.1.0-Q3; retunable in 4.2.0's retrieval engine)
+ *   - retention: pinned +50 (plan §4.8 — pins surface near the top)
  *   - importance: importance × 4 (both modes)
  *   - recency: exponential decay, ~30-day half-life, no cliff (#1)
  *   - keywords (keyword mode) / cosine similarity (semantic mode)
@@ -47,14 +65,20 @@ export function score(
   let s = 0;
 
   // --- hard gates ---
-  if (m.type === "role") s += 1000;
+  if (isStandingInstruction(m)) s += 1000; // §4.9: unverified instructions never gate
   if (scope && m.scope !== scope && m.scope !== "global") return 0; // no cross-project leaks
 
   if (m.scope === "global") s += 100;
   if (scope && m.scope === scope) s += 150;
 
   // --- provenance (Phase 4 / audit #4): deliberate stores beat auto-extracts ---
-  if (m.provenance === "explicit") s += 10;
+  if (m.provenance?.sourceType === "manual") s += 10;
+
+  // --- trust layer (plan §4.5 / 4.1.0-Q3): additive, retunable in 4.2.0 ---
+  s += TRUST_POINTS[m.trust];
+
+  // --- retention (plan §4.8): pinned surfaces near the top regardless of age ---
+  if (m.retention === "pinned") s += 50;
 
   // --- semantic mode (embeddings on) ---
   if (queryVec && queryVec.length > 0) {
@@ -63,7 +87,7 @@ export function score(
       const sim = Math.max(0, cosine(queryVec, m.embedding));
       s += sim * 100;
       // Similarity gate: near-zero matches only survive on role/scope strength.
-      if (sim < 0.05 && m.type !== "role" && m.scope !== "global" && scope !== m.scope) return 0;
+      if (sim < 0.05 && !isStandingInstruction(m) && m.scope !== "global" && scope !== m.scope) return 0;
     } else {
       // Memory without a vector: fall back to keyword scoring for it.
       s += keywordScore(m, terms);

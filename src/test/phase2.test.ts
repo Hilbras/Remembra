@@ -24,7 +24,8 @@ test("new files carry schema version in frontmatter", async () => {
   const m = await store.store(storeInput("versioned fact"));
   const file = path.join(store["root"], "global", `${m.id}.md`);
   const raw = await fs.readFile(file, "utf8");
-  assert.match(raw, /^version: 1$/m);
+  assert.match(raw, /^version: 2$/m, "4.1.0 schema — 4.0.x readers skip these (Q5 downgrade contract)");
+  assert.match(raw, /^revision: 1$/m, "the memory's own concurrency counter (plan §3.5)");
 });
 
 test("old files without a version field still parse (backward compat)", async () => {

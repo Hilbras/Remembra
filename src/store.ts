@@ -1,8 +1,21 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { randomUUID } from "node:crypto";
-import { Memory, StoreInput, SCHEMA_VERSION } from "./types.js";
+import { randomBytes } from "node:crypto";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import {
+  Memory,
+  StoreInput,
+  SCHEMA_VERSION,
+  MemoryType,
+  Provenance,
+  ProvenanceSchema,
+  Relation,
+  RelationKind,
+  RetentionMode,
+  TrustLevel,
+  defaultTrust,
+} from "./types.js";
 import type { MemoryBackend, HistoryEntry } from "./backend.js";
 import { RemembraError } from "./errors.js";
 import { logEvent } from "./log.js";
@@ -16,7 +29,7 @@ export interface StoreLockOptions {
   lockStaleMs?: number;
   /** LRU parse-cache capacity in entries. Env: REMEMBRA_CACHE_SIZE. Default 10000; 0 disables. */
   cacheSize?: number;
-  /** Test hook: memory-id factory (default: 12 hex chars from randomUUID). */
+  /** Test hook: memory-id factory (default: UUIDv7 — plan §3.6). */
   idGen?: () => string;
 }
 
@@ -80,13 +93,9 @@ export class MemoryStore implements MemoryBackend {
   // (the queue/lock are not reentrant); reads (get/all) never lock.
   // -------------------------------------------------------------------------
 
-  async store(
-    input: StoreInput,
-    embedding?: number[],
-    opts?: { provenance?: Memory["provenance"] },
-  ): Promise<Memory> {
+  async store(input: StoreInput, embedding?: number[]): Promise<Memory> {
     await this.ensureRecovered();
-    return this.withLock(() => this.storeLocked(input, embedding, opts));
+    return this.withLock(() => this.storeLocked(input, embedding));
   }
 
   async forget(id: string): Promise<boolean> {
@@ -162,11 +171,13 @@ export class MemoryStore implements MemoryBackend {
   }
 
   /** Persist changes to an existing memory (merge/update path). */
-  async update(memory: Memory): Promise<Memory> {
+  async update(
+    memory: Memory,
+    opts?: { expectedVersion?: number; reason?: string },
+  ): Promise<Memory> {
     await this.ensureRecovered();
     return this.withLock(async () => {
-      const updated: Memory = { ...memory, updatedAt: new Date().toISOString() };
-      const target = this.fileFor(updated);
+      const target = this.fileFor(memory);
       // Locate the current file. Same path (scope unchanged — the common
       // case: merge, embedding backfill) = one stat; a scope move via
       // memory_update lives elsewhere → findFile (manual edits, rare).
@@ -174,14 +185,31 @@ export class MemoryStore implements MemoryBackend {
         .stat(target)
         .then(() => true, () => false);
       const existingFile = samePath ? target : await this.findFile(memory.id);
-      // History (audit Phase 8): content-changing updates snapshot the
-      // on-disk pre-image first. Embedding backfills and `memory_relate`
-      // change no content → no snapshot.
-      if (existingFile) {
-        const current = await this.parseCached(existingFile);
-        if (current && current.content !== memory.content) {
-          await this.snapshotHistory(existingFile);
+      const current = existingFile ? await this.parseCached(existingFile) : null;
+
+      // Optimistic concurrency (plan §3.5): compare against the FRESH
+      // on-disk version inside the lock, then write disk+1 — a stale writer
+      // loses with CONFLICT instead of silently clobbering.
+      if (opts?.expectedVersion !== undefined) {
+        const disk = current?.version;
+        if (disk !== opts.expectedVersion) {
+          throw new RemembraError(
+            "CONFLICT",
+            `version mismatch for ${memory.id}: expected ${opts.expectedVersion}, stored ${disk ?? "none"}`,
+          );
         }
+      }
+      const updated: Memory = {
+        ...memory,
+        version: (current?.version ?? memory.version ?? 1) + 1,
+        updatedAt: new Date().toISOString(),
+      };
+      // History (audit Phase 8 / plan §4.6): content-changing updates snapshot
+      // the on-disk pre-image first (embedding backfills and `memory_relate`
+      // change no content → no snapshot). The optional reason lands beside the
+      // snapshot in reasons.json — never inline in current content.
+      if (current && current.content !== memory.content) {
+        await this.snapshotHistory(existingFile!, opts?.reason);
       }
       await fs.mkdir(path.dirname(target), { recursive: true });
       await this.writeCached(target, render(updated), updated);
@@ -210,15 +238,18 @@ export class MemoryStore implements MemoryBackend {
       return []; // no history yet
     }
     const out: HistoryEntry[] = [];
+    const reasons = await readReasons(path.join(dir, "reasons.json"));
     for (const name of names) {
       const file = path.join(dir, name);
       const m = await parse(file); // decrypts transparently; throws ENCRYPTED_NO_KEY loudly
       if (!m) continue;
       const epoch = Number(name.split("-")[0]);
+      const why = reasons[name];
       out.push({
         file: name,
         at: m.updatedAt,
         ...(Number.isFinite(epoch) && epoch > 0 ? { snapshotAt: new Date(epoch).toISOString() } : {}),
+        ...(why?.reason ? { reason: why.reason, supersededAt: why.supersededAt } : {}),
         content: m.content,
       });
     }
@@ -240,12 +271,9 @@ export class MemoryStore implements MemoryBackend {
     }
     return this.withLock(async () => {
       const files = [
-        ...(await walk(
-          path.join(this.root, "global"),
-          path.join(this.root, "scopes"),
-          path.join(this.root, "archived"),
-        )),
-        ...(await walk(path.join(this.root, ".history"))),
+        ...(await walk(path.join(this.root, "global"), path.join(this.root, "scopes"), path.join(this.root, "archived"))),
+        // History snapshots + their supersession reasons (§4.6 sidecar).
+        ...await walkGeneric([path.join(this.root, ".history")], (n) => n.endsWith(".md") || n === "reasons.json"),
       ];
       let converted = 0;
       let skipped = 0;
@@ -266,7 +294,7 @@ export class MemoryStore implements MemoryBackend {
   }
 
   /** Copy the current file into `.history/<id>/` and prune beyond the cap. */
-  private async snapshotHistory(file: string): Promise<void> {
+  private async snapshotHistory(file: string, reason?: string): Promise<void> {
     const limit = Number(process.env.REMEMBRA_HISTORY_LIMIT ?? 20);
     if (limit <= 0) return; // history disabled
     const id = path.basename(file, ".md");
@@ -283,6 +311,20 @@ export class MemoryStore implements MemoryBackend {
     const target = path.join(dir, `${Date.now()}-${String(maxSeq + 1).padStart(4, "0")}.md`);
     await writeFileAtomic(target, await fs.readFile(file), fs);
     metrics.inc("remembra_history_snapshots_total");
+    // Supersession reason (plan §4.6 `history[].reason`): recorded beside the
+    // snapshot in reasons.json (encrypted with the rest of the store) — the
+    // snapshot itself stays a byte-for-byte pre-image.
+    if (reason) {
+      const reasonsFile = path.join(dir, "reasons.json");
+      const reasons = await readReasons(reasonsFile);
+      reasons[path.basename(target)] = { reason, supersededAt: new Date().toISOString() };
+      const json = JSON.stringify(reasons);
+      await writeFileAtomic(
+        reasonsFile,
+        encryptionEnabled() ? encryptBuffer(Buffer.from(json, "utf8")) : json,
+        fs,
+      );
+    }
     const sorted = existing.concat(path.basename(target)).sort();
     const excess = sorted.length - limit;
     if (excess > 0) {
@@ -362,18 +404,21 @@ export class MemoryStore implements MemoryBackend {
     return memory;
   }
 
-  private async storeLocked(
-    input: StoreInput,
-    embedding?: number[],
-    opts?: { provenance?: Memory["provenance"] },
-  ): Promise<Memory> {
+  private async storeLocked(input: StoreInput, embedding?: number[]): Promise<Memory> {
     const now = new Date().toISOString();
-    // 12 hex chars (2^48): collision-safe; existence check guards the rest (P2 audit #9).
-    let id = this.idGen();
-    for (let i = 0; i < 10 && (await this.findFile(id)); i++) id = this.idGen();
-    if (await this.findFile(id)) {
-      throw new RemembraError("CONFLICT", `could not allocate a unique memory id after retries`);
-    }
+    // UUIDv7 (plan §3.6): unique from entropy + time alone — the old
+    // 12-hex existence-scan retry loop is gone by design.
+    const id = this.idGen();
+    // Provenance (plan §4.3): every memory records where it came from;
+    // trust (§4.5/§4.9) defaults from it — conversation extraction is never
+    // trusted by itself, system writes are system, everything else trusted.
+    const provenance: Provenance = {
+      sourceType: input.provenance?.sourceType ?? "manual",
+      ...(input.provenance?.sessionId ? { sessionId: input.provenance.sessionId } : {}),
+      ...(input.provenance?.messageId ? { messageId: input.provenance.messageId } : {}),
+      ...(input.provenance?.agentId ? { agentId: input.provenance.agentId } : {}),
+      ...(input.provenance?.provider ? { provider: input.provenance.provider } : {}),
+    };
     const memory: Memory = {
       id,
       type: input.type,
@@ -383,9 +428,12 @@ export class MemoryStore implements MemoryBackend {
       importance: input.importance,
       createdAt: now,
       updatedAt: now,
+      version: 1,
       source: input.source,
-      provenance: opts?.provenance ?? "explicit",
-      confidence: input.confidence ?? (opts?.provenance === "auto" ? 0.7 : 1),
+      confidence: input.confidence ?? (provenance.sourceType === "conversation" ? 0.7 : 1),
+      trust: input.trust ?? defaultTrust(provenance),
+      provenance,
+      retention: input.retention,
       embedding,
     };
     const file = this.fileFor(memory);
@@ -587,8 +635,22 @@ export class MemoryStore implements MemoryBackend {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * UUIDv7 (plan §3.6): 48-bit millisecond timestamp + version/variant bits +
+ * randomness — lexicographically sortable by creation time and unique from
+ * entropy alone, so id allocation needs no filesystem collision scan.
+ */
 function genId(): string {
-  return randomUUID().replace(/-/g, "").slice(0, 12);
+  const b = randomBytes(16);
+  let ms = BigInt(Date.now());
+  for (let i = 5; i >= 0; i--) {
+    b[i] = Number(ms & 0xffn);
+    ms >>= 8n;
+  }
+  b[6] = (b[6] & 0x0f) | 0x70; // version 7
+  b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const h = b.toString("hex");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
 
 /**
@@ -698,29 +760,32 @@ async function walk(...dirs: string[]): Promise<string[]> {
 }
 
 function render(m: Memory): string {
-  const lines = [
-    "---",
-    `id: ${m.id}`,
-    `version: ${SCHEMA_VERSION}`,
-    `type: ${m.type}`,
-    `scope: ${m.scope}`,
-    `tags: [${m.tags.join(", ")}]`,
-    `importance: ${m.importance}`,
-    `created: ${m.createdAt}`,
-    `updated: ${m.updatedAt}`,
-    m.lastSeen ? `lastSeen: ${m.lastSeen}` : undefined,
-    m.archivedAt ? `archivedAt: ${m.archivedAt}` : undefined,
-    m.source ? `source: ${m.source}` : undefined,
-    m.provenance ? `provenance: ${m.provenance}` : undefined,
-    m.confidence !== undefined ? `confidence: ${m.confidence}` : undefined,
-    m.related && m.related.length > 0 ? `related: [${m.related.join(", ")}]` : undefined,
-    m.embedding && m.embedding.length > 0 ? `embedding: [${m.embedding.join(",")}]` : undefined,
-    "---",
-    "",
-    m.content,
-    "",
-  ];
-  return lines.filter((l) => l !== undefined).join("\n");
+  // Spec-parsed YAML frontmatter (plan §3.4): the serializer quotes/escapes
+  // values, so scopes/tags/sources with YAML-ambiguous characters round-trip.
+  // `version` = schema version (§3.4 guard), `revision` = the memory's own
+  // optimistic-concurrency counter (§3.5), exposed as `version` in JSON.
+  const meta: Record<string, unknown> = {
+    id: m.id,
+    version: SCHEMA_VERSION,
+    revision: m.version,
+    type: m.type,
+    scope: m.scope,
+    tags: m.tags,
+    importance: m.importance,
+    confidence: m.confidence,
+    trust: m.trust,
+    created: m.createdAt,
+    updated: m.updatedAt,
+  };
+  if (m.lastSeen) meta.lastSeen = m.lastSeen;
+  if (m.lastValidated) meta.lastValidated = m.lastValidated;
+  if (m.archivedAt) meta.archivedAt = m.archivedAt;
+  if (m.source) meta.source = m.source;
+  meta.provenance = m.provenance; // required since 4.1.0 (plan §4.3)
+  if (m.retention) meta.retention = m.retention;
+  if (m.relations && m.relations.length > 0) meta.relations = m.relations;
+  if (m.embedding && m.embedding.length > 0) meta.embedding = m.embedding.join(",");
+  return `---\n${stringifyYaml(meta).trimEnd()}\n---\n\n${m.content}\n`;
 }
 
 /** Files we've already warned about (avoid log spam on every search). */
@@ -788,43 +853,77 @@ async function parse(file: string): Promise<Memory | null> {
     const raw = decryptBuffer(buf).toString("utf8");
     const match = raw.match(/^---\n([\s\S]*?)\n---\n\n?([\s\S]*)$/);
     if (!match) return skip("missing/invalid frontmatter");
-    const meta: Record<string, string> = {};
-    for (const line of match[1].split("\n")) {
-      const idx = line.indexOf(":");
-      if (idx === -1) continue;
-      meta[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+    // Spec-parsed YAML (plan §3.4). The legacy line reader below is the v1
+    // fallback, only for frontmatters YAML refuses (unquoted `a: b` values
+    // written before the serializer quoted them) — fields still validate.
+    let meta: Record<string, unknown>;
+    try {
+      const doc = parseYaml(match[1]);
+      if (doc !== null && typeof doc === "object" && !Array.isArray(doc)) {
+        meta = doc as Record<string, unknown>;
+      } else if (match[1].trim() === "") {
+        meta = {};
+      } else {
+        return skip("broken frontmatter");
+      }
+    } catch {
+      meta = legacyFrontmatter(match[1]);
+      if (Object.keys(meta).length === 0) return skip("broken frontmatter");
     }
 
     // Schema version: missing = current (legacy files); a version from the
     // future means data we don't understand — refuse to serve it (the file
-    // stays untouched on disk).
-    const version = meta.version === undefined ? SCHEMA_VERSION : Number(meta.version);
-    if (!Number.isInteger(version)) return skip(`invalid schema version "${truncate(meta.version)}"`);
+    // stays untouched on disk). Frontmatter `version` = SCHEMA version; the
+    // memory's own optimistic-concurrency counter (§3.5) is `revision` and
+    // surfaces as `version` in JSON.
+    const version = meta.version === undefined ? SCHEMA_VERSION : Number(asStr(meta.version));
+    if (!Number.isInteger(version)) {
+      return skip(`invalid schema version "${truncate(String(meta.version))}"`);
+    }
     if (version > SCHEMA_VERSION) return skip(`unsupported schema version ${version}`);
+
+    let revision = 1;
+    if (meta.revision !== undefined) {
+      const r = Number(meta.revision);
+      if (Number.isInteger(r) && r >= 1) revision = r;
+      else fix(`invalid revision "${truncate(String(meta.revision))}"`);
+    }
 
     // Id: the filename is the source of truth (findFile matches on it).
     const baseId = path.basename(file, ".md");
     let id = baseId;
+    const idRaw = asStr(meta.id);
     if (meta.id !== undefined) {
-      if (!/^[A-Za-z0-9._-]+$/.test(meta.id)) return skip(`invalid id "${truncate(meta.id)}"`);
-      if (meta.id !== baseId) {
+      if (idRaw === undefined || !/^[A-Za-z0-9._-]+$/.test(idRaw)) {
+        return skip(`invalid id "${truncate(idRaw ?? String(meta.id))}"`);
+      }
+      if (idRaw !== baseId) {
         fix("id/filename mismatch — using filename");
         id = baseId;
       }
     }
 
-    const type = meta.type ?? "fact";
-    if (type !== "fact" && type !== "decision" && type !== "role" && type !== "history") {
+    const type = meta.type === undefined ? "fact" : asStr(meta.type) ?? "";
+    if (!MemoryType.options.includes(type as MemoryType)) {
       return skip(`invalid type "${truncate(type)}"`);
     }
 
-    const scope = meta.scope ?? "global";
+    const scope = meta.scope === undefined ? "global" : asStr(meta.scope) ?? "";
     if (!scope || /(^|\/)\.\.(\/|$)|\\/.test(scope)) return skip("invalid scope");
 
     const content = match[2].trim();
     if (!content) return skip("empty content");
 
-    const tagsRaw = (meta.tags ?? "[]").replace(/^\[|\]$/g, "");
+    // Tags: YAML array (4.1.0+) or legacy `[a, b]` scalar.
+    let tags: string[] = [];
+    if (Array.isArray(meta.tags)) {
+      tags = meta.tags.map((t) => asStr(t) ?? "").filter((t) => t.length > 0);
+    } else if (typeof meta.tags === "string") {
+      const inner = meta.tags.replace(/^\[|\]$/g, "").trim();
+      tags = inner ? inner.split(",").map((t) => t.trim()).filter(Boolean) : [];
+    } else if (meta.tags !== undefined) {
+      fix("invalid tags");
+    }
 
     // Ranges: clamp instead of rejecting — never let NaN into ranking math.
     const impNum = Number(meta.importance ?? 3);
@@ -833,81 +932,198 @@ async function parse(file: string): Promise<Memory | null> {
       importance = Math.min(5, Math.max(1, Math.round(impNum)));
       if (importance !== impNum) fix(`importance ${impNum} clamped to ${importance}`);
     } else {
-      fix(`invalid importance "${truncate(meta.importance ?? "")}"`);
+      fix(`invalid importance "${truncate(String(meta.importance ?? ""))}"`);
     }
 
-    let confidence: number | undefined;
-    if (meta.confidence !== undefined) {
+    // Provenance (plan §4.3): object form since 4.1.0; legacy `explicit|auto`
+    // strings migrate on read (explicit → manual, auto → conversation).
+    // Absent (pre-3.4 files) defaults to manual — deliberate stores.
+    let provenance: Provenance = { sourceType: "manual" };
+    if (meta.provenance !== undefined && meta.provenance !== null) {
+      if (typeof meta.provenance === "object" && !Array.isArray(meta.provenance)) {
+        const parsed = ProvenanceSchema.safeParse(meta.provenance);
+        if (parsed.success) provenance = parsed.data;
+        else fix("invalid provenance object");
+      } else {
+        const s = asStr(meta.provenance);
+        if (s === "auto" || s === "conversation") provenance = { sourceType: "conversation" };
+        else if (s === "explicit" || s === "manual") provenance = { sourceType: "manual" };
+        else if (s === "agent" || s === "import" || s === "system") provenance = { sourceType: s };
+        else fix(`invalid provenance "${truncate(s ?? String(meta.provenance))}"`);
+      }
+    }
+
+    // Confidence (plan §4.4): required, independent of importance — missing
+    // (pre-confidence files) uses the store's own default: 0.7 for
+    // conversation extraction, 1.0 otherwise.
+    let confidence: number;
+    const confFallback = provenance.sourceType === "conversation" ? 0.7 : 1;
+    if (meta.confidence === undefined) {
+      confidence = confFallback;
+    } else {
       const c = Number(meta.confidence);
       if (!Number.isFinite(c)) {
-        fix(`invalid confidence "${truncate(meta.confidence)}"`);
+        fix(`invalid confidence "${truncate(String(meta.confidence))}"`);
+        confidence = confFallback;
       } else {
         confidence = Math.min(1, Math.max(0, c));
         if (confidence !== c) fix(`confidence ${c} clamped to ${confidence}`);
       }
     }
 
-    const createdOk = validDate(meta.created);
+    // Trust (plan §4.5): required; when absent it derives from provenance so
+    // legacy digest-extracted role/instruction files land `unverified` and
+    // lose the standing-instruction gate until approved (§4.9).
+    let trust: TrustLevel;
+    const trustRaw = asStr(meta.trust);
+    if (meta.trust === undefined) trust = defaultTrust(provenance);
+    else if (trustRaw !== undefined && TrustLevel.options.includes(trustRaw as TrustLevel)) {
+      trust = trustRaw as TrustLevel;
+    } else {
+      fix(`invalid trust "${truncate(trustRaw ?? String(meta.trust))}"`);
+      trust = defaultTrust(provenance);
+    }
+
+    // Retention mode (plan §4.8); absent = decaying (default clocks).
+    let retention: RetentionMode | undefined;
+    if (meta.retention !== undefined) {
+      const r = asStr(meta.retention);
+      if (r !== undefined && RetentionMode.options.includes(r as RetentionMode)) {
+        retention = r as RetentionMode;
+      } else fix(`invalid retention "${truncate(r ?? String(meta.retention))}"`);
+    }
+
+    const createdOk = validDate(asStr(meta.created));
     if (meta.created !== undefined && !createdOk) fix("invalid created date");
-    const updatedOk = validDate(meta.updated);
+    const updatedOk = validDate(asStr(meta.updated));
     if (meta.updated !== undefined && !updatedOk) fix("invalid updated date");
     const createdAt = createdOk ?? EPOCH;
     const updatedAt = updatedOk ?? createdOk ?? createdAt;
 
-    let lastSeen = validDate(meta.lastSeen);
-    if (meta.lastSeen !== undefined && !lastSeen) {
-      fix("invalid lastSeen date");
-      lastSeen = undefined;
-    }
-    let archivedAt = validDate(meta.archivedAt);
-    if (meta.archivedAt !== undefined && !archivedAt) {
-      fix("invalid archivedAt date");
-      archivedAt = undefined;
+    const lastSeen = validDate(asStr(meta.lastSeen));
+    if (meta.lastSeen !== undefined && !lastSeen) fix("invalid lastSeen date");
+    const lastValidated = validDate(asStr(meta.lastValidated));
+    if (meta.lastValidated !== undefined && !lastValidated) fix("invalid lastValidated date");
+    const archivedAt = validDate(asStr(meta.archivedAt));
+    if (meta.archivedAt !== undefined && !archivedAt) fix("invalid archivedAt date");
+
+    const source = asStr(meta.source);
+    if (meta.source !== undefined && source === undefined) fix("invalid source");
+
+    // Relations (plan §4.7): typed edges since 4.1.0; legacy untyped
+    // `related: [ids]` migrates to kind "related" on read.
+    let relations: Relation[] | undefined;
+    const validRelId = (v: unknown): v is string =>
+      typeof v === "string" && /^[A-Za-z0-9._-]+$/.test(v);
+    if (Array.isArray(meta.relations)) {
+      const ok: Relation[] = [];
+      let bad = 0;
+      for (const e of meta.relations) {
+        const rec = e as { id?: unknown; kind?: unknown } | null;
+        const kind = rec && typeof rec === "object" ? asStr(rec.kind) : undefined;
+        if (
+          rec &&
+          typeof rec === "object" &&
+          validRelId(rec.id) &&
+          kind !== undefined &&
+          RelationKind.options.includes(kind as RelationKind)
+        ) {
+          ok.push({ id: rec.id, kind: kind as RelationKind });
+        } else bad++;
+      }
+      if (bad > 0) fix("invalid relation edge");
+      relations = ok.length > 0 ? ok : undefined;
+    } else if (meta.relations !== undefined) fix("invalid relations");
+    if (!relations && meta.related !== undefined) {
+      const legacy =
+        typeof meta.related === "string"
+          ? parseList(meta.related)
+          : Array.isArray(meta.related)
+            ? meta.related.map((r) => asStr(r) ?? "")
+            : undefined;
+      const ids = legacy ?? [];
+      const ok = ids.filter((r) => /^[A-Za-z0-9._-]+$/.test(r));
+      if (ok.length !== ids.length) fix("invalid related id");
+      relations = ok.length > 0 ? ok.map((rid) => ({ id: rid, kind: "related" as const })) : undefined;
     }
 
-    let provenance: Memory["provenance"];
-    if (meta.provenance === "explicit" || meta.provenance === "auto") {
-      provenance = meta.provenance;
-    } else {
-      if (meta.provenance !== undefined) fix(`invalid provenance "${truncate(meta.provenance)}"`);
-      provenance = undefined;
-    }
-
+    // Embedding: comma scalar (4.1.0 writer), number array, or legacy
+    // `[0.1,0.2]` bracket scalar.
     let embedding: number[] | undefined;
-    if (meta.embedding) {
-      const nums = meta.embedding.replace(/^\[|\]$/g, "").split(",").map(Number);
+    if (Array.isArray(meta.embedding)) {
+      const nums = meta.embedding.map((n) => Number(n));
       if (nums.length > 0 && nums.every((n) => Number.isFinite(n))) embedding = nums;
       else fix("invalid embedding");
-    }
-
-    let related = parseList(meta.related);
-    if (related) {
-      const ok = related.filter((r) => /^[A-Za-z0-9._-]+$/.test(r));
-      if (ok.length !== related.length) fix("invalid related id");
-      related = ok.length > 0 ? ok : undefined;
-    }
+    } else if (typeof meta.embedding === "string") {
+      const inner = meta.embedding.replace(/^\[|\]$/g, "");
+      const nums = inner.split(",").map((n) => Number(n.trim()));
+      if (nums.length > 0 && nums.every((n) => Number.isFinite(n))) embedding = nums;
+      else fix("invalid embedding");
+    } else if (meta.embedding !== undefined) fix("invalid embedding");
 
     return {
       id,
-      type,
+      type: type as MemoryType,
       content,
       scope,
-      tags: tagsRaw ? tagsRaw.split(",").map((t) => t.trim()) : [],
+      tags,
       importance,
+      confidence,
+      trust,
+      provenance,
       createdAt,
       updatedAt,
       lastSeen,
+      lastValidated,
       archivedAt,
-      source: meta.source,
-      provenance,
-      confidence,
-      related,
+      version: revision,
+      source,
+      retention,
+      relations,
       embedding,
     };
   } catch (err) {
     if (err instanceof RemembraError) throw err; // ENCRYPTED_NO_KEY etc — loud, never skipped
     warnOnce(file, err instanceof Error ? err.message : String(err), "skip");
     return null;
+  }
+}
+
+/** Scalars written by older renderers may come back as numbers — coerce. */
+function asStr(v: unknown): string | undefined {
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  return undefined;
+}
+
+/** Legacy ≤4.0.x line reader — only used when YAML refuses a v1 frontmatter. */
+function legacyFrontmatter(text: string): Record<string, unknown> {
+  const meta: Record<string, unknown> = {};
+  for (const line of text.split("\n")) {
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    meta[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  }
+  return meta;
+}
+
+interface HistoryReason {
+  reason: string;
+  supersededAt?: string;
+}
+
+/** `.history/<id>/reasons.json` (plan §4.6) — missing/corrupt = no reasons. */
+async function readReasons(file: string): Promise<Record<string, HistoryReason>> {
+  try {
+    const text = decryptBuffer(await fs.readFile(file)).toString("utf8");
+    const obj = JSON.parse(text) as unknown;
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+      return obj as Record<string, HistoryReason>;
+    }
+    return {};
+  } catch (err) {
+    if (err instanceof RemembraError) throw err; // encrypted store without key → loud
+    return {}; // missing/corrupt sidecar: history simply lacks reasons
   }
 }
 

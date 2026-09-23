@@ -12,11 +12,11 @@ REMEMBRA_API_KEY="your-secret" remembra --http
 
 | Page | What you can do |
 |------|-----------------|
-| **Memories** (`#/memories`) | Debounced search (`/memories/search`), type/scope/archived filters, 20-per-page pagination, rows with type badge, first line, tags, importance, age. `+ New` opens the form. |
-| **Detail** (`#/memories/:id`) | Full content, metadata grid (scope, importance, confidence, provenance, source, timestamps), tag chips, **related + backlinks** with a link picker, **Archive/Revive**, **Delete** (confirm dialog), and a lazy **History** panel rendering unified diffs (green `+` / red `-` / dim context, current version open). |
-| **New / Edit** (`#/new`, `#/edit/:id`) | Type, content, scope (moving scope = moving the file), tags, importance 1–5, confidence, source — writes via `POST /memories` / `PUT /memories/:id`. |
-| **Roles** (`#/roles`) | Auditor for `type: "role"` with an instructions-first warning banner — review standing instructions like system prompts. |
-| **Graph** (`#/graph`) | Force-directed canvas of `related()` edges (repulsion + springs, up to 500 nodes): **drag** to re-arrange, **click** a node to open it, legend + counts, role nodes gold-ringed. |
+| **Memories** (`#/memories`) | Debounced search (`/memories/search`), type filter over all **11 types**/scope/archived, 20-per-page pagination, rows with type badge, first line, tags, importance, age, and an **`unverified` trust badge** when one needs approval. `+ New` opens the form. |
+| **Detail** (`#/memories/:id`) | Full content, metadata grid (scope, importance, confidence, **trust chip + Approve button**, provenance, **retention**, **version**, last validated, source, timestamps), tag chips, **typed relations + backlinks** with kind chips and a kind selector on the link picker, **Archive/Revive**, **Delete** (confirm dialog), and a lazy **History** panel rendering unified diffs (green `+` / red `-` / dim context, current version open) with supersession reasons. |
+| **New / Edit** (`#/new`, `#/edit/:id`) | Type (all 11), content, scope (moving scope = moving the file), tags, importance 1–5, confidence, source, **retention mode** — plus a **trust** select when editing — via `POST /memories` / `PUT /memories/:id`. |
+| **Roles & instructions** (`#/roles`) | Auditor for `type: "role"` **and** `type: "instruction"` with an instructions-first warning banner — review standing guidance like system prompts, and approve digest-extracted ones from their detail pages. |
+| **Graph** (`#/graph`) | Force-directed canvas of typed relation edges (repulsion + springs, up to 500 nodes): **drag** to re-arrange, **click** a node to open it, legend of the types actually present, role/instruction nodes gold-ringed. |
 | **Digest** (`#/digest`) | Paste a transcript, set scope/source, run the LLM extraction (`POST /memories/digest`); result shows extracted/stored/skipped/merged with links to the new memories. Errors hint at the `REMEMBRA_LLM` setup when no provider is configured. |
 | **Ops** (`#/ops`) | Health card (status/version/uptime/storage/cache), six stat tiles — requests, errors, **p95 latency** (computed client-side from the Prometheus histogram buckets), searches, stores, cache hit % — with 5-minute sparklines, plus **Run maintain**, **Export** (downloads the snapshot JSON), and **Import** (file picker → `POST /import`). |
 

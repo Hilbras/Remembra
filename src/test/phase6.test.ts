@@ -341,9 +341,12 @@ function genSet(rand: () => number, n: number): Memory[] {
       scope: pick(rand, ["global", "/x", "/y"]),
       tags: rand() < 0.5 ? [pick(rand, WORDS)] : [],
       importance: 1 + Math.floor(rand() * 5),
+      confidence: 1,
+      trust: "trusted",
+      version: 1,
       createdAt: new Date(t).toISOString(),
       updatedAt: new Date(t).toISOString(),
-      ...(rand() < 0.5 ? { provenance: "explicit" as const } : {}),
+      provenance: rand() < 0.5 ? { sourceType: "manual" } : { sourceType: "conversation" },
       ...(hasEmb ? { embedding: Array.from({ length: 8 }, () => rand() - 0.5) } : {}),
     });
   }
@@ -449,12 +452,12 @@ test("property: refreshing recency never lowers a memory's rank", () => {
   }
 });
 
-test("property: explicit provenance never lowers a memory's rank", () => {
+test("property: manual provenance never lowers a memory's rank", () => {
   for (const mode of ["keyword", "semantic"] as Mode[]) {
     const rand = makeRng(mode === "keyword" ? 0xACE : 0xBED);
     for (let round = 0; round < 15; round++) {
       const set = genSet(rand, 25);
-      const target = set.find((m) => m.provenance !== "explicit");
+      const target = set.find((m) => m.provenance.sourceType !== "manual");
       if (!target) continue;
       const { q, qv } = genArgs(rand, mode);
 
@@ -462,7 +465,9 @@ test("property: explicit provenance never lowers a memory's rank", () => {
       const beforeIdx = before.indexOf(target.id);
       if (beforeIdx === -1) continue;
 
-      const promoted = set.map((m) => (m.id === target.id ? { ...m, provenance: "explicit" as const } : m));
+      const promoted = set.map((m) =>
+        m.id === target.id ? { ...m, provenance: { sourceType: "manual" as const } } : m,
+      );
       const after = search(promoted, q, qv).map((m) => m.id);
       const afterIdx = after.indexOf(target.id);
       assert.notEqual(afterIdx, -1);

@@ -10,6 +10,7 @@ import { MemoryService } from "../service.js";
 import { createHttpServer } from "../http.js";
 import type { MemoryBackend } from "../backend.js";
 import type { Memory, StoreInput } from "../types.js";
+import { defaultTrust } from "../types.js";
 import { RemembraError, formatToolError, statusFor } from "../errors.js";
 import type http from "node:http";
 
@@ -28,12 +29,9 @@ class InMemoryBackend implements MemoryBackend {
   private map = new Map<string, Memory>();
   private now = () => new Date().toISOString();
 
-  async store(
-    input: StoreInput,
-    embedding?: number[],
-    opts?: { provenance?: Memory["provenance"] },
-  ): Promise<Memory> {
+  async store(input: StoreInput, embedding?: number[]): Promise<Memory> {
     const now = this.now();
+    const provenance = { sourceType: input.provenance?.sourceType ?? "manual" } as const;
     const m: Memory = {
       id: hex12(),
       type: input.type,
@@ -43,8 +41,12 @@ class InMemoryBackend implements MemoryBackend {
       importance: input.importance,
       createdAt: now,
       updatedAt: now,
+      version: 1,
       source: input.source,
-      provenance: opts?.provenance ?? "explicit",
+      confidence: input.confidence ?? 1,
+      trust: input.trust ?? defaultTrust(provenance),
+      provenance,
+      retention: input.retention,
       embedding,
     };
     this.map.set(m.id, m);

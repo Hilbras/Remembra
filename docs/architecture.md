@@ -62,6 +62,10 @@ Lock rules:
   files are still recovered by the age rule;
 - **timeout**: waiting longer than `REMEMBRA_LOCK_TIMEOUT_MS` (default 5 s)
   fails with the typed `LOCK_TIMEOUT` error (HTTP 423);
+- **optimistic concurrency** (4.1.0, plan §3.5): `update()` compares the
+  caller's `expectedVersion` against the *fresh* on-disk `revision`
+  **inside the lock**, then writes `disk + 1` — a stale writer loses with
+  `CONFLICT` (HTTP 409) instead of silently clobbering;
 - released in a `finally`, verified by pid before unlinking.
 
 Reads (`get`/`all`) don't lock — atomic rename means they always see a
@@ -86,9 +90,9 @@ Anything it fixes is logged:
 All actionable failures are `RemembraError` with a stable `code`
 (`src/errors.ts`): `INVALID_INPUT`, `SNAPSHOT_INVALID`, `SCOPE_ESCAPES_ROOT`,
 `NOT_FOUND`, `CONFLICT`, `LOCK_TIMEOUT`, `IO_ERROR`, `LLM_ERROR`,
-`ENCRYPTED_NO_KEY`.
+`PROVIDER_TIMEOUT` (4.0.1), `INTERNAL`, `ENCRYPTED_NO_KEY`.
 
-- **HTTP** maps codes → statuses (400/404/409/423/500/502/503) and returns
+- **HTTP** maps codes → statuses (400/404/409/423/500/502/503/504) and returns
   `{ error, code }` bodies;
 - **MCP tools** return `[CODE] message` text with `isError: true`;
 - raw filesystem failures are wrapped as `IO_ERROR`; Zod failures crossing a
@@ -103,9 +107,22 @@ All actionable failures are `RemembraError` with a stable `code`
 ## Schema versioning
 
 Every memory file carries `version: <n>` in frontmatter (`SCHEMA_VERSION` in
-`types.ts`). Files without the field (v1–v3.1) parse as v1. To change the
-format: bump the constant, add a migration branch in `parse()`, and cover it
-with a fixture test.
+`types.ts`, currently **2** — bumped by 4.1.0). Files without the field
+(v1–v3.1) parse as v1. Two different numbers, deliberately:
+
+- frontmatter `version` is the **schema guard** — readers refuse
+  `version > SCHEMA_VERSION` (4.0.x readers likewise skip `version: 2`
+  files: logged, never deleted, so downgrades neither lose data nor silently
+  bypass the trust gate);
+- frontmatter `revision` is the memory's own **write counter** — exposed as
+  JSON `version` and compared by `expectedVersion` (§3.5).
+
+To change the format: bump the constant, add a migration branch in
+`parse()`, and cover it with a fixture test.
+
+Ids are **UUIDv7** since 4.1.0 (plan §3.6): time-ordered, unique from
+entropy alone, so allocation needs no collision scan (legacy 8–32 hex ids
+remain valid forever).
 
 ## Encryption at rest (audit Phase 8, opt-in — `src/crypto.ts`)
 
@@ -141,8 +158,12 @@ from what's on disk, it copies the raw pre-image to
 - `epochMs-seq` names sort lexicographically = chronologically (seq breaks
   same-millisecond ties; the advisory lock serializes writers);
 - raw copy ⇒ encrypted files stay encrypted, plain stay plain, byte-for-byte;
-- content-equality gate ⇒ embedding backfills and `memory_relate` never
-  create snapshots;
+- content-equality gate ⇒ embedding backfills, trust-only writes and
+  `memory_relate` never create snapshots;
+- when the update carries a `reason`, `{ reason, supersededAt }` is stored
+  beside the snapshots in `.history/<id>/reasons.json` (encrypted with the
+  tree; 4.1.0, plan §4.6) and returned by `history(id)` — superseded text is
+  never inlined into the current content;
 - pruning keeps the newest `REMEMBRA_HISTORY_LIMIT` (default 20, `0`
   disables) per id;
 - `.history/` is *data-adjacent but never walked by `all()`* — reads go

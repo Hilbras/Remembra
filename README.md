@@ -1,8 +1,8 @@
 # Remembra 🧠
 
-**External memory for AI assistants.** Remembra stores facts, decisions, roles, and history
-outside the context window, and hands back only what's relevant — so your AI stops forgetting
-when the conversation gets long.
+**External memory for AI assistants.** Remembra stores facts, decisions, preferences, roles, and
+everything else worth remembering outside the context window, and hands back only what's
+relevant — so your AI stops forgetting when the conversation gets long.
 
 [![npm](https://img.shields.io/npm/v/%40hilbras/remembra.svg)](https://www.npmjs.com/package/@hilbras/remembra)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -33,18 +33,31 @@ Conversation ──► memory_store ──► ~/.remembra/ (markdown files)
 New session ──► memory_search ◄─────────┘ ──► relevant subset injected
 ```
 
-Every memory has a **type**, a **scope**, tags, and an importance score:
+Every memory has a **type** (eleven, since v4.1), a **scope**, tags, an
+importance score, plus **provenance** (where it came from) and **trust**
+(`system`/`verified`/`trusted`/`unverified`):
 
 - **fact** — stable knowledge ("Project uses PostgreSQL 16")
+- **preference** — how the user likes things ("prefers concise answers")
 - **decision** — choices already made ("Chose JWT over sessions")
-- **role** — standing instructions ("Answer concisely"; *always* injected)
+- **constraint** — hard limits ("Never commit secrets")
+- **instruction** — standing directives ("Always run tests before a PR")
+- **role** — personas & rule sets ("You are the architect"; *always* injected)
+- **entity** — named people, services, repos ("billing-service → payments team")
+- **relationship** — how entities relate ("billing-service depends on ledger-db")
+- **event** — dated things that happened ("09-20: events table migrated")
 - **history** — condensed chronology of past work
+- **observation** — raw signal not yet validated ("p95 spiked after deploy")
+
+Digest-extracted roles/instructions land `unverified` — listed and searchable,
+but they never steer anything until you hit **Approve**.
 
 **Scopes:**
 - `global` — relevant everywhere (preferences, roles)
 - any project path/id — only loaded when working in that scope, never leaks into other projects
 
-**Retrieval ranking:** roles always surface → scope match → importance → recency → keyword overlap.
+**Retrieval ranking:** trusted roles/instructions always surface → scope match →
+provenance → trust → pinned → importance → recency → keyword overlap.
 
 ## Quick start
 
@@ -91,7 +104,8 @@ REMEMBRA_API_KEY="your-secret" remembra --http
 ```
 
 Browse & search with filters and pagination, open a memory to edit / archive /
-link / view its diff history, audit roles, explore the force-directed
+link / view its diff history, audit roles & instructions (with one-click
+**Approve** for unverified digests), explore the force-directed
 relationship graph, run session digests, watch health + request sparklines,
 and export/import snapshots — dark by default with a gold theme and a
 light-mode toggle. Guide: **[docs/ui.md](docs/ui.md)**.
@@ -104,11 +118,11 @@ light-mode toggle. Guide: **[docs/ui.md](docs/ui.md)**.
 | GET | `/health` | Liveness + readiness (no auth) |
 | GET | `/metrics` | Prometheus metrics (auth when keyed) |
 | POST | `/memories` | Store a memory |
-| PUT | `/memories/:id` | Patch fields — scope change moves the file (v4) |
+| PUT | `/memories/:id` | Patch fields incl. `trust`/`retention`; stale `expectedVersion` → 409 |
 | GET | `/memories/search?query=&scope=` | Search |
 | GET | `/memories?scope=&type=` | List |
-| GET | `/memories/:id` | One memory + related links + backlinks |
-| POST | `/memories/:id/relate` | Link / unlink memories |
+| GET | `/memories/:id` | One memory + typed relations + backlinks |
+| POST | `/memories/:id/relate` | Add / remove / retype typed links |
 | GET | `/memories/:id/history` | Version history with line diffs |
 | POST | `/memories/:id/archive` · `/revive` | Manual lifecycle (v4) |
 | POST | `/memories/digest` | LLM extract + store from a transcript |
@@ -145,14 +159,14 @@ tampered snapshot is rejected atomically, never half-imported. Of course,
 
 | Tool | Purpose |
 |------|---------|
-| `memory_store` | Save a fact / decision / role / history |
-| `memory_update` | Patch a memory — content, scope, tags, importance, … |
+| `memory_store` | Save a memory (11 semantic types) |
+| `memory_update` | Patch a memory — content, scope, tags, trust, `expectedVersion`, … |
 | `memory_archive` / `memory_revive` | Manually park a memory aside / bring it back |
 | `memory_digest` | Extract + store memories from a transcript (LLM) |
 | `memory_search` | Retrieve relevant memories (pass `scope` = current project) |
 | `memory_list` | Browse stored memories |
 | `memory_get` | Fetch one memory with its links and backlinks |
-| `memory_relate` | Link / unlink memories (relationship graph) |
+| `memory_relate` | Typed links: supports/contradicts/supersedes/… (relationship graph) |
 | `memory_history` | Version history of a memory with line diffs |
 | `memory_maintain` | Archive decayed / delete expired / backfill vectors |
 | `memory_forget` | Delete by id |
@@ -207,7 +221,8 @@ npm test        # run tests
 - **v1.5** — HTTP API + ChatGPT Custom GPT action ✅
 - **v2** — automatic session-digest extraction, embeddings behind `memory_search` ✅
 - **v3** — memory lifecycle (archive/decay), contradiction merging, maintenance CLI ✅
-- **v4** *(current)* — full web dashboard, write API (`PUT`/archive/revive), HTTP snapshot I/O ✅
+- **v4** — full web dashboard, write API (`PUT`/archive/revive), HTTP snapshot I/O ✅
+- **v4.1** *(current)* — 11 semantic types, provenance + trust gate, typed relations, retention modes, optimistic concurrency ✅
 
 > Package versions match milestones: `3.0.0` = v3, `4.0.0` = v4.
 

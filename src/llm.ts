@@ -10,6 +10,7 @@
  */
 import { providerFetch } from "./provider.js";
 import { RemembraError } from "./errors.js";
+import { MemoryType } from "./types.js";
 
 export type LlmProvider = "openai" | "anthropic" | "ollama";
 
@@ -19,7 +20,8 @@ export interface LlmCallOptions {
 }
 
 export interface ExtractedMemory {
-  type: "fact" | "decision" | "role" | "history";
+  /** One of the eleven semantic types (plan §4.1) — validated in parseExtraction. */
+  type: MemoryType;
   content: string;
   tags: string[];
   importance: number;
@@ -37,11 +39,22 @@ export function resolveLlmProvider(): LlmProvider {
 
 const SYSTEM_PROMPT = `You extract long-term memories from a conversation transcript.
 Return ONLY a JSON array (no prose, no markdown fence). Each element:
-{"type":"fact"|"decision"|"role"|"history","content":"<standalone statement>","tags":["..."],"importance":1-5}
+{"type":"<one of the eleven types>","content":"<standalone statement>","tags":["..."],"importance":1-5}
+
+Type semantics (pick the most specific that fits):
+- "fact": stable knowledge about the user, their work, or the world worth keeping.
+- "preference": how the user likes things done (tone, tools, formats, workflows).
+- "decision": a choice that was already made (not a plan or an idea).
+- "constraint": a hard limitation that must be respected (budgets, deadlines, must-not rules).
+- "instruction": a standing directive for future sessions (what to always do, how to act).
+- "role": who the assistant is for this user/team (persona, duties, expertise).
+- "entity": a durable thing described once and referenced later (person, org, tool, project).
+- "relationship": how two entities are connected (works-with, part-of, reports-to).
+- "event": a single notable occurrence with a time (launch, outage, meeting outcome).
+- "history": a condensed chronology of past work (versions, migrations, phases).
+- "observation": a noteworthy but tentative note from this session (not yet a stable fact).
 
 Rules:
-- "fact": stable knowledge worth keeping. "decision": a choice already made.
-- "role": standing instruction/preference about how to behave. "history": condensed chronology of past work.
 - Write each content as a self-contained statement (no "we discussed" or "earlier").
 - Skip small talk, pleasantries, and anything already obvious from the transcript's task.
 - importance: 5 = critical, 1 = trivia. Default 3.
@@ -221,13 +234,13 @@ export function parseExtraction(raw: string): ExtractedMemory[] {
     const type = (item as Record<string, unknown>).type;
     const content = (item as Record<string, unknown>).content;
     if (typeof content !== "string" || !content.trim()) continue;
-    if (type !== "fact" && type !== "decision" && type !== "role" && type !== "history") continue;
+    if (typeof type !== "string" || !(MemoryType.options as readonly string[]).includes(type)) continue;
     const tags = (item as Record<string, unknown>).tags;
     const importance = Number((item as Record<string, unknown>).importance);
     const scope = (item as Record<string, unknown>).scope;
     const confidence = Number((item as Record<string, unknown>).confidence);
     out.push({
-      type,
+      type: type as MemoryType,
       content: content.trim(),
       tags: Array.isArray(tags) ? tags.filter((t): t is string => typeof t === "string") : [],
       importance: Number.isFinite(importance) ? Math.min(5, Math.max(1, Math.round(importance))) : 3,

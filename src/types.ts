@@ -1,14 +1,89 @@
 import { z } from "zod";
 
-/** The four memory types Remembra stores. */
-export const MemoryType = z.enum(["fact", "decision", "role", "history"]);
+/** The eleven memory types Remembra stores (plan §4.1 — explicit semantics in docs/memory-model.md). */
+export const MemoryType = z.enum([
+  "fact",
+  "preference",
+  "decision",
+  "constraint",
+  "instruction",
+  "role",
+  "entity",
+  "relationship",
+  "event",
+  "history",
+  "observation",
+]);
 export type MemoryType = z.infer<typeof MemoryType>;
 
 /**
- * Frontmatter schema version. Bump when the Memory format changes and
- * add a migration step in store.ts (missing field in old files = v1).
+ * Frontmatter schema version (plan §3.4 — bumped to 2 in 4.1.0 when the
+ * format gained trust/relations/provenance-object/retention and spec-parsed
+ * YAML replaced the hand-rolled parser). Bump when the Memory format changes
+ * and add a migration step in store.ts (missing field in old files = v1).
+ *
+ * Downgrade contract (4.1.0 decision): files written by 4.1.0 carry
+ * `version: 2` and are skipped — logged, never deleted — by 4.0.x readers,
+ * because those readers cannot honor `trust` when gating instructions.
+ * 4.0.x-era files (version: 1) stay fully readable by 4.1.0.
  */
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+
+/** Trust classification (plan §4.5). Gate rule: instruction-like types inject only at trust ≥ trusted. */
+export const TrustLevel = z.enum(["unverified", "trusted", "verified", "system"]);
+export type TrustLevel = z.infer<typeof TrustLevel>;
+
+/** Where a memory came from (plan §4.3 provenance.sourceType). */
+export const SourceType = z.enum(["manual", "conversation", "agent", "import", "system"]);
+export type SourceType = z.infer<typeof SourceType>;
+
+/** Decay/protection mode (plan §4.8). Absent = decaying (the default clocks). */
+export const RetentionMode = z.enum([
+  "pinned",
+  "persistent",
+  "ephemeral",
+  "decaying",
+  "neverExpire",
+]);
+export type RetentionMode = z.infer<typeof RetentionMode>;
+
+/** Typed relation edge (plan §4.7) — replaces the untyped `related: [ids]` list. */
+export const RelationKind = z.enum([
+  "supports",
+  "contradicts",
+  "supersedes",
+  "refines",
+  "duplicates",
+  "related",
+]);
+export type RelationKind = z.infer<typeof RelationKind>;
+
+/** Provenance object (plan §4.3): where did this come from, who/which session/agent produced it. */
+export const ProvenanceSchema = z.object({
+  sourceType: SourceType,
+  sessionId: z.string().optional(),
+  messageId: z.string().optional(),
+  agentId: z.string().optional(),
+  provider: z.string().optional(),
+});
+export type Provenance = z.infer<typeof ProvenanceSchema>;
+
+/** One directed edge to another memory (plan §4.7). Backlinks derived at read time. */
+export interface Relation {
+  id: string;
+  kind: RelationKind;
+}
+
+/**
+ * Trust default from provenance (plan §4.5/§4.9): conversation extraction is
+ * never trusted by itself — it must be approved before it can act as a
+ * standing instruction; system writes are system; everything else trusted.
+ */
+export function defaultTrust(p: Pick<Provenance, "sourceType">): TrustLevel {
+  if (p.sourceType === "conversation") return "unverified";
+  if (p.sourceType === "system") return "system";
+  return "trusted";
+}
 
 /**
  * Scope of a memory.
@@ -17,37 +92,49 @@ export const SCHEMA_VERSION = 1;
  */
 export type MemoryScope = string; // "global" | "/path/to/project" | "chatgpt"
 
-export interface Memory {
+/**
+ * Plan §4.2 metadata contract. `Memory` extends it — the HTTP/MCP JSON shape
+ * stays flat (all fields top-level), while `MemoryMetadata` names the
+ * metadata subset that every read validates (plan §3.4).
+ */
+export interface MemoryMetadata {
   id: string;
   type: MemoryType;
-  content: string;
-  scope: MemoryScope;
-  tags: string[];
+  scope: string;
   importance: number; // 1..5
+  confidence: number; // 0..1 — deliberately independent of importance (§4.4)
+  trust: TrustLevel;
+  source?: string;
   createdAt: string; // ISO date
   updatedAt: string; // ISO date
-  source?: string; // originating session/client
+  lastSeen?: string; // last time it surfaced in search (decay signal)
+  lastValidated?: string; // set when trust is (re)classified (§4.2)
+  /** Optimistic-concurrency counter (§3.5). Starts at 1, +1 on every content/
+   *  metadata update inside the store lock; exposed as `version` in JSON and
+   *  compared against `expectedVersion`. Serialized as frontmatter `revision:`
+   *  — frontmatter `version:` is the SCHEMA version. */
+  version: number;
+}
+
+export interface Memory extends MemoryMetadata {
+  content: string;
+  tags: string[];
   /**
-   * How the memory entered the store: `explicit` = deliberately stored via
-   * the tool/API, `auto` = extracted by a digest. Missing on pre-3.4.0 files
-   * (neutral — scores as neither). Ranked: explicit +10.
+   * Origin of the write — required since 4.1.0 (plan §4.3/§4.10: every
+   * memory answers where it came from). Legacy pre-4.1.0 files store a
+   * `provenance: explicit|auto` string or nothing — normalized on read:
+   * explicit → { sourceType: manual }, auto → { sourceType: conversation },
+   * absent → { sourceType: manual }.
    */
-  provenance?: "explicit" | "auto";
+  provenance: Provenance;
   /**
-   * Trust in this claim, 0..1 (audit Phase 8). Defaults on store:
-   * explicit → 1.0, digest-extracted → LLM-provided or 0.7. Preserved through
-   * merge/import/export. Displayed, deliberately NOT ranked — importance
-   * answers "relevant?", confidence answers "true?".
+   * Typed outgoing edges (plan §4.7), directed (a→b does not imply b→a);
+   * backlinks are derived at read time. Legacy `related: [ids]` lines
+   * migrate to kind "related" on read. Managed by `memory_relate`.
    */
-  confidence?: number;
-  /**
-   * Ids of related memories (audit Phase 8 — relationship graph). Stored
-   * directed (a→b does not imply b→a); backlinks are derived at read time.
-   * Managed by `memory_relate`.
-   */
-  related?: string[];
-  /** Last time the memory surfaced in search results (decay signal). */
-  lastSeen?: string;
+  relations?: Relation[];
+  /** Decay protection (plan §4.8); absent = decaying (default clocks). */
+  retention?: RetentionMode;
   /** Set when archived; archived memories are out of search until revived. */
   archivedAt?: string;
   /** Cached embedding vector (REMEMBRA_EMBEDDINGS≠none); serialized in frontmatter. */
@@ -65,14 +152,43 @@ export function isSafeScope(scope: string): boolean {
   return !normalized.split("/").some((seg) => seg === "..");
 }
 
+/** Memory ids: legacy 8–32 hex, or (since 4.1.0) UUIDv7 (plan §3.6). */
+export const MEMORY_ID_RE =
+  /^([a-f0-9]{8,32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
+
 // ---------------------------------------------------------------------------
 // Shared input schemas (audit #13: one source of truth).
 // The raw `*Shape` objects feed MCP tool inputSchemas (ZodRawShape);
 // the parsed `*Input` objects validate on every transport.
 // ---------------------------------------------------------------------------
 
+export const trustInput = z
+  .enum(["unverified", "trusted", "verified", "system"])
+  .describe(
+    "Trust classification: unverified (extracted, not yet approved) | trusted (default for direct stores) | verified (human-approved) | system",
+  );
+
+export const retentionInput = z
+  .enum(["pinned", "persistent", "ephemeral", "decaying", "neverExpire"])
+  .describe(
+    "Decay protection: decaying (default) | pinned (never decays + rank boost) | persistent (archivable, never auto-deleted) | neverExpire (fully exempt) | ephemeral (accelerated clock lands with 4.5.0; today behaves as decaying)",
+  );
+
+export const provenanceInput = z
+  .object({
+    sourceType: SourceType.optional().describe("manual (default) | conversation | agent | import | system"),
+    sessionId: z.string().optional().describe("Session that produced the memory"),
+    messageId: z.string().optional().describe("Message within that session"),
+    agentId: z.string().optional().describe("Agent that produced the memory"),
+    provider: z.string().optional().describe("Provider/model (e.g. the digest LLM)"),
+  })
+  .optional()
+  .describe("Provenance (plan §4.3); defaults to { sourceType: manual }");
+
 export const storeInputShape = {
-  type: MemoryType.describe("fact | decision | role | history"),
+  type: MemoryType.describe(
+    "fact | preference | decision | constraint | instruction | role | entity | relationship | event | history | observation",
+  ),
   content: z.string().min(1).describe("The memory itself, written as a standalone statement"),
   scope: z
     .string()
@@ -92,7 +208,14 @@ export const storeInputShape = {
     .min(0)
     .max(1)
     .optional()
-    .describe("Trust in this claim 0..1 (default 1.0 for explicit stores, 0.7 for digests)"),
+    .describe("Certainty of this claim 0..1, independent of importance (default 1.0 direct, 0.7 digests)"),
+  trust: trustInput
+    .optional()
+    .describe(
+      "Trust classification; default derived from provenance (direct store → trusted, conversation digest → unverified)",
+    ),
+  retention: retentionInput.optional(),
+  provenance: provenanceInput,
 };
 export const StoreInput = z
   .object(storeInputShape)
@@ -148,19 +271,41 @@ const patchShape = {
   importance: storeInputShape.importance.optional(),
   source: storeInputShape.source.optional(),
   confidence: storeInputShape.confidence.optional(),
+  trust: storeInputShape.trust,
+  retention: storeInputShape.retention,
+};
+
+/** Concurrency guards — not content fields, never spread onto the Memory. */
+const guardShape = {
+  expectedVersion: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe("Optimistic concurrency: update fails with CONFLICT (HTTP 409) unless the stored version matches"),
+  reason: z
+    .string()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe("Why this version supersedes the last — recorded in the history entry (plan §4.6)"),
 };
 
 export const updateInputShape = {
   id: z.string().describe("Memory id to update"),
   ...patchShape,
+  ...guardShape,
 };
 
+const hasPatchField = (v: Record<string, unknown>): boolean =>
+  Object.keys(v).some((k) => k !== "expectedVersion" && k !== "reason" && v[k] !== undefined);
+
 export const UpdateInput = z
-  .object(patchShape)
+  .object({ ...patchShape, ...guardShape })
   .refine((v) => v.scope === undefined || isSafeScope(v.scope), {
     message: "scope must not contain '..' path segments",
   })
-  .refine((v) => Object.keys(v).length > 0, {
+  .refine(hasPatchField, {
     message: "update must include at least one field",
   });
 export type UpdateInput = z.infer<typeof UpdateInput>;
@@ -182,6 +327,9 @@ export const relateInputShape = {
     .enum(["add", "remove"])
     .default("add")
     .describe("add (default) creates links, remove deletes them"),
+  kind: RelationKind.default("related").describe(
+    "Edge kind (plan §4.7): supports | contradicts | supersedes | refines | duplicates | related",
+  ),
 };
 export const RelateInput = z.object(relateInputShape);
 export type RelateInput = z.infer<typeof RelateInput>;
@@ -210,7 +358,7 @@ export const SnapshotInput = z.object({
   memories: z
     .array(
       z.object({
-        id: z.string().regex(/^[a-f0-9]{8,32}$/, "invalid id"),
+        id: z.string().regex(MEMORY_ID_RE, "invalid id"),
         type: MemoryType,
         content: z.string().min(1),
         scope: z.string().refine(isSafeScope, { message: "scope must not contain '..'" }),
@@ -220,9 +368,19 @@ export const SnapshotInput = z.object({
         updatedAt: z.string(),
         source: z.string().optional(),
         lastSeen: z.string().optional(),
+        lastValidated: z.string().optional(),
         archivedAt: z.string().optional(),
-        provenance: z.enum(["explicit", "auto"]).optional(),
+        /** Object form (4.1.0+) or legacy string (pre-4.1 exports) — normalized on import. */
+        provenance: z.union([ProvenanceSchema, z.enum(["explicit", "auto"])]).optional(),
         confidence: z.number().min(0).max(1).optional(),
+        trust: TrustLevel.optional(),
+        retention: RetentionMode.optional(),
+        version: z.number().int().min(1).optional(),
+        /** Typed edges (4.1.0+). */
+        relations: z
+          .array(z.object({ id: z.string().regex(MEMORY_ID_RE, "invalid id"), kind: RelationKind }))
+          .optional(),
+        /** Legacy untyped links (pre-4.1 exports) — migrated to kind "related" on import. */
         related: z.array(z.string()).optional(),
         embedding: z.array(z.number()).optional(),
       }),

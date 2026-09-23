@@ -186,12 +186,13 @@ async function findFiles(dir: string, pred: (f: string) => boolean): Promise<str
 
 // --- IDs ---
 
-test("IDs are 12 chars and unique", async () => {
+test("IDs are UUIDv7 and unique", async () => {
   const { store } = await tempStore();
+  const v7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
   const ids = new Set<string>();
   for (let i = 0; i < 200; i++) {
     const m = await store.store({ type: "fact", content: `m${i}`, scope: "global", tags: [], importance: 3, source: undefined } as never);
-    assert.equal(m.id.length, 12);
+    assert.match(m.id, v7);
     ids.add(m.id);
   }
   assert.equal(ids.size, 200);

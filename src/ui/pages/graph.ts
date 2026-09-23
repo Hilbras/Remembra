@@ -1,4 +1,4 @@
-// Force-directed graph of related() edges — hand-rolled, canvas, no deps.
+// Force-directed graph of typed relation edges (plan §4.7) — hand-rolled, canvas, no deps.
 import { api, MemoryRec } from "../api.js";
 import { h, mount } from "../dom.js";
 import { emptyState } from "./list.js";
@@ -25,7 +25,7 @@ export async function renderGraph(view: HTMLElement): Promise<void | (() => void
         { class: "page-head" },
         h("h1", { text: "Graph" }),
       ),
-      emptyState("No memories to graph", "Store memories and link them — edges come from related().", "i-graph"),
+      emptyState("No memories to graph", "Store memories and link them — edges come from typed relations.", "i-graph"),
     );
     return;
   }
@@ -44,7 +44,7 @@ export async function renderGraph(view: HTMLElement): Promise<void | (() => void
   const edges: Array<[GNode, GNode]> = [];
   const seen = new Set<string>();
   for (const m of r.memories as MemoryRec[]) {
-    for (const rid of m.related ?? []) {
+    for (const { id: rid } of m.relations ?? []) {
       const a = index.get(m.id);
       const b = index.get(rid);
       if (!a || !b) continue;
@@ -58,12 +58,11 @@ export async function renderGraph(view: HTMLElement): Promise<void | (() => void
   const canvas = h("canvas") as HTMLCanvasElement;
   const ctx = canvas.getContext("2d");
   const count = h("span", { class: "muted small" });
+  const presentTypes = [...new Set(nodes.map((n) => n.type))].sort();
   const legend = h(
     "div",
     { class: "graph-legend" },
-    ...["fact", "decision", "role", "history"].map((label) =>
-      h("span", {}, h("i", { class: `dot-${label}` }), label),
-    ),
+    ...presentTypes.map((label) => h("span", {}, h("i", { class: `dot-${label}` }), label)),
   );
   const wrap = h("div", { class: "graph-wrap" }, canvas, legend);
   count.textContent = `${nodes.length} memories · ${edges.length} links${r.total > nodes.length ? ` (first ${nodes.length} of ${r.total})` : ""}`;
@@ -179,9 +178,16 @@ export async function renderGraph(view: HTMLElement): Promise<void | (() => void
     // Palette once per frame (theme-aware; switch flips vars).
     const palette = {
       fact: cssVar("--info") || "#5b9dd9",
+      preference: cssVar("--ok") || "#57ab5a",
       decision: cssVar("--violet") || "#a371f7",
+      constraint: cssVar("--danger") || "#e5534b",
+      instruction: cssVar("--warn") || "#d4a72c",
       role: cssVar("--gold") || "#d4af37",
+      entity: cssVar("--teal") || "#3fb8a0",
+      relationship: cssVar("--pink") || "#e0688f",
+      event: cssVar("--orange") || "#e08a3c",
       history: cssVar("--text-3") || "#78756c",
+      observation: cssVar("--cyan") || "#4cc3d9",
       edge: cssVar("--border-2") || "#333",
       goldHi: cssVar("--gold-hi") || "#f7d976",
       text2: cssVar("--text-2") || "#999",
@@ -211,7 +217,7 @@ export async function renderGraph(view: HTMLElement): Promise<void | (() => void
       ctx.fillStyle = color;
       ctx.globalAlpha = active ? 1 : 0.92;
       ctx.fill();
-      if (active || n.type === "role") {
+      if (active || n.type === "role" || n.type === "instruction") {
         ctx.strokeStyle = palette.goldHi;
         ctx.lineWidth = active ? 2.5 : 1.5;
         ctx.stroke();
