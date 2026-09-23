@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/remembra",
-  "version": "4.7.0",
+  "version": "4.8.0",
   "description": "External memory for AI assistants — remember facts, decisions, roles and history across sessions. MCP server for OpenCode, Claude Code, Cline, Kimi Code and more.",
   "type": "module",
   "bin": {

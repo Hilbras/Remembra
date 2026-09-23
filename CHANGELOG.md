@@ -7,6 +7,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [4.8.0] — 2026-09-24
+
+**Performance & Scalability** — plan §11 of the Master Development Plan.
+Adds bounded retrieval planning, batch APIs, background work, and scale
+observability without changing the existing single-memory API.
+
+### Added
+- **Bounded SQLite keyword candidates**: exact lexical matches plus the highest
+  zero-signal modifier anchors are planned inside a hard budget; partial pages,
+  semantic queries, type-filtered queries, agent mode, and legacy backends retain
+  the full-scan fallback.
+- **Scale benchmark**: deterministic 10K/50K SQLite benchmark with p50/p95
+  latency, result counts, heap usage, and explicit legacy fallback mode.
+- **Batch operations**: `MemoryService.batch`, `POST /memories/batch`, and the
+  `memory_batch` MCP tool support bounded store/update/delete/selected-export
+  requests with ordered per-item outcomes and whole-request validation.
+- **Bounded embeddings**: `embedTexts` applies batch-size and provider-
+  concurrency limits; embedding-enabled batch stores avoid duplicate provider
+  calls when redaction/reject policy permits.
+- **Background jobs**: typed `JobQueue` with capacity, concurrency, retries,
+  cancellation, typed queue errors, maintenance/embedding/consolidation/
+  validation/archive handlers, and graceful shutdown.
+- **Resource metrics and configuration**: queue depth/running gauges, job and
+  batch/embedding counters, and `REMEMBRA_JOB_*`, `REMEMBRA_MAX_BATCH_SIZE`,
+  and `REMEMBRA_MAX_CONCURRENT_EMBEDDINGS` limits.
+- **SQLite FTS maintenance**: idempotent rebuild plus update/archive/revive
+  synchronization and actual memory IDs from `ftsSearch`.
+
+### Compatibility and safety
+- Existing single-item store/update/delete/export behavior and all eleven
+  memory types remain available.
+- Agent visibility remains fail-closed and is applied before batch or job
+  mutations; inaccessible ids are reported as `NOT_FOUND`.
+- Batch mutations are sequential, bounded, and explicitly not cross-item
+  atomic; partial outcomes are returned in input order.
+- File storage remains scan-based; SQLite receives the candidate planning path.
+
+### Verification
+- Full suite: **321 passed, 0 failed**.
+- `npm run build` passes.
+- 10K/50K scale benchmark completed with the bounded candidate path.
+- Dependency audit completed with no high-severity production vulnerabilities.
+
+---
+
 ## [4.7.0] — 2026-09-23
 
 **Agent & Multi-Agent Memory** — plan §10 of the Master Development Plan.
