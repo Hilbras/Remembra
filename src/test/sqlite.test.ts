@@ -37,6 +37,8 @@ test("sqlite: agent attribution, ownership, and access round-trip", async () => 
     content: "Agent-only research",
     owner: "agent",
     access: "private",
+    validFrom: "2026-01-01T00:00:00.000Z",
+    observedAt: "2025-12-31T00:00:00.000Z",
     provenance: {
       sourceType: "agent",
       agentId: "researcher-1",
@@ -51,6 +53,8 @@ test("sqlite: agent attribution, ownership, and access round-trip", async () => 
   const got = await store.get(m.id);
   assert.equal(got?.owner, "agent");
   assert.equal(got?.access, "private");
+  assert.equal(got?.validFrom, "2026-01-01T00:00:00.000Z");
+  assert.equal(got?.observedAt, "2025-12-31T00:00:00.000Z");
   assert.deepEqual(got?.provenance, m.provenance);
   store.close();
 });

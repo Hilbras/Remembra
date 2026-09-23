@@ -127,6 +127,9 @@ export interface MemoryMetadata {
    *  compared against `expectedVersion`. Serialized as frontmatter `revision:`
    *  — frontmatter `version:` is the SCHEMA version. */
   version: number;
+  /** V4.7 ownership and visibility policy (also present on Memory). */
+  owner?: MemoryOwner;
+  access?: MemoryAccess;
 }
 
 export interface Memory extends MemoryMetadata {
@@ -461,6 +464,19 @@ export const SnapshotInput = z.object({
         retention: RetentionMode.optional(),
         owner: MemoryOwner.optional(),
         access: MemoryAccess.optional(),
+        meta: z
+          .object({
+            injected: z.boolean().optional(),
+            quarantined: z.boolean().optional(),
+            contradicted: z.boolean().optional(),
+            compressedFrom: z.array(z.string()).optional(),
+            compressionAt: z.string().optional(),
+          })
+          .optional(),
+        validFrom: z.string().optional(),
+        validUntil: z.string().optional(),
+        observedAt: z.string().optional(),
+        supersededBy: z.string().optional(),
         version: z.number().int().min(1).optional(),
         /** Typed edges (4.1.0+). */
         relations: z

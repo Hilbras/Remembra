@@ -449,6 +449,10 @@ export class MemoryStore implements MemoryBackend {
       owner: input.owner ?? defaultOwner(provenance),
       access: input.access ?? defaultAccess(),
       retention: input.retention,
+      ...(input.validFrom ? { validFrom: input.validFrom } : {}),
+      ...(input.validUntil ? { validUntil: input.validUntil } : {}),
+      ...(input.observedAt ? { observedAt: input.observedAt } : {}),
+      ...(input.supersededBy ? { supersededBy: input.supersededBy } : {}),
       embedding,
     };
     const file = this.fileFor(memory);

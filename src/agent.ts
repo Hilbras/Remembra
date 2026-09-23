@@ -18,6 +18,8 @@ export interface AgentContext {
   taskId?: string;
   conversationId?: string;
   runId?: string;
+  /** Project/council/task scopes this identity is allowed to use. */
+  scopes?: string[];
 }
 
 /** The ownership inferred for a new memory when the caller omits it. */
@@ -31,13 +33,28 @@ export function defaultAccess(): MemoryAccess {
   return configured.success ? configured.data : "global";
 }
 
+/** Scopes derived from the trusted identity, including conventional agent scopes. */
+export function contextScopes(context: AgentContext): Set<string> {
+  return new Set([
+    ...(context.scopes ?? []),
+    `agent:${context.agentId}`,
+    ...(context.councilId ? [`council:${context.councilId}`] : []),
+    ...(context.taskId ? [`task:${context.taskId}`] : []),
+  ]);
+}
+
+/** Scope policy shared by direct reads and writes. */
+export function canUseScope(scope: string, context: AgentContext | undefined): boolean {
+  return scope === "global" || (!!context && contextScopes(context).has(scope));
+}
+
 /**
  * Agent-mode read policy.
  *
  * Global memories remain available to every identified agent. Shared memories
- * are available to identified agents and remain subject to the normal scope
- * filter. Private memories are available only to their creating agent. In
- * fail-closed agent mode, a missing context sees global memories only.
+ * are available to identified agents in an allowed scope. Private memories are
+ * available only to their creating agent in an allowed scope. In fail-closed
+ * agent mode, a missing context sees global memories only.
  *
  * Callers must establish AgentContext themselves; this function is a policy
  * layer, not an identity provider.
@@ -48,6 +65,7 @@ export function canReadMemory(
   agentMode: boolean,
 ): boolean {
   if (!agentMode) return true;
+  if (memory.scope !== "global" && !canUseScope(memory.scope, context)) return false;
   if ((memory.access ?? "global") === "global") return true;
   if (!context) return false;
   if ((memory.access ?? "global") === "shared") return true;

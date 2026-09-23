@@ -123,6 +123,10 @@ CREATE TABLE IF NOT EXISTS memories (
   access            TEXT NOT NULL DEFAULT 'global' CHECK (access IN (
                        'private','shared','global'
                      )),
+  valid_from        TEXT,
+  valid_until       TEXT,
+  observed_at       TEXT,
+  superseded_by     TEXT,
   retention         TEXT NOT NULL DEFAULT 'decaying' CHECK (retention IN (
                       'pinned','persistent','ephemeral','decaying','neverExpire'
                     )),
@@ -230,6 +234,14 @@ export class SqliteBackend implements MemoryBackend {
     if (!names.has("access")) {
       this.db.exec("ALTER TABLE memories ADD COLUMN access TEXT NOT NULL DEFAULT 'global'");
     }
+    for (const [name, definition] of [
+      ["valid_from", "TEXT"],
+      ["valid_until", "TEXT"],
+      ["observed_at", "TEXT"],
+      ["superseded_by", "TEXT"],
+    ] as const) {
+      if (!names.has(name)) this.db.exec(`ALTER TABLE memories ADD COLUMN ${name} ${definition}`);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -271,6 +283,10 @@ export class SqliteBackend implements MemoryBackend {
         owner: input.owner ?? defaultOwner(provenance),
         access: input.access ?? defaultAccess(),
         retention: input.retention,
+        ...(input.validFrom ? { validFrom: input.validFrom } : {}),
+        ...(input.validUntil ? { validUntil: input.validUntil } : {}),
+        ...(input.observedAt ? { observedAt: input.observedAt } : {}),
+        ...(input.supersededBy ? { supersededBy: input.supersededBy } : {}),
         embedding,
       };
       this.insertRow(memory);
@@ -337,7 +353,8 @@ export class SqliteBackend implements MemoryBackend {
         .prepare(`
           UPDATE memories SET
             type = ?, content = ?, scope = ?, tags = ?, importance = ?,
-            confidence = ?, trust = ?, provenance = ?, owner = ?, access = ?, retention = ?,
+            confidence = ?, trust = ?, provenance = ?, owner = ?, access = ?,
+            valid_from = ?, valid_until = ?, observed_at = ?, superseded_by = ?, retention = ?,
             relations = ?, version = ?, created_at = ?, updated_at = ?,
             last_seen = ?, archived_at = ?, embedding = ?
           WHERE id = ?
@@ -353,6 +370,10 @@ export class SqliteBackend implements MemoryBackend {
           jsonStr(updated.provenance),
           updated.owner ?? "global",
           updated.access ?? "global",
+          updated.validFrom ?? null,
+          updated.validUntil ?? null,
+          updated.observedAt ?? null,
+          updated.supersededBy ?? null,
           updated.retention ?? "decaying",
           jsonStr(updated.relations ?? []),
           updated.version,
@@ -535,9 +556,10 @@ export class SqliteBackend implements MemoryBackend {
       .prepare(`
         INSERT INTO memories (
           id, type, content, scope, tags, importance, confidence, trust,
-          provenance, owner, access, retention, relations, version, created_at, updated_at,
+          provenance, owner, access, valid_from, valid_until, observed_at, superseded_by,
+          retention, relations, version, created_at, updated_at,
           last_seen, archived_at, embedding
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         m.id,
@@ -551,6 +573,10 @@ export class SqliteBackend implements MemoryBackend {
         jsonStr(m.provenance),
         m.owner ?? "global",
         m.access ?? "global",
+        m.validFrom ?? null,
+        m.validUntil ?? null,
+        m.observedAt ?? null,
+        m.supersededBy ?? null,
         m.retention ?? "decaying",
         jsonStr(m.relations ?? []),
         m.version,
@@ -814,6 +840,10 @@ function rowToMemory(row: Record<string, unknown>): Memory | null {
   const access = MemoryAccess.options.includes(accessRaw as MemoryAccess)
     ? (accessRaw as MemoryAccess)
     : "global";
+  const validFrom = asStr(row.valid_from);
+  const validUntil = asStr(row.valid_until);
+  const observedAt = asStr(row.observed_at);
+  const supersededBy = asStr(row.superseded_by);
 
   const relationsRaw = parseJson<Array<{ id: string; kind: string }>>(asStr(row.relations));
   const relations: Memory["relations"] =
@@ -840,6 +870,10 @@ function rowToMemory(row: Record<string, unknown>): Memory | null {
     provenance,
     owner,
     access,
+    ...(validFrom ? { validFrom } : {}),
+    ...(validUntil ? { validUntil } : {}),
+    ...(observedAt ? { observedAt } : {}),
+    ...(supersededBy ? { supersededBy } : {}),
     retention,
     relations,
     version,
@@ -948,6 +982,10 @@ async function parseLegacyFile(file: string): Promise<Memory | null> {
 
   const createdAt = meta.created ? String(meta.created) : new Date().toISOString();
   const updatedAt = meta.updated ? String(meta.updated) : createdAt;
+  const validFrom = meta.validFrom ? String(meta.validFrom) : undefined;
+  const validUntil = meta.validUntil ? String(meta.validUntil) : undefined;
+  const observedAt = meta.observedAt ? String(meta.observedAt) : undefined;
+  const supersededBy = meta.supersededBy ? String(meta.supersededBy) : undefined;
   const lastSeen = meta.lastSeen ? String(meta.lastSeen) : undefined;
   const archivedAt = meta.archivedAt ? String(meta.archivedAt) : undefined;
   const embeddingRaw = meta.embedding;
@@ -970,6 +1008,10 @@ async function parseLegacyFile(file: string): Promise<Memory | null> {
     provenance,
     owner,
     access,
+    ...(validFrom ? { validFrom } : {}),
+    ...(validUntil ? { validUntil } : {}),
+    ...(observedAt ? { observedAt } : {}),
+    ...(supersededBy ? { supersededBy } : {}),
     retention,
     relations,
     version: revision,

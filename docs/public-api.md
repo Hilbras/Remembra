@@ -107,6 +107,7 @@ Envelope written by `remembra export` and `GET /snapshot`:
                   "tags": [], "importance": 3, "createdAt": "…", "updatedAt": "…",
                   "confidence": 1, "trust": "trusted", "version": 1,
                   "provenance": { "sourceType": "manual" },
+                   "owner": "global", "access": "global",
                   "relations": [ { "id": "…", "kind": "supports" } ] } ]
 }
 ```

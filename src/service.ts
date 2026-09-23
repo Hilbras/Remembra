@@ -21,7 +21,7 @@ import { createInjectionDetector, InjectionResult } from "./injection-detector.j
 import { createSensitiveDetector, SensitivePolicy } from "./sensitive-data.js";
 import { consolidate, ConsolidationFindings } from "./consolidation.js";
 import { computeHealth, getLifecycleState, agingScorePenalty } from "./lifecycle.js";
-import { AgentContext, canReadMemory } from "./agent.js";
+import { AgentContext, canReadMemory, canUseScope } from "./agent.js";
 
 export interface DigestResult {
   extracted: number;
@@ -141,6 +141,9 @@ export class MemoryService {
 
   private assertAgentWrite(input: StoreInput, options: AgentReadOptions): void {
     if (!this.agentMode) return;
+    if (input.scope !== "global" && !canUseScope(input.scope, options.agent)) {
+      throw new RemembraError("INVALID_INPUT", "memory scope is not available to the verified agent context");
+    }
     const requiresAgentIdentity =
       input.access === "private" ||
       input.owner === "agent" ||
@@ -149,7 +152,11 @@ export class MemoryService {
 
     const verifiedId = options.agent?.agentId;
     const attributedId = input.provenance?.agentId;
-    if (!verifiedId || (attributedId && attributedId !== verifiedId) || (input.access === "private" && attributedId !== verifiedId)) {
+    if (
+      !verifiedId ||
+      ((input.access === "private" || input.owner === "agent" || input.provenance?.sourceType === "agent") &&
+        (attributedId !== verifiedId || !canUseScope(input.scope, options.agent)))
+    ) {
       throw new RemembraError(
         "INVALID_INPUT",
         "private or agent-owned memory requires a matching verified agent context",

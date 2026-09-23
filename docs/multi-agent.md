@@ -14,7 +14,8 @@ An application that enables agent mode must:
 1. authenticate the caller using its existing auth mechanism;
 2. establish the agent identity from trusted server-side state;
 3. pass that identity to `MemoryService` as an `AgentContext`;
-4. never accept an unverified identity directly from a public request body or
+4. include the agent's allowed project/council/task scopes in that context;
+5. never accept an unverified identity directly from a public request body or
    query parameter.
 
 The HTTP server can receive a trusted identity through an application-supplied
@@ -40,6 +41,12 @@ Agent-created memories may record this provenance:
 
 The store preserves `agentId`, `agentType`, `agentVersion`, `conversationId`,
 `taskId`, and `runId` in both file and SQLite backends.
+
+A trusted service context can also include `councilId`, `taskId`, and an
+explicit `scopes` array. The conventional scopes `agent:<agentId>`,
+`council:<councilId>`, and `task:<taskId>` are derived automatically. A
+non-global memory is not readable through a direct id unless its scope is in
+that context.
 
 ## Ownership and visibility
 

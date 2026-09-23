@@ -131,6 +131,8 @@ test("snapshot round trip preserves agent policy and attribution", async () => {
   const source = await makeService();
   await source.store({
     ...agentA,
+    validFrom: "2026-01-01T00:00:00.000Z",
+    observedAt: "2025-12-31T00:00:00.000Z",
     provenance: { sourceType: "agent", agentId: "agent-a", agentType: "researcher", taskId: "task-9" },
   });
   const destination = await makeService();
@@ -142,6 +144,8 @@ test("snapshot round trip preserves agent policy and attribution", async () => {
   assert.equal(memories[0].access, "private");
   assert.equal(memories[0].provenance.agentType, "researcher");
   assert.equal(memories[0].provenance.taskId, "task-9");
+  assert.equal(memories[0].validFrom, "2026-01-01T00:00:00.000Z");
+  assert.equal(memories[0].observedAt, "2025-12-31T00:00:00.000Z");
 });
 
 test("agent mode excludes private source memories from compression", async () => {
@@ -151,6 +155,20 @@ test("agent mode excludes private source memories from compression", async () =>
   }
   const result = await (svc.compress as any)({ type: "fact" }, { agent: { agentId: "agent-a" } });
   assert.deepEqual(result, { compressed: [], sources: [] });
+});
+
+test("agent mode enforces council scope on direct access", async () => {
+  const svc = await makeService(true);
+  const { memory } = await svc.store(
+    { type: "decision", content: "Council decision", scope: "council:research", access: "shared" },
+    { agent: { agentId: "agent-a", councilId: "research" } },
+  );
+  await assert.rejects(
+    () => (svc.get as any)(memory.id, { agent: { agentId: "agent-a" } }),
+    /No memory/,
+  );
+  const visible = await (svc.get as any)(memory.id, { agent: { agentId: "agent-a", councilId: "research" } });
+  assert.equal(visible.memory.id, memory.id);
 });
 
 test("file backend persists agent policy across reopen", async () => {
