@@ -75,7 +75,7 @@ Prepare Remembra for large memory collections without changing existing single-m
 
 ### Phase 4: Scale validation and release
 
-- [ ] Task 7: Run 10K/50K benchmark comparison and document thresholds.
+- [x] Task 7: Run 10K/50K benchmark comparison and document thresholds.
   - Acceptance: `docs/performance.md` contains methodology, baseline, optimized result, and known limits.
   - Verification: benchmark command and reproducibility check.
   - Files: `docs/performance.md`, `PERF.md` if needed.

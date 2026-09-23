@@ -445,7 +445,7 @@ export class MemoryService {
     ) {
       try {
         const resultLimit = q.limit ?? 10;
-        const maxCandidates = Math.max(64, Math.min(512, resultLimit * 4));
+        const maxCandidates = Math.max(16, Math.min(128, resultLimit * 2));
         const page = await this.db.searchCandidates({
           terms: parsedQuery.terms,
           vector: queryVec,

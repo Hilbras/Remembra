@@ -47,8 +47,9 @@ SQLite implements an optional, bounded keyword candidate planner. It:
 The service falls back to the established full scan for partial pages, semantic
 (vector) queries, type-filtered queries, agent mode, caller-supplied candidate
 IDs, and legacy backends without the optional capability. The candidate budget
-is internal and is never accepted from a public request. Agent mode remains on
-the full path until policy predicates can be applied before a SQL `LIMIT`.
+is internal (`max(16, min(128, resultLimit × 2))` in the current slice) and is
+never accepted from a public request. Agent mode remains on the full path until
+policy predicates can be applied before a SQL `LIMIT`.
 
 Embedding-enabled batches use bounded provider calls. The defaults are
 `REMEMBRA_MAX_BATCH_SIZE=32` and
@@ -65,13 +66,16 @@ hardware.
 
 | Mode | Corpus | p50 | p95 | Heap after run |
 |------|--------:|----:|----:|---------------:|
-| bounded candidates | 10,000 | 45.35 ms | 48.37 ms | 10.54 MB |
-| bounded candidates | 50,000 | 216.32 ms | 258.64 ms | 9.83 MB |
+| bounded candidates | 10,000 | 41.85 ms | 334.56 ms | 105.82 MB |
+| bounded candidates | 50,000 | 310.70 ms | 1499.00 ms | 480.47 MB |
 | legacy full scan | 5,000 | 116.45 ms | 143.67 ms | 93.11 MB |
 
 The comparison is intentionally conservative: the legacy run is smaller
 because a full scan materializes the complete collection, while the bounded
-path is verified at the planned 10K and 50K sizes. A performance result is not
-accepted unless the existing correctness and agent-visibility tests remain
-green. Candidate generation must preserve scope, access, temporal, quarantine,
-and standing-instruction behavior.
+path is verified at the planned 10K and 50K sizes. The current local guardrail
+for the selective keyword benchmark is p95 below 2 seconds and heap below
+600 MB at 50K; broad lexical queries, semantic queries, and explicit type
+filters may fall back and should be benchmarked separately. A performance
+result is not accepted unless the existing correctness and agent-visibility
+tests remain green. Candidate generation must preserve scope, access,
+temporal, quarantine, and standing-instruction behavior.
