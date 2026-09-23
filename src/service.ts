@@ -2,7 +2,7 @@ import type { MemoryBackend } from "./backend.js";
 import { extractQuery, searchQ } from "./retrieval.js";
 import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, Provenance, defaultTrust, CompressInput, BatchRequest, MAX_BATCH_BYTES, BatchOutcome, BatchSummary, BatchFailure } from "./types.js";
 import { RemembraError, inputError, errorLabel } from "./errors.js";
-import { resolveEmbeddingProvider, embedText, EmbeddingProvider, cosine } from "./embeddings.js";
+import { resolveEmbeddingProvider, embedText, embedTexts, EmbeddingProvider, cosine } from "./embeddings.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { VERSION } from "./version.js";
@@ -77,6 +77,16 @@ export interface AgentReadOptions {
   agent?: AgentContext;
 }
 
+function envNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    throw new RemembraError("INVALID_INPUT", `${name} must be a number`);
+  }
+  return value;
+}
+
 function batchFailure(index: number, id: string | undefined, error: unknown): BatchOutcome {
   return {
     index,
@@ -92,6 +102,12 @@ function batchFailure(index: number, id: string | undefined, error: unknown): Ba
 function batchSummary(results: readonly BatchOutcome[]): BatchSummary {
   const succeeded = results.filter((result) => result.ok).length;
   return { requested: results.length, succeeded, failed: results.length - succeeded };
+}
+
+function recordBatchMetrics(operation: string, results: readonly BatchOutcome[]): void {
+  for (const result of results) {
+    metrics.inc("remembra_batch_items_total", { operation, result: result.ok ? "success" : "failure" });
+  }
 }
 
 /**
@@ -111,7 +127,7 @@ export class MemoryService {
   private readonly archiveTtlDays: number;
   private readonly redactOn: boolean;
   private readonly agentMode: boolean;
-  private readonly jobs = new JobQueue();
+  private readonly jobs: JobQueue;
   /** V4.4: prompt injection detector (pattern-based). */
   private readonly injectionDetector = createInjectionDetector();
   /** V4.4: sensitive data policy detector. */
@@ -142,7 +158,40 @@ export class MemoryService {
     this.archiveTtlDays = deps.archiveTtlDays ?? Number(process.env.REMEMBRA_ARCHIVE_TTL_DAYS ?? 365);
     this.redactOn = deps.redact ?? redactionEnabled();
     this.agentMode = deps.agentMode ?? process.env.REMEMBRA_AGENT_MODE === "1";
+    this.jobs = new JobQueue({
+      concurrency: envNumber("REMEMBRA_JOB_CONCURRENCY", 2),
+      maxQueue: envNumber("REMEMBRA_JOB_QUEUE", 100),
+      maxAttempts: envNumber("REMEMBRA_JOB_MAX_ATTEMPTS", 3),
+      retryDelayMs: envNumber("REMEMBRA_JOB_RETRY_DELAY_MS", 0),
+    });
     this.jobs.register("maintenance", async (options: AgentReadOptions) => this.maintain(options));
+    this.jobs.register(
+      "embed-memory",
+      async (payload: { id: string; options?: AgentReadOptions }, context) =>
+        this.embedMemoryJob(payload.id, payload.options ?? {}, context.signal),
+    );
+    this.jobs.register(
+      "consolidate-memory",
+      async (payload: { options?: AgentReadOptions }, context) => {
+        if (context.signal.aborted) throw new Error("consolidation cancelled");
+        return this.maintain(payload.options ?? {});
+      },
+    );
+    this.jobs.register(
+      "validate-memory",
+      async (payload: { options?: AgentReadOptions }, context) => {
+        if (context.signal.aborted) throw new Error("validation cancelled");
+        const memories = (await this.db.all(true)).filter((memory) => this.canRead(memory, payload.options ?? {}));
+        return { checked: memories.length };
+      },
+    );
+    this.jobs.register(
+      "archive-memory",
+      async (payload: { id: string; options?: AgentReadOptions }, context) => {
+        if (context.signal.aborted) throw new Error("archive cancelled");
+        return this.archiveMemoryJob(payload.id, payload.options ?? {});
+      },
+    );
   }
 
   get embeddingsEnabled(): boolean {
@@ -154,12 +203,60 @@ export class MemoryService {
     return this.jobs.enqueue<AgentReadOptions, MaintainResult>("maintenance", options);
   }
 
+  enqueueEmbedding(id: string, options: AgentReadOptions = {}): JobHandle<{ id: string; embedded: boolean }> {
+    return this.jobs.enqueue<{ id: string; options: AgentReadOptions }, { id: string; embedded: boolean }>(
+      "embed-memory",
+      { id, options },
+    );
+  }
+
+  enqueueConsolidation(options: AgentReadOptions = {}): JobHandle<MaintainResult> {
+    return this.jobs.enqueue<{ options: AgentReadOptions }, MaintainResult>("consolidate-memory", { options });
+  }
+
+  enqueueValidation(options: AgentReadOptions = {}): JobHandle<{ checked: number }> {
+    return this.jobs.enqueue<{ options: AgentReadOptions }, { checked: number }>("validate-memory", { options });
+  }
+
+  enqueueArchive(id: string, options: AgentReadOptions = {}): JobHandle<{ id: string; archived: boolean }> {
+    return this.jobs.enqueue<{ id: string; options: AgentReadOptions }, { id: string; archived: boolean }>(
+      "archive-memory",
+      { id, options },
+    );
+  }
+
   jobStats(): { queued: number; running: number; capacity: number; concurrency: number } {
     return this.jobs.stats();
   }
 
   async shutdownBackgroundJobs(): Promise<void> {
     await this.jobs.shutdown();
+  }
+
+  private async embedMemoryJob(
+    id: string,
+    options: AgentReadOptions,
+    signal: AbortSignal,
+  ): Promise<{ id: string; embedded: boolean }> {
+    if (signal.aborted) throw new Error("embedding cancelled");
+    const memory = await this.db.get(id);
+    this.assertCanRead(memory, id, options);
+    if (!this.embedFn || memory.embedding?.length) return { id, embedded: false };
+    const embedding = await this.maybeEmbed(memory.content, signal);
+    if (signal.aborted) throw new Error("embedding cancelled");
+    if (!embedding) return { id, embedded: false };
+    await this.db.update({ ...memory, embedding });
+    return { id, embedded: true };
+  }
+
+  private async archiveMemoryJob(
+    id: string,
+    options: AgentReadOptions,
+  ): Promise<{ id: string; archived: boolean }> {
+    const memory = await this.db.get(id);
+    this.assertCanRead(memory, id, options);
+    const archived = await this.db.archive(id);
+    return { id, archived: Boolean(archived) };
   }
 
   /** Returns false rather than disclosing the existence of a private memory. */
@@ -263,7 +360,12 @@ export class MemoryService {
     }
   }
 
-  async store(input: unknown, options: AgentReadOptions = {}) {
+  async store(
+    input: unknown,
+    options: AgentReadOptions = {},
+    /** Internal batch path: a precomputed vector avoids a second provider call. */
+    embeddingOverride?: number[] | null,
+  ) {
     let parsed: StoreInput;
     try {
       parsed = StoreInput.parse(input);
@@ -298,7 +400,10 @@ export class MemoryService {
       metrics.inc("remembra_injection_flagged_total");
     }
 
-    const embedding = await this.maybeEmbed(parsed.content);
+    const embedding =
+      embeddingOverride === undefined
+        ? await this.maybeEmbed(parsed.content)
+        : embeddingOverride ?? undefined;
     // Provenance/trust travel in the input now (plan §4.3): callers that say
     // nothing store as { sourceType: manual } → trusted; digests pass
     // conversation provenance below and land unverified (§4.9).
@@ -453,15 +558,50 @@ export class MemoryService {
     }
 
     if (request.operation === "store") {
+      // Precompute vectors only when it cannot bypass redaction or a reject
+      // policy. The public store path remains the fallback and is still used
+      // for every item's canonicalization/security checks.
+      const precomputed = new Map<number, number[] | null>();
+      const embedFn = this.embedFn;
+      if (embedFn && !this.redactOn) {
+        const hasRejectedContent = request.items.some((item) => {
+          const scan = this.sensitiveDetector.scan(item.content);
+          return scan.detected && scan.action === "reject";
+        });
+        if (!hasRejectedContent) {
+          try {
+            const vectors = await embedTexts(
+              request.items.map((item) => item.content),
+              "none",
+              {
+                embedder: async (text, _provider, callOptions) =>
+                  embedFn(text, callOptions),
+              },
+            );
+            vectors.forEach((vector, index) => precomputed.set(index, vector));
+          } catch (err) {
+            logEvent(
+              "warn",
+              "batch_embedding_precompute_failed",
+              { error: String(err).slice(0, 200) },
+              "Remembra: batch embedding precompute unavailable; using per-item fallback",
+            );
+          }
+        }
+      }
+
       const results: BatchOutcome[] = [];
       for (const [index, item] of request.items.entries()) {
         try {
-          const result = await this.store(item, options);
+          const result = precomputed.has(index)
+            ? await this.store(item, options, precomputed.get(index))
+            : await this.store(item, options);
           results.push({ index, id: result.id, ok: true, result: { id: result.id, message: result.message } });
         } catch (err) {
           results.push(batchFailure(index, undefined, err));
         }
       }
+      recordBatchMetrics("store", results);
       return { operation: "store" as const, summary: batchSummary(results), results };
     }
 
@@ -481,6 +621,7 @@ export class MemoryService {
           results.push(batchFailure(index, id, err));
         }
       }
+      recordBatchMetrics("update", results);
       return { operation: "update" as const, summary: batchSummary(results), results };
     }
 
@@ -495,6 +636,7 @@ export class MemoryService {
           results.push(batchFailure(index, id, err));
         }
       }
+      recordBatchMetrics("delete", results);
       return { operation: "delete" as const, summary: batchSummary(results), results };
     }
 
@@ -524,6 +666,7 @@ export class MemoryService {
     if (Buffer.byteLength(compact, "utf8") > MAX_BATCH_BYTES) {
       throw new RemembraError("INVALID_INPUT", `batch export exceeds ${MAX_BATCH_BYTES} bytes`);
     }
+    recordBatchMetrics("export", results);
     return {
       ...snapshot,
       operation: "export" as const,

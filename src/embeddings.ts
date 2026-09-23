@@ -10,6 +10,7 @@
  */
 import { providerFetch } from "./provider.js";
 import { RemembraError } from "./errors.js";
+import { metrics } from "./metrics.js";
 
 export type EmbeddingProvider = "openai" | "ollama" | "none";
 
@@ -105,8 +106,13 @@ export async function embedTexts(
         if (index >= end) return;
         try {
           results[index] = await embed(texts[index], provider, { signal: opts.signal });
+          const outcome = results[index] ? "success" : provider === "none" ? "disabled" : "failure";
+          metrics.inc("remembra_embedding_batch_items_total", { result: outcome });
+          if (outcome === "failure") metrics.inc("remembra_embedding_batch_failures_total");
         } catch {
           results[index] = null;
+          metrics.inc("remembra_embedding_batch_items_total", { result: "failure" });
+          metrics.inc("remembra_embedding_batch_failures_total");
         }
       }
     };

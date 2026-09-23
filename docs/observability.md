@@ -64,6 +64,18 @@ stays exempt so unauthenticated readiness probes keep working.
 | `remembra_info` | gauge | `version` | Build info, always `1`. |
 | `remembra_jobs_total` | counter | `type`, `outcome` | Background queue lifecycle: `queued`, `completed`, `failed`, or `cancelled`. |
 | `remembra_job_failures_total` | counter | `type` | Jobs that exhausted their bounded retry budget. |
+| `remembra_job_queue_depth` | gauge | — | Jobs waiting for a worker. |
+| `remembra_job_queue_running` | gauge | — | Jobs currently executing. |
+| `remembra_embedding_batch_items_total` | counter | `result` | Bounded embedding items: `success`, `failure`, or `disabled`. |
+| `remembra_embedding_batch_failures_total` | counter | — | Failed bounded embedding items. |
+| `remembra_batch_items_total` | counter | `operation`, `result` | Batch item outcomes (`store`, `update`, `delete`, `export`). |
+
+Background limits are configurable with `REMEMBRA_JOB_CONCURRENCY`,
+`REMEMBRA_JOB_QUEUE`, `REMEMBRA_JOB_MAX_ATTEMPTS`, and
+`REMEMBRA_JOB_RETRY_DELAY_MS`. Batch embedding limits use
+`REMEMBRA_MAX_BATCH_SIZE` and `REMEMBRA_MAX_CONCURRENT_EMBEDDINGS`. Invalid
+values fail closed with `INVALID_INPUT`; values are never read from request
+bodies or public headers.
 
 ### Scrape config
 

@@ -82,6 +82,29 @@ test("maintenance can run through the bounded background queue", async () => {
   await svc.shutdownBackgroundJobs();
 });
 
+test("background jobs cover embedding, validation, and archiving", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-jobs-"));
+  const store = new MemoryStore(dir);
+  const svc = new MemoryService(store, {
+    embedFn: async (text) => [text.length],
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+  });
+  const memory = await store.store({
+    type: "fact",
+    content: "job memory",
+    scope: "global",
+    tags: [],
+    importance: 3,
+  });
+  const embedded = await svc.enqueueEmbedding(memory.id).done;
+  assert.deepEqual(embedded.value, { id: memory.id, embedded: true });
+  const validated = await svc.enqueueValidation().done;
+  assert.equal(validated.value?.checked, 1);
+  const archived = await svc.enqueueArchive(memory.id).done;
+  assert.deepEqual(archived.value, { id: memory.id, archived: true });
+  await svc.shutdownBackgroundJobs();
+});
+
 test("list filters by type and scope", async () => {
   const svc = await tempService();
   await svc.store({ type: "fact", content: "a", scope: "global" });

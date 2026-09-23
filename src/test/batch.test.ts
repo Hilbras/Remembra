@@ -45,6 +45,29 @@ test("batch validates the complete request before writing", async () => {
   assert.equal((await svc.list({})).memories.length, 0);
 });
 
+test("batch store precomputes embeddings within the bounded provider path", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-batch-embed-"));
+  const calls: string[] = [];
+  const svc = new MemoryService(new MemoryStore(root), {
+    embedFn: async (text) => {
+      calls.push(text);
+      return [text.length];
+    },
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+  });
+  const result = await svc.batch({
+    operation: "store",
+    items: [
+      { type: "fact", content: "embed one" },
+      { type: "fact", content: "embed two" },
+    ],
+  });
+  assert.equal(result.summary.succeeded, 2);
+  assert.deepEqual(calls.sort(), ["embed one", "embed two"]);
+  const memories = (await svc.list({})).memories;
+  assert.ok(memories.every((memory) => memory.embedding?.length === 1));
+});
+
 test("batch store returns ordered outcomes and preserves duplicate inputs", async () => {
   const svc = await service();
   const result = await svc.batch({

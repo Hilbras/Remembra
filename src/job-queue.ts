@@ -90,6 +90,8 @@ export class JobQueue {
     this.retryDelayMs = nonNegativeNumber(options.retryDelayMs ?? 0, "retryDelayMs");
     this.idGen = options.idGen ?? (() => `job-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
     this.onError = options.onError;
+    metrics.gauge("remembra_job_queue_depth", "Queued background jobs", () => [{ value: this.queue.length }]);
+    metrics.gauge("remembra_job_queue_running", "Running background jobs", () => [{ value: this.running.size }]);
   }
 
   get isClosed(): boolean {

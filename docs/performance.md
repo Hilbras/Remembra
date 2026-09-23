@@ -50,10 +50,12 @@ IDs, and legacy backends without the optional capability. The candidate budget
 is internal and is never accepted from a public request. Agent mode remains on
 the full path until policy predicates can be applied before a SQL `LIMIT`.
 
-The benchmark intentionally runs SQLite with FTS5 disabled to isolate the
-main-table candidate planner. FTS synchronization and rebuild behavior are
-covered by SQLite regression tests; vector search remains on the exact path
-until a vector candidate index exists.
+Embedding-enabled batches use bounded provider calls. The defaults are
+`REMEMBRA_MAX_BATCH_SIZE=32` and
+`REMEMBRA_MAX_CONCURRENT_EMBEDDINGS=4`; per-item failures remain fail-open and
+are reported in the batch result. Redaction and reject-sensitive-data policies
+force the per-item store path so precomputation cannot bypass content
+normalization.
 
 ## Reference measurements
 
