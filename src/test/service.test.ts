@@ -31,6 +31,48 @@ test("search returns formatted text and results", async () => {
   assert.match(text, /DECISION/);
 });
 
+test("search uses complete candidate pages and falls back on partial pages", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-candidates-"));
+  const store = new MemoryStore(dir);
+  const stored = await store.store({
+    type: "fact",
+    content: "candidate needle",
+    scope: "global",
+    tags: [],
+    importance: 3,
+  });
+  const svc = new MemoryService(store, {
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+  });
+
+  let allCalls = 0;
+  const originalAll = store.all.bind(store);
+  store.all = async (includeArchived?: boolean) => {
+    allCalls++;
+    return originalAll(includeArchived);
+  };
+  (store as any).searchCandidates = async () => ({
+    memories: [stored],
+    coverage: "complete" as const,
+    source: "file" as const,
+    totalDocs: 1,
+  });
+
+  const optimized = await svc.search({ query: "needle", limit: 1 });
+  assert.equal(optimized.results[0]?.id, stored.id);
+  assert.equal(allCalls, 0);
+
+  (store as any).searchCandidates = async () => ({
+    memories: [],
+    coverage: "partial" as const,
+    source: "none" as const,
+  });
+  const fallback = await svc.search({ query: "needle", limit: 1 });
+  assert.equal(fallback.results[0]?.id, stored.id);
+  assert.equal(allCalls, 1);
+});
+
 test("list filters by type and scope", async () => {
   const svc = await tempService();
   await svc.store({ type: "fact", content: "a", scope: "global" });

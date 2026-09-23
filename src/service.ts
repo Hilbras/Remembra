@@ -1,5 +1,5 @@
 import type { MemoryBackend } from "./backend.js";
-import { searchQ } from "./retrieval.js";
+import { extractQuery, searchQ } from "./retrieval.js";
 import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, Provenance, defaultTrust, CompressInput } from "./types.js";
 import { RemembraError, inputError, errorLabel } from "./errors.js";
 import { resolveEmbeddingProvider, embedText, EmbeddingProvider, cosine } from "./embeddings.js";
@@ -277,23 +277,85 @@ export class MemoryService {
     };
   }
 
-  async search(q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean; includeExpired?: boolean; includeFuture?: boolean; includeQuarantined?: boolean; includeArchived?: boolean } & AgentReadOptions) {
+  async search(q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean; includeExpired?: boolean; includeFuture?: boolean; includeQuarantined?: boolean; includeArchived?: boolean; candidates?: string[] } & AgentReadOptions) {
     const t0 = performance.now();
     let queryVec: number[] | null = null;
     if (q.query && this.embedFn) queryVec = (await this.maybeEmbed(q.query)) ?? null;
 
-    // V4.5: temporal and lifecycle filtering before search.
-    let pool = await this.db.all(q.includeArchived);
+    // V4.8: let capable backends generate a bounded keyword candidate set.
+    // Agent mode deliberately stays on the full path until a backend can
+    // apply the complete trusted visibility policy before its LIMIT.
     const now = Date.now();
-    pool = pool.filter((m) => {
+    const parsedQuery = extractQuery(q.query);
+    const eligible = (m: Memory): boolean => {
       if (!this.canRead(m, q)) return false;
       if (!q.includeExpired && m.validUntil && Date.parse(m.validUntil) < now) return false;
       if (!q.includeFuture && m.validFrom && Date.parse(m.validFrom) > now) return false;
       if (!q.includeQuarantined && m.meta?.quarantined) return false;
       return true;
-    });
+    };
 
-    const { results: ranked, explanations } = searchQ(pool, q, queryVec);
+    let pool: Memory[] | undefined;
+    let totalDocs: number | undefined;
+    if (
+      !queryVec &&
+      !this.agentMode &&
+      !q.type &&
+      !q.candidates?.length &&
+      this.db.searchCandidates
+    ) {
+      try {
+        const resultLimit = q.limit ?? 10;
+        const maxCandidates = Math.max(64, Math.min(512, resultLimit * 4));
+        const page = await this.db.searchCandidates({
+          terms: parsedQuery.terms,
+          vector: queryVec,
+          scope: q.scope,
+          type: q.type,
+          includeArchived: q.includeArchived,
+          includeExpired: q.includeExpired,
+          includeFuture: q.includeFuture,
+          includeQuarantined: q.includeQuarantined,
+          now,
+          resultLimit,
+          maxCandidates,
+          eligible,
+          temporalBoost:
+            parsedQuery.temporal.latestCount !== undefined ||
+            parsedQuery.temporal.recentCount !== undefined,
+        });
+        const uniqueCandidates = new Set(page.memories.map((memory) => memory.id));
+        const validTotal =
+          page.totalDocs === undefined ||
+          (Number.isFinite(page.totalDocs) && page.totalDocs >= 0);
+        if (
+          page.coverage === "complete" &&
+          page.memories.length <= maxCandidates &&
+          uniqueCandidates.size === page.memories.length &&
+          validTotal &&
+          page.memories.every(eligible)
+        ) {
+          pool = page.memories;
+          totalDocs = page.totalDocs;
+        }
+      } catch (err) {
+        logEvent(
+          "warn",
+          "candidate_generation_failed",
+          { error: String(err).slice(0, 200) },
+          "Remembra: bounded candidate generation unavailable; using full scan",
+        );
+      }
+    }
+
+    // V4.5: temporal and lifecycle filtering before search.
+    pool ??= (await this.db.all(q.includeArchived)).filter(eligible);
+
+    const { results: ranked, explanations } = searchQ(
+      pool,
+      totalDocs === undefined ? q : { ...q, totalDocs },
+      queryVec,
+    );
     const durationMs = performance.now() - t0;
 
     // Observability (audit Phase 7): counters + hygiene-first query logging —

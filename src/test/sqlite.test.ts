@@ -164,17 +164,43 @@ test("sqlite: history snapshots on content change", async () => {
 });
 
 test("sqlite: FTS5 search returns IDs", async () => {
-  const { store } = await tempSqlite();
-  await store.store(StoreInput.parse({ type: "fact", content: "PostgreSQL is great" }));
-  await store.store(StoreInput.parse({ type: "fact", content: "SQLite is also great" }));
+  const { store, dir } = await tempSqlite();
+  const first = await store.store(StoreInput.parse({ type: "fact", content: "PostgreSQL is great" }));
+  const second = await store.store(StoreInput.parse({ type: "fact", content: "SQLite is also great" }));
   const matches = store.ftsSearch("great");
   // FTS5 may be unavailable on some builds; fall back gracefully.
   if (store["ftsEnabled"]) {
-    assert.equal(matches.length, 2);
+    assert.deepEqual(new Set(matches), new Set([first.id, second.id]));
+    await store.update({ ...first, content: "Redis is great" });
+    assert.ok(store.ftsSearch("Redis").includes(first.id));
+    assert.ok(!store.ftsSearch("PostgreSQL").includes(first.id));
   } else {
     assert.equal(matches.length, 0);
   }
+
+  const tagged = await store.store(StoreInput.parse({
+    type: "fact",
+    content: "ordinary content",
+    tags: ["needle-tag"],
+  }));
+  const page = await store.searchCandidates({
+    terms: ["needle-tag"],
+    vector: null,
+    now: Date.now(),
+    resultLimit: 5,
+    maxCandidates: 100,
+    eligible: () => true,
+  });
+  assert.equal(page.coverage, "complete");
+  assert.ok(page.memories.some((memory) => memory.id === tagged.id));
   store.close();
+
+  const reopened = new SqliteBackend({ root: dir });
+  if (reopened["ftsEnabled"]) {
+    assert.equal(reopened.ftsSearch("great").length, 2);
+  }
+  reopened.close();
+  await fs.rm(dir, { recursive: true, force: true });
 });
 
 test("sqlite: embedding stored as BLOB", async () => {

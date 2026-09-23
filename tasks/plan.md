@@ -17,13 +17,13 @@ Prepare Remembra for large memory collections without changing existing single-m
 
 ### Phase 1: Measurement and bounded retrieval
 
-- [ ] Task 1: Add deterministic scale benchmark harness for 10K and 50K memories.
+- [x] Task 1: Add deterministic scale benchmark harness for 10K and 50K memories.
   - Acceptance: reports corpus size, query latency percentiles, result count, and peak memory where available.
   - Verification: `npm run bench:scale`; results are reproducible with a fixed seed.
-  - Files: `scripts/bench-scale.mjs`, `package.json`, `docs/performance.md`.
+  - Files: `scripts/bench-scale.mjs`, `scripts/seed-scale.mjs`, `package.json`, `docs/performance.md`.
   - Scope: S.
 
-- [ ] Task 2: Add bounded backend candidate generation and retrieval integration.
+- [x] Task 2: Add bounded backend candidate generation and retrieval integration.
   - Acceptance: semantic/keyword search does not rank an unbounded full collection when a backend can provide candidates; fallback remains correct; agent scope/access filters remain applied.
   - Verification: focused retrieval/service/SQLite tests plus before/after benchmark.
   - Files: `src/backend.ts`, `src/sqlite-backend.ts`, `src/retrieval.ts`, `src/service.ts`, tests.
@@ -31,8 +31,8 @@ Prepare Remembra for large memory collections without changing existing single-m
 
 ### Checkpoint: Retrieval
 
-- [ ] Full existing suite remains green.
-- [ ] Benchmark shows a measurable, non-regressive improvement or the experiment is reverted.
+- [x] Full existing suite remains green.
+- [x] Benchmark shows a measurable, non-regressive improvement or the experiment is reverted.
 
 ### Phase 2: Batch APIs
 

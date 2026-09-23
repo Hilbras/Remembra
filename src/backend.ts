@@ -30,8 +30,43 @@ export interface HistoryEntry {
  *  - a memory id must exist in exactly one tree at rest;
  *  - `importMemory` must refuse ids that already exist (return false).
  */
+export interface CandidateSearchRequest {
+  /** Normalized terms from retrieval.extractQuery(), never raw FTS syntax. */
+  terms: readonly string[];
+  /** Non-null vectors require an exact vector candidate provider. */
+  vector?: number[] | null;
+  scope?: string;
+  type?: string;
+  includeArchived?: boolean;
+  includeExpired?: boolean;
+  includeFuture?: boolean;
+  includeQuarantined?: boolean;
+  /** Shared clock used by the service lifecycle predicate. */
+  now: number;
+  /** Public result limit, used to size exact modifier anchors. */
+  resultLimit: number;
+  /** Hard backend output budget; never controlled by the public request. */
+  maxCandidates: number;
+  /** Service-owned policy/lifecycle predicate, checked before LIMIT. */
+  eligible: (memory: Memory) => boolean;
+  /** True for latest/recent temporal queries, which double recency weight. */
+  temporalBoost?: boolean;
+}
+
+export interface CandidateSearchPage {
+  /** Rows that are safe to pass to the ranking pipeline. */
+  memories: Memory[];
+  /** `partial` means the service must use the existing full-scan path. */
+  coverage: "complete" | "partial";
+  source: "sqlite" | "file" | "none";
+  /** Authoritative pre-scope denominator for keyword IDF. */
+  totalDocs?: number;
+}
+
 export interface MemoryBackend {
   store(input: StoreInput, embedding?: number[]): Promise<Memory>;
+  /** Optional bounded candidate generation; absence preserves the legacy path. */
+  searchCandidates?(request: CandidateSearchRequest): Promise<CandidateSearchPage>;
   /** Optional observability hook — the file backend exposes parse-cache stats. */
   cacheStats?(): { size: number; capacity: number };
   get(id: string): Promise<Memory | null>;

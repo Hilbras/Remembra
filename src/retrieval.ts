@@ -359,7 +359,7 @@ export function searchQ(
     const reasons: string[] = ["scope_match"];
     if (m.scope === "global") reasons.push("global");
     if (q.scope && m.scope === q.scope) reasons.push("scope_exact");
-    const kwScore = keywordScore(m, terms, memories.length);
+    const kwScore = keywordScore(m, terms, q.totalDocs ?? memories.length);
     if (kwScore > 0) reasons.push("keyword_hit");
     const vecScore = queryVec ? vectorScore(m, queryVec) : 0;
     if (vecScore > 0) reasons.push("semantic_hit");

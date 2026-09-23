@@ -421,6 +421,8 @@ export interface SearchQuery {
   explain?: boolean;
   /** Pre-seeded candidate ids for future relationship-expansion calls. */
   candidates?: string[];
+  /** Internal corpus size used to keep keyword IDF stable for candidate searches. */
+  totalDocs?: number;
 }
 
 /** Each scoring component exposed so callers can inspect why a memory ranked

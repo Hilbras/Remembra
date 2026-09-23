@@ -20,7 +20,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { Memory, StoreInput } from "./types.js";
-import type { MemoryBackend, HistoryEntry } from "./backend.js";
+import type { MemoryBackend, HistoryEntry, CandidateSearchRequest, CandidateSearchPage } from "./backend.js";
 import { RemembraError } from "./errors.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
@@ -101,7 +101,7 @@ function assertScope(scope: string): void {
 //  Schema
 // ---------------------------------------------------------------------------
 
-const SCHEMA_SQL = /* sql */ `
+export const SQLITE_SCHEMA_SQL = /* sql */ `
 CREATE TABLE IF NOT EXISTS memories (
   id                TEXT PRIMARY KEY,
   type              TEXT NOT NULL CHECK (type IN (
@@ -187,6 +187,21 @@ export class SqliteBackend implements MemoryBackend {
   protected readonly db: Database.Database;
   private readonly idGen: () => string;
   private ftsEnabled: boolean;
+  /**
+   * Reuse hot read statements. Besides avoiding repeated SQL compilation,
+   * retaining the statements avoids a better-sqlite3/Node 24 native cleanup
+   * assertion when a large result set is read repeatedly.
+   */
+  private readonly allActiveStatement: Database.Statement;
+  private readonly allIncludingArchivedStatement: Database.Statement;
+  private readonly insertMemoryStatement: Database.Statement;
+  private readonly lastInsertRowidStatement: Database.Statement;
+  private readonly insertFtsStatement: Database.Statement | null;
+  private readonly deleteFtsStatement: Database.Statement | null;
+  private readonly auditStatement: Database.Statement;
+  private readonly candidateMatchStatement: Database.Statement;
+  private readonly candidateZeroStatement: Database.Statement;
+  private readonly candidateCountStatement: Database.Statement;
   /** In-process FIFO so mutations are serialized within this instance. */
   private queue: Promise<void> = Promise.resolve();
   private migrationPromise: Promise<void> | null = null;
@@ -203,8 +218,14 @@ export class SqliteBackend implements MemoryBackend {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("synchronous = NORMAL");
     this.db.pragma("foreign_keys = ON");
-    this.db.exec(SCHEMA_SQL);
+    this.db.exec(SQLITE_SCHEMA_SQL);
     this.ensureAgentColumns();
+    this.allActiveStatement = this.db.prepare(
+      "SELECT * FROM memories WHERE archived_at IS NULL ORDER BY updated_at DESC",
+    );
+    this.allIncludingArchivedStatement = this.db.prepare(
+      "SELECT * FROM memories ORDER BY updated_at DESC",
+    );
 
     // Detect FTS5 support.
     this.ftsEnabled =
@@ -219,6 +240,107 @@ export class SqliteBackend implements MemoryBackend {
         "Remembra: FTS5 not available — falling back to keyword-only search",
       );
     }
+
+    // Retain hot statements. Recreating these for every operation adds
+    // avoidable compilation and has exposed a native cleanup assertion with
+    // better-sqlite3 under Node 24 when the collection is large.
+    this.insertMemoryStatement = this.db.prepare(`
+      INSERT INTO memories (
+        id, type, content, scope, tags, importance, confidence, trust,
+        provenance, owner, access, valid_from, valid_until, observed_at, superseded_by, meta,
+        retention, relations, version, created_at, updated_at,
+        last_seen, archived_at, embedding
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this.lastInsertRowidStatement = this.db.prepare("SELECT last_insert_rowid() AS rowid");
+    this.insertFtsStatement = this.ftsEnabled
+      ? this.db.prepare("INSERT INTO memories_fts(rowid, content) VALUES (?, ?)")
+      : null;
+    this.deleteFtsStatement = this.ftsEnabled
+      ? this.db.prepare("DELETE FROM memories_fts WHERE rowid = ?")
+      : null;
+    this.auditStatement = this.db.prepare(
+      "INSERT INTO memory_audit (memory_id, action, details, created_at) VALUES (?, ?, ?, ?)",
+    );
+    const eligibleFilter = `
+      (? = 1 OR m.archived_at IS NULL)
+      AND (
+        ? = 1
+        OR m.valid_until IS NULL
+        OR julianday(m.valid_until) IS NULL
+        OR julianday(m.valid_until) >= julianday(?)
+      )
+      AND (
+        ? = 1
+        OR m.valid_from IS NULL
+        OR julianday(m.valid_from) IS NULL
+        OR julianday(m.valid_from) <= julianday(?)
+      )
+      AND (
+        ? = 1
+        OR COALESCE(
+          CASE WHEN json_valid(m.meta) THEN json_extract(m.meta, '$.quarantined') ELSE 0 END,
+          0
+        ) = 0
+      )
+    `;
+    const candidateFilter = `${eligibleFilter}
+      AND (? = '' OR m.scope = ? OR m.scope = 'global')
+    `;
+    const keywordPredicate = `
+      EXISTS (
+        SELECT 1
+        FROM json_each(?) AS terms
+        WHERE instr(lower(m.content), lower(terms.value)) > 0
+           OR instr(lower(m.tags), lower(terms.value)) > 0
+      )
+    `;
+    this.candidateMatchStatement = this.db.prepare(`
+      SELECT m.*
+      FROM memories AS m
+      WHERE ${candidateFilter}
+        AND ${keywordPredicate}
+      ORDER BY m.updated_at DESC
+      LIMIT ?
+    `);
+    this.candidateZeroStatement = this.db.prepare(`
+      SELECT m.*
+      FROM memories AS m
+      WHERE ${candidateFilter}
+        AND NOT ${keywordPredicate}
+      ORDER BY (
+        CASE
+          WHEN json_valid(m.provenance)
+            AND json_extract(m.provenance, '$.sourceType') = 'manual' THEN 10
+          ELSE 0
+        END
+        + CASE m.trust
+            WHEN 'system' THEN 8
+            WHEN 'verified' THEN 6
+            WHEN 'trusted' THEN 2
+            WHEN 'unverified' THEN -8
+            ELSE 0
+          END
+        + CASE WHEN m.retention = 'pinned' THEN 50 ELSE 0 END
+        + m.importance * 4
+        + m.confidence * 20
+        + (CASE WHEN ? = 1 THEN 2.0 ELSE 0.5 END)
+          * (20.0 * pow(0.5, COALESCE(MAX(0.0, julianday(?) - julianday(m.updated_at)), 0.0) / 30.0))
+        + CASE WHEN m.scope = ? THEN 150 ELSE 100 END
+        + CASE
+            WHEN m.type IN ('role', 'instruction') AND m.trust <> 'unverified' THEN 1000
+            ELSE 0
+          END
+      )
+      , m.updated_at DESC
+      , m.id ASC
+      LIMIT ?
+    `);
+    this.candidateCountStatement = this.db.prepare(`
+      SELECT count(*) AS count
+      FROM memories AS m
+      WHERE ${eligibleFilter}
+    `);
 
     this.idGen = opts.idGen ?? genId;
 
@@ -320,14 +442,95 @@ export class SqliteBackend implements MemoryBackend {
   }
 
   async all(includeArchived = false): Promise<Memory[]> {
-    let sql = "SELECT * FROM memories";
-    const params: unknown[] = [];
-    if (!includeArchived) {
-      sql += " WHERE archived_at IS NULL";
-    }
-    sql += " ORDER BY updated_at DESC";
-    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
+    const statement = includeArchived
+      ? this.allIncludingArchivedStatement
+      : this.allActiveStatement;
+    const rows = statement.all() as Record<string, unknown>[];
     return rows.map(rowToMemory).filter((m): m is Memory => m !== null);
+  }
+
+  /**
+   * Return an exact keyword candidate superset for the current ranking path.
+   *
+   * All lexical matches are retained (up to the hard budget). For rows with no
+   * lexical signal, SQL orders by the same modifier, scope, and standing gate
+   * expression used by retrieval.ts, so the top zero-signal rows are enough to
+   * preserve the final top-k. If the lexical set exceeds the budget, coverage
+   * is partial and the service deliberately falls back to all().
+   */
+  async searchCandidates(request: CandidateSearchRequest): Promise<CandidateSearchPage> {
+    const partial = (): CandidateSearchPage => ({
+      memories: [],
+      coverage: "partial",
+      source: "none",
+    });
+    if (request.vector && request.vector.length > 0) return partial();
+    // `type` is historically accepted but ignored by searchQ; do not change
+    // that behavior accidentally while optimizing the keyword path.
+    if (request.type) return partial();
+
+    const maxCandidates = Math.max(1, Math.min(1000, Math.floor(request.maxCandidates)));
+    const nowIso = new Date(request.now).toISOString();
+    const includeArchived = request.includeArchived ? 1 : 0;
+    const includeExpired = request.includeExpired ? 1 : 0;
+    const includeFuture = request.includeFuture ? 1 : 0;
+    const includeQuarantined = request.includeQuarantined ? 1 : 0;
+    const scope = request.scope ?? "";
+    const eligibleParams = [
+      includeArchived,
+      includeExpired,
+      nowIso,
+      includeFuture,
+      nowIso,
+      includeQuarantined,
+    ] as const;
+    const candidateParams = [...eligibleParams, scope, scope] as const;
+    const termsJson = JSON.stringify(request.terms);
+
+    try {
+      const matchRows = this.candidateMatchStatement.all(
+        ...candidateParams,
+        termsJson,
+        maxCandidates + 1,
+      ) as Record<string, unknown>[];
+      const requiredZero = Math.min(request.resultLimit, maxCandidates);
+      if (matchRows.length + requiredZero > maxCandidates) return partial();
+
+      const zeroLimit = Math.max(0, maxCandidates - matchRows.length);
+      const zeroRows = zeroLimit > 0
+        ? this.candidateZeroStatement.all(
+            ...candidateParams,
+            termsJson,
+            request.temporalBoost ? 1 : 0,
+            nowIso,
+            scope,
+            zeroLimit,
+          ) as Record<string, unknown>[]
+        : [];
+
+      const byId = new Map<string, Memory>();
+      for (const row of [...matchRows, ...zeroRows]) {
+        const memory = rowToMemory(row);
+        if (!memory) return partial();
+        // Defense in depth: a backend must not return a row the service's
+        // policy/lifecycle predicate rejects. Treat disagreement as partial.
+        if (!request.eligible(memory)) return partial();
+        byId.set(memory.id, memory);
+      }
+      if (byId.size > maxCandidates) return partial();
+
+      const countRow = this.candidateCountStatement.get(...eligibleParams) as { count: number };
+      return {
+        memories: [...byId.values()],
+        coverage: "complete",
+        source: "sqlite",
+        totalDocs: Number(countRow.count),
+      };
+    } catch {
+      // JSON1/math support or a transient SQLite error must never turn into
+      // an empty result. The service will use its established full-scan path.
+      return partial();
+    }
   }
 
   async update(
@@ -336,8 +539,8 @@ export class SqliteBackend implements MemoryBackend {
   ): Promise<Memory> {
     return this.withLock(async () => {
       const existingRow = this.db
-        .prepare("SELECT version, content FROM memories WHERE id = ?")
-        .get(memory.id) as { version: number; content: string } | undefined;
+        .prepare("SELECT rowid, version, content FROM memories WHERE id = ?")
+        .get(memory.id) as { rowid: number; version: number; content: string } | undefined;
       if (!existingRow) throw new RemembraError("NOT_FOUND", `memory ${memory.id} not found`);
 
       if (opts?.expectedVersion !== undefined) {
@@ -397,6 +600,11 @@ export class SqliteBackend implements MemoryBackend {
           updated.id,
         );
 
+      if (this.ftsEnabled && this.deleteFtsStatement && this.insertFtsStatement && updated.content !== existingRow.content) {
+        this.deleteFtsStatement.run(existingRow.rowid);
+        this.insertFtsStatement.run(existingRow.rowid, updated.content);
+      }
+
       this.audit("update", updated.id, { reason: opts?.reason }, updated.provenance);
       return updated;
     });
@@ -405,7 +613,7 @@ export class SqliteBackend implements MemoryBackend {
   async archive(id: string): Promise<Memory | null> {
     return this.withLock(async () => {
       const row = this.db
-        .prepare("SELECT * FROM memories WHERE id = ? AND archived_at IS NULL")
+        .prepare("SELECT rowid, * FROM memories WHERE id = ? AND archived_at IS NULL")
         .get(id) as Record<string, unknown> | undefined;
       if (!row) return null;
       const now = new Date().toISOString();
@@ -414,6 +622,9 @@ export class SqliteBackend implements MemoryBackend {
           "UPDATE memories SET archived_at = ?, updated_at = ? WHERE id = ?",
         )
         .run(now, now, id);
+      if (this.ftsEnabled && this.deleteFtsStatement) {
+        this.deleteFtsStatement.run(Number(row.rowid));
+      }
       const updated = rowToMemory({ ...row, archived_at: now, updated_at: now });
       this.audit("archive", id, undefined, updated?.provenance);
       return updated;
@@ -423,7 +634,7 @@ export class SqliteBackend implements MemoryBackend {
   async revive(id: string): Promise<Memory | null> {
     return this.withLock(async () => {
       const row = this.db
-        .prepare("SELECT * FROM memories WHERE id = ? AND archived_at IS NOT NULL")
+        .prepare("SELECT rowid, * FROM memories WHERE id = ? AND archived_at IS NOT NULL")
         .get(id) as Record<string, unknown> | undefined;
       if (!row) return null;
       const now = new Date().toISOString();
@@ -432,6 +643,9 @@ export class SqliteBackend implements MemoryBackend {
           "UPDATE memories SET archived_at = NULL, last_seen = ?, updated_at = ? WHERE id = ?",
         )
         .run(now, now, id);
+      if (this.ftsEnabled && this.insertFtsStatement) {
+        this.insertFtsStatement.run(Number(row.rowid), String(row.content));
+      }
       const updated = rowToMemory({ ...row, archived_at: null, last_seen: now, updated_at: now });
       this.audit("revive", id, undefined, updated?.provenance);
       return updated;
@@ -463,9 +677,9 @@ export class SqliteBackend implements MemoryBackend {
       const provenance = parseJson<Memory["provenance"]>(memRow.provenance);
       this.audit("forget", id, undefined, provenance ?? undefined);
       // Manually sync FTS before deleting.
-      if (this.ftsEnabled && memRow.rowid) {
+      if (this.ftsEnabled && this.deleteFtsStatement && memRow.rowid) {
         try {
-          this.db.prepare("DELETE FROM memories_fts WHERE rowid = ?").run(memRow.rowid);
+          this.deleteFtsStatement.run(memRow.rowid);
         } catch {
           // ignore FTS sync errors
         }
@@ -565,46 +779,35 @@ export class SqliteBackend implements MemoryBackend {
   // -------------------------------------------------------------------------
 
   private insertRow(m: Memory): void {
-    this.db
-      .prepare(`
-        INSERT INTO memories (
-          id, type, content, scope, tags, importance, confidence, trust,
-          provenance, owner, access, valid_from, valid_until, observed_at, superseded_by, meta,
-          retention, relations, version, created_at, updated_at,
-          last_seen, archived_at, embedding
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        m.id,
-        m.type,
-        m.content,
-        m.scope,
-        jsonStr(m.tags),
-        m.importance,
-        m.confidence,
-        m.trust,
-        jsonStr(m.provenance),
-        m.owner ?? "global",
-        m.access ?? "global",
-        m.validFrom ?? null,
-        m.validUntil ?? null,
-        m.observedAt ?? null,
-        m.supersededBy ?? null,
-        jsonStr(m.meta),
-        m.retention ?? "decaying",
-        jsonStr(m.relations ?? []),
-        m.version,
-        m.createdAt,
-        m.updatedAt,
-        m.lastSeen ?? null,
-        m.archivedAt ?? null,
-        embedToBlob(m.embedding),
-      );
-    if (this.ftsEnabled) {
-      const rowId = this.db.prepare("SELECT last_insert_rowid()").get() as { last_insert_rowid: number };
-      this.db
-        .prepare("INSERT INTO memories_fts(rowid, content) VALUES (@rowid, @content)")
-        .run({ rowid: rowId.last_insert_rowid, content: m.content });
+    this.insertMemoryStatement.run(
+      m.id,
+      m.type,
+      m.content,
+      m.scope,
+      jsonStr(m.tags),
+      m.importance,
+      m.confidence,
+      m.trust,
+      jsonStr(m.provenance),
+      m.owner ?? "global",
+      m.access ?? "global",
+      m.validFrom ?? null,
+      m.validUntil ?? null,
+      m.observedAt ?? null,
+      m.supersededBy ?? null,
+      jsonStr(m.meta),
+      m.retention ?? "decaying",
+      jsonStr(m.relations ?? []),
+      m.version,
+      m.createdAt,
+      m.updatedAt,
+      m.lastSeen ?? null,
+      m.archivedAt ?? null,
+      embedToBlob(m.embedding),
+    );
+    if (this.insertFtsStatement) {
+      const rowId = this.lastInsertRowidStatement.get() as { rowid: number };
+      this.insertFtsStatement.run(rowId.rowid, m.content);
     }
   }
 
@@ -646,16 +849,12 @@ export class SqliteBackend implements MemoryBackend {
           },
         }
       : {};
-    this.db
-      .prepare(
-        "INSERT INTO memory_audit (memory_id, action, details, created_at) VALUES (?, ?, ?, ?)",
-      )
-      .run(
-        memoryId,
-        action,
-        (details || Object.keys(actor).length > 0) ? jsonStr({ ...details, ...actor }) : null,
-        new Date().toISOString(),
-      );
+    this.auditStatement.run(
+      memoryId,
+      action,
+      (details || Object.keys(actor).length > 0) ? jsonStr({ ...details, ...actor }) : null,
+      new Date().toISOString(),
+    );
   }
 
   /** In-process FIFO queue — serialises same-process mutations. */
@@ -694,12 +893,12 @@ export class SqliteBackend implements MemoryBackend {
           content
         );
       `);
-      // Rebuild FTS index from existing data (no triggers — manual sync).
-      const allRows = this.db.prepare("SELECT rowid, content FROM memories").all() as Array<{ rowid: number; content: string }>;
-      for (const r of allRows) {
-        this.db.prepare("INSERT INTO memories_fts(rowid, content) VALUES (@rowid, @content)")
-          .run({ rowid: r.rowid, content: r.content });
-      }
+      // Rebuild idempotently from the main table. A single INSERT…SELECT keeps
+      // startup bounded and avoids per-row native statement churn.
+      this.db.exec("DELETE FROM memories_fts");
+      this.db.exec(
+        "INSERT INTO memories_fts(rowid, content) SELECT rowid, content FROM memories",
+      );
       logEvent("info", "fts5_ready", {}, "Remembra: FTS5 full-text search enabled");
     } catch (err) {
       logEvent(
@@ -721,7 +920,7 @@ export class SqliteBackend implements MemoryBackend {
     try {
       const rows = this.db
         .prepare(
-          "SELECT CAST(rowid AS TEXT) AS id FROM memories_fts WHERE memories_fts MATCH ?",
+          "SELECT m.id FROM memories_fts JOIN memories AS m ON m.rowid = memories_fts.rowid WHERE memories_fts MATCH ?",
         )
         .all(query) as Array<{ id: string }>;
       return rows.map((r) => r.id);
