@@ -1,0 +1,129 @@
+# Remembra 🧠
+
+**External memory for AI assistants.** Remembra stores facts, decisions, roles, and history
+outside the context window, and hands back only what's relevant — so your AI stops forgetting
+when the conversation gets long.
+
+[![npm](https://img.shields.io/npm/v/%40hilbras/remembra.svg)](https://www.npmjs.com/package/@hilbras/remembra)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![MCP](https://img.shields.io/badge/MCP-compatible-brightgreen.svg)](https://modelcontextprotocol.io)
+
+One memory server, many clients:
+
+| Client | Connection |
+|--------|-----------|
+| OpenCode | MCP (stdio) |
+| Claude Code | MCP (stdio) |
+| Cline | MCP (stdio) |
+| Kimi Code | MCP (stdio) |
+| ChatGPT | HTTP API + Custom GPT action *(v1.5)* |
+
+## The problem
+
+Every AI assistant has a context window. Fill it, and the model starts forgetting earlier
+decisions, repeating questions, and losing track of roles and preferences. Remembra moves
+long-term memory **out of the window and into storage**, then injects only the relevant
+subset each session.
+
+## How it works
+
+```
+Conversation ──► memory_store ──► ~/.remembra/ (markdown files)
+                                        │
+New session ──► memory_search ◄─────────┘ ──► relevant subset injected
+```
+
+Every memory has a **type**, a **scope**, tags, and an importance score:
+
+- **fact** — stable knowledge ("Project uses PostgreSQL 16")
+- **decision** — choices already made ("Chose JWT over sessions")
+- **role** — standing instructions ("Answer concisely"; *always* injected)
+- **history** — condensed chronology of past work
+
+**Scopes:**
+- `global` — relevant everywhere (preferences, roles)
+- any project path/id — only loaded when working in that scope, never leaks into other projects
+
+**Retrieval ranking:** roles always surface → scope match → importance → recency → keyword overlap.
+
+## Quick start
+
+```bash
+npm install -g @hilbras/remembra
+```
+
+**Claude Code:**
+
+```bash
+claude mcp add remembra -- remembra
+```
+
+**OpenCode** (`~/.config/opencode/opencode.json`):
+
+```json
+{
+  "mcp": {
+    "remembra": {
+      "type": "local",
+      "command": ["remembra"]
+    }
+  }
+}
+```
+
+More clients (Cline, Kimi Code) in **[docs/clients.md](docs/clients.md)**.
+
+## Tools
+
+| Tool | Purpose |
+|------|---------|
+| `memory_store` | Save a fact / decision / role / history |
+| `memory_search` | Retrieve relevant memories (pass `scope` = current project) |
+| `memory_list` | Browse stored memories |
+| `memory_forget` | Delete by id |
+
+Full reference: **[docs/tools.md](docs/tools.md)**
+
+## Documentation
+
+| Doc | What's inside |
+|-----|--------------|
+| [Memory model](docs/memory-model.md) | Types, scopes, ranking, storage format |
+| [Tool reference](docs/tools.md) | Every MCP tool with arguments |
+| [Client setup](docs/clients.md) | Config for each supported tool |
+| [Contributing](CONTRIBUTING.md) | Dev workflow and guidelines |
+| [Changelog](CHANGELOG.md) | Release history |
+
+## Storage
+
+Memories live as readable markdown files you can inspect, edit, and version:
+
+```
+~/.remembra/
+├── global/            # always-relevant memories
+└── scopes/
+    └── <project>/     # project-scoped memories
+```
+
+Override the location with `REMEMBRA_HOME`.
+
+## Development
+
+```bash
+git clone https://github.com/Hilbras/Remembra.git
+cd Remembra
+npm install
+npm run build   # compile
+npm test        # run tests
+```
+
+## Roadmap
+
+- **v1** *(current)* — MCP server for coding tools, file storage, layered retrieval
+- **v1.5** — HTTP API + ChatGPT Custom GPT action
+- **v2** — automatic session-digest extraction, embeddings behind `memory_search`
+- **v3** — SQLite for scale, duplicate merging, memory decay
+
+## License
+
+[MIT](LICENSE) © Hilbras

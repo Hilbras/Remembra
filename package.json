@@ -1,0 +1,63 @@
+{
+  "name": "@hilbras/remembra",
+  "version": "0.1.0",
+  "description": "External memory for AI assistants — remember facts, decisions, roles and history across sessions. MCP server for OpenCode, Claude Code, Cline, Kimi Code and more.",
+  "type": "module",
+  "bin": {
+    "remembra": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "test": "node --test \"dist/test/*.test.js\"",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hilbras/Remembra.git"
+  },
+  "homepage": "https://github.com/Hilbras/Remembra#readme",
+  "bugs": {
+    "url": "https://github.com/Hilbras/Remembra/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "memory",
+    "ai",
+    "assistant",
+    "context",
+    "external-memory",
+    "long-term-memory",
+    "llm",
+    "opencode",
+    "claude-code",
+    "cline"
+  ],
+  "author": "Hilbras",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}
