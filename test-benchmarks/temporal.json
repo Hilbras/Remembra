@@ -1,0 +1,53 @@
+[
+  {
+    "id": "bench-temporal-001",
+    "type": "fact",
+    "scope": "global",
+    "content": "User currently uses React for frontend development",
+    "tags": ["tech-stack", "frontend"],
+    "importance": 4,
+    "confidence": 0.85,
+    "trust": "trusted",
+    "provenance": { "sourceType": "conversation" },
+    "validFrom": "2024-01-01T00:00:00Z",
+    "validUntil": "2025-01-01T00:00:00Z",
+    "expected": {
+      "lifecycle_state": "active",
+      "should_expire": true,
+      "notes": "validUntil is in the past — should be filtered by default"
+    }
+  },
+  {
+    "id": "bench-temporal-002",
+    "type": "fact",
+    "scope": "global",
+    "content": "User will start learning Rust next year",
+    "tags": ["skill", "planned"],
+    "importance": 3,
+    "confidence": 0.6,
+    "trust": "unverified",
+    "provenance": { "sourceType": "conversation" },
+    "validFrom": "2027-01-01T00:00:00Z",
+    "expected": {
+      "lifecycle_state": "active",
+      "should_expire": false,
+      "notes": "validFrom is in the future — should be filtered by default"
+    }
+  },
+  {
+    "id": "bench-temporal-003",
+    "type": "fact",
+    "scope": "global",
+    "content": "User prefers Node.js for backend work",
+    "tags": ["tech-stack", "backend"],
+    "importance": 4,
+    "confidence": 0.9,
+    "trust": "verified",
+    "provenance": { "sourceType": "conversation" },
+    "expected": {
+      "lifecycle_state": "active",
+      "should_expire": false,
+      "notes": "no temporal bounds — always included"
+    }
+  }
+]

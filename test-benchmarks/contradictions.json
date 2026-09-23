@@ -1,0 +1,60 @@
+[
+  {
+    "id": "bench-contradict-001a",
+    "type": "fact",
+    "scope": "global",
+    "content": "User is active in the project",
+    "tags": ["status"],
+    "importance": 4,
+    "confidence": 0.8,
+    "trust": "trusted",
+    "provenance": { "sourceType": "conversation" },
+    "expected": {
+      "contradicted": true,
+      "lifecycle_state": "active"
+    }
+  },
+  {
+    "id": "bench-contradict-001b",
+    "type": "fact",
+    "scope": "global",
+    "content": "User is inactive in the project",
+    "tags": ["status"],
+    "importance": 4,
+    "confidence": 0.8,
+    "trust": "trusted",
+    "provenance": { "sourceType": "conversation" },
+    "expected": {
+      "contradicted": true,
+      "lifecycle_state": "active"
+    }
+  },
+  {
+    "id": "bench-contradict-002a",
+    "type": "fact",
+    "scope": "global",
+    "content": "The project deadline is next month",
+    "tags": ["timeline"],
+    "importance": 5,
+    "confidence": 0.7,
+    "trust": "unverified",
+    "provenance": { "sourceType": "conversation" },
+    "expected": {
+      "contradicted": true
+    }
+  },
+  {
+    "id": "bench-contradict-002b",
+    "type": "fact",
+    "scope": "global",
+    "content": "The project was cancelled last week",
+    "tags": ["timeline"],
+    "importance": 5,
+    "confidence": 0.9,
+    "trust": "verified",
+    "provenance": { "sourceType": "conversation" },
+    "expected": {
+      "contradicted": true
+    }
+  }
+]

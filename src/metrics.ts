@@ -135,3 +135,17 @@ metrics.counter("remembra_relate_total", "memory_relate link writes by action (3
 metrics.counter("remembra_history_snapshots_total", "History pre-images written (3.8.0)");
 metrics.counter("remembra_encryption_migrations_total", "Encryption migration files converted by mode (3.8.0)");
 metrics.gauge("remembra_info", "Build info", () => [{ labels: { version: VERSION }, value: 1 }]);
+
+// --- V4.6.0: Observability & Evaluation ---
+metrics.counter("remembra_provider_failures_total", "Provider failures by provider and error code");
+metrics.histogram("remembra_embedding_latency_seconds", "Embedding call latency (seconds)");
+metrics.histogram("remembra_llm_latency_seconds", "LLM call latency by operation (seconds)");
+metrics.histogram("remembra_storage_latency_seconds", "Store/update/forget latency (seconds)");
+metrics.counter("remembra_token_usage_total", "Tokens consumed by provider and direction (input|output)");
+metrics.gauge("remembra_estimated_cost_usd", "Cumulative estimated cost in USD", () => []);
+metrics.gauge("remembra_memory_count_active", "Current active memory count", () => []);
+metrics.gauge("remembra_memory_count_archived", "Current archived memory count", () => []);
+metrics.gauge("remembra_memory_count_deleted", "Total ever-deleted memory count", () => []);
+metrics.gauge("remembra_duplicate_rate", "Current duplicate rate in store", () => []);
+metrics.gauge("remembra_conflict_rate", "Current contradiction rate in store", () => []);
+metrics.gauge("remembra_stale_memory_rate", "Fraction of memories past decay threshold", () => []);

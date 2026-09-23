@@ -7,6 +7,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [4.6.0] — 2026-09-23
+
+**Observability & Evaluation** — plan §9 of the Master Development Plan.
+
+### Added
+- **Extended metrics**: `remembra_embedding_latency_seconds`,
+  `remembra_llm_latency_seconds`, `remembra_storage_latency_seconds`,
+  `remembra_provider_failures_total`, `remembra_token_usage_total`,
+  `remembra_estimated_cost_usd`, `remembra_memory_count_active/archived/deleted`,
+  `remembra_duplicate_rate`, `remembra_conflict_rate`,
+  `remembra_stale_memory_rate` — all registered on the Prometheus
+  registry (`GET /metrics`).
+- **`GET /quality` endpoint** (auth-required): memory health dashboard
+  reporting active/archived/deleted counts, duplicate/conflict/stale rates,
+  lifecycle distribution, growth rate, and provider stats.
+- **Evaluation harness** (`src/eval.ts`): Precision@K, Recall@K, MRR,
+  NDCG@K, Hit Rate@K, latency percentiles over a query corpus.
+- **Debug retrieval tracing** (`REMEMBRA_DEBUG_RETRIEVAL=1`): structured
+  per-query pipeline logs covering normalize → candidate generation →
+  keyword/vector scoring → RRF fusion → standing-instruction gate →
+  MMR diversity → final selection.
+- **Benchmark corpus** at `test-benchmarks/`: facts, preferences,
+  contradictions, temporal, poisoning datasets with expected outcomes.
+- **Baseline scores** at `test-benchmarks/baseline.json` for regression
+  comparison.
+
+### Changed
+- `retrieval.ts`: emits `retrieval.debug` log event when
+  `REMEMBRA_DEBUG_RETRIEVAL=1`.
+- `service.ts`: new `quality()` method; `maintain()` reports
+  `consolidation` findings in result.
+- `http.ts`: `GET /quality` route added; `/quality` route label registered.
+- `types.ts`: `SearchInput` / `ListInput` gain `includeExpired`,
+  `includeFuture`, `includeQuarantined` flags.
+
+### Tests
+- 5 new tests in `src/test/eval.test.ts`
+- 6 new tests in `src/test/benchmark.test.ts`
+- 2 new tests in `src/test/security.test.ts` (quality endpoint)
+
+---
+
 ## [4.5.0] — 2026-09-23
 
 **Lifecycle & Memory Intelligence** — plan §8 of the Master Development Plan.

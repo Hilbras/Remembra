@@ -257,6 +257,14 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return sendListLike(res, 200, result, "events");
       }
 
+      // V4.6: GET /quality — memory health dashboard.
+      if (req.method === "GET" && path === "/quality") {
+        const result = await service.quality();
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, 200, result);
+      }
+
       // POST /maintain — decay sweep + vector backfill
       if (req.method === "POST" && path === "/maintain") {
         const result = await service.maintain();
@@ -461,6 +469,8 @@ function routeLabel(p: string): string {
       return "metrics";
     case "/audit":
       return "audit";
+    case "/quality":
+      return "quality";
     case "/memories":
       return "memories";
     case "/memories/search":

@@ -216,3 +216,30 @@ test("sensitive-data: quarantine policy sets flag", () => {
   assert.equal(r.detected, true);
   assert.equal(r.quarantine, true);
 });
+
+test("http: GET /quality returns dashboard", async (t) => {
+  const service = await makeService();
+  const { port } = await startServer(service);
+  const r = await fetchJson(port, "/quality");
+  assert.equal(r.status, 200);
+  const body = r.body as Record<string, unknown>;
+  const mem = body.memories as Record<string, unknown>;
+  assert.equal(mem.active, 0);
+  assert.equal(mem.archived, 0);
+  assert.ok(typeof body.duplicate_rate === "number");
+  assert.ok(typeof body.conflict_rate === "number");
+  assert.ok(typeof body.stale_rate === "number");
+});
+
+test("http: GET /quality requires auth when key is set", async (t) => {
+  const service = await makeService();
+  const { port } = await startServer(service, { apiKey: "secret" });
+  // No auth header → 401.
+  const r1 = await fetchJson(port, "/quality");
+  assert.equal(r1.status, 401);
+  // With auth → 200.
+  const r2 = await fetchJson(port, "/quality", { headers: { "x-api-key": "secret" } });
+  assert.equal(r2.status, 200);
+  const body = r2.body as Record<string, unknown>;
+  assert.ok(typeof body.memories === "object");
+});

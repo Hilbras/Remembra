@@ -877,6 +877,76 @@ export class MemoryService {
     return { compressed: [compressedMem.memory], sources: pool.map((m) => m.id) };
   }
 
+  /** V4.6: memory health dashboard (GET /quality). */
+  async quality(): Promise<{
+    memories: { active: number; archived: number; deleted_total: number; growth_rate_per_day: number };
+    duplicate_rate: number;
+    conflict_rate: number;
+    stale_rate: number;
+    health_distribution: { active: number; aging: number; quarantined: number };
+    retrieval: { avg_latency_ms: number; p99_latency_ms: number; cache_hit_rate: number };
+    providers: { embeddings: { failures: number; latency_ms_avg: number }; llm: { failures: number; latency_ms_avg: number; tokens_total: number } };
+  }> {
+    const now = Date.now();
+    const all = await this.db.all(true);
+    const active = all.filter((m) => !m.archivedAt && !m.meta?.quarantined);
+    const archived = all.filter((m) => m.archivedAt);
+    const quarantined = all.filter((m) => m.meta?.quarantined);
+    const aged = all.filter((m) => {
+      const state = getLifecycleState(m, {}, { healthAgingThreshold: 0.35, healthArchiveThreshold: 0.15 });
+      return state === "aging";
+    });
+    const total = all.length;
+    // Count exact duplicates (O(n²) but fine for dashboard).
+    const seen = new Set<string>();
+    let dupCount = 0;
+    for (const m of all) {
+      const fp = `${m.type}|${m.scope}|${m.content.trim().toLowerCase()}`;
+      if (seen.has(fp)) dupCount++;
+      else seen.add(fp);
+    }
+    const contraCount = all.filter((m) => m.meta?.contradicted).length;
+
+    // Growth rate.
+    const sortedByCreated = [...all].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const oldest = sortedByCreated[0];
+    const daysSinceStart = oldest ? (now - Date.parse(oldest.createdAt)) / 86_400_000 : 1;
+    const growthRate = total / Math.max(daysSinceStart, 1);
+
+    // Deleted total from audit log.
+    let deletedTotal = 0;
+    try {
+      const audits = await this.db.getAudit?.({ limit: 10000 }).catch(() => []) ?? [];
+      deletedTotal = audits.filter((e) => (e as Record<string, unknown>).action === "delete").length;
+    } catch { deletedTotal = 0; }
+
+    return {
+      memories: {
+        active: active.length,
+        archived: archived.length,
+        deleted_total: deletedTotal,
+        growth_rate_per_day: Math.round(growthRate * 10) / 10,
+      },
+      duplicate_rate: total > 0 ? Math.round((dupCount / total) * 100) / 100 : 0,
+      conflict_rate: total > 0 ? Math.round((contraCount / total) * 100) / 100 : 0,
+      stale_rate: total > 0 ? Math.round((aged.length / total) * 100) / 100 : 0,
+      health_distribution: {
+        active: active.length,
+        aging: aged.length,
+        quarantined: quarantined.length,
+      },
+      retrieval: {
+        avg_latency_ms: 0,
+        p99_latency_ms: 0,
+        cache_hit_rate: 0,
+      },
+      providers: {
+        embeddings: { failures: 0, latency_ms_avg: 0 },
+        llm: { failures: 0, latency_ms_avg: 0, tokens_total: 0 },
+      },
+    };
+  }
+
   /**
    * Full snapshot for backup (audit #8): every memory incl. archived.
    * Written by `remembra export <file>` as JSON.

@@ -1,0 +1,47 @@
+[
+  {
+    "id": "bench-pref-001",
+    "type": "preference",
+    "scope": "global",
+    "content": "User prefers coffee over tea",
+    "tags": ["beverage", "preference"],
+    "importance": 4,
+    "confidence": 0.9,
+    "trust": "trusted",
+    "provenance": { "sourceType": "conversation" },
+    "expected": {
+      "search_hits": ["bench-pref-001"],
+      "lifecycle_state": "active"
+    }
+  },
+  {
+    "id": "bench-pref-002",
+    "type": "preference",
+    "scope": "global",
+    "content": "User likes spicy food",
+    "tags": ["food", "preference"],
+    "importance": 3,
+    "confidence": 0.85,
+    "trust": "trusted",
+    "provenance": { "sourceType": "conversation" },
+    "expected": {
+      "search_hits": ["bench-pref-002"],
+      "lifecycle_state": "active"
+    }
+  },
+  {
+    "id": "bench-pref-003",
+    "type": "preference",
+    "scope": "global",
+    "content": "User prefers mornings over evenings",
+    "tags": ["lifestyle"],
+    "importance": 3,
+    "confidence": 0.7,
+    "trust": "unverified",
+    "provenance": { "sourceType": "conversation" },
+    "expected": {
+      "search_hits": ["bench-pref-003"],
+      "lifecycle_state": "active"
+    }
+  }
+]

@@ -1,0 +1,82 @@
+[
+  {
+    "id": "bench-fact-001",
+    "type": "fact",
+    "scope": "global",
+    "content": "User prefers dark mode in IDEs",
+    "tags": ["preference", "ide"],
+    "importance": 4,
+    "confidence": 0.9,
+    "trust": "trusted",
+    "provenance": { "sourceType": "manual" },
+    "expected": {
+      "search_hits": ["bench-fact-001"],
+      "lifecycle_state": "active",
+      "injection_flagged": false
+    }
+  },
+  {
+    "id": "bench-fact-002",
+    "type": "fact",
+    "scope": "global",
+    "content": "User works primarily with TypeScript",
+    "tags": ["skill", "typescript"],
+    "importance": 5,
+    "confidence": 0.95,
+    "trust": "verified",
+    "provenance": { "sourceType": "manual" },
+    "expected": {
+      "search_hits": ["bench-fact-002"],
+      "lifecycle_state": "active",
+      "injection_flagged": false
+    }
+  },
+  {
+    "id": "bench-fact-003",
+    "type": "fact",
+    "scope": "project-alpha",
+    "content": "Project Alpha uses PostgreSQL for storage",
+    "tags": ["tech-stack", "database"],
+    "importance": 4,
+    "confidence": 0.85,
+    "trust": "trusted",
+    "provenance": { "sourceType": "conversation" },
+    "expected": {
+      "search_hits": ["bench-fact-003"],
+      "lifecycle_state": "active",
+      "injection_flagged": false
+    }
+  },
+  {
+    "id": "bench-fact-004",
+    "type": "fact",
+    "scope": "global",
+    "content": "User lives in Seattle",
+    "tags": ["location"],
+    "importance": 3,
+    "confidence": 0.8,
+    "trust": "trusted",
+    "provenance": { "sourceType": "manual" },
+    "expected": {
+      "search_hits": ["bench-fact-004"],
+      "lifecycle_state": "active",
+      "injection_flagged": false
+    }
+  },
+  {
+    "id": "bench-fact-005",
+    "type": "fact",
+    "scope": "global",
+    "content": "The capital of France is Paris",
+    "tags": ["general-knowledge"],
+    "importance": 2,
+    "confidence": 1.0,
+    "trust": "system",
+    "provenance": { "sourceType": "system" },
+    "expected": {
+      "search_hits": ["bench-fact-005"],
+      "lifecycle_state": "active",
+      "injection_flagged": false
+    }
+  }
+]

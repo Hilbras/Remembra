@@ -1,5 +1,6 @@
 import { Memory, SearchQuery, SearchResults, RetrievalExplanation, TrustLevel, MemoryType } from "./types.js";
 import { cosine } from "./embeddings.js";
+import { logEvent } from "./log.js";
 
 // ---------------------------------------------------------------------------
 // V4.2.0: Advanced Retrieval Engine (plan §5). Multi-stage pipeline with
@@ -464,6 +465,22 @@ export function searchQ(
           buildExplanation(e.m, e.comp, e.reasons),
         )
     : undefined;
+
+  // V4.6: structured debug trace (emit only when REMEMBRA_DEBUG_RETRIEVAL=1).
+  if (process.env.REMEMBRA_DEBUG_RETRIEVAL === "1") {
+    const pipeline = {
+      normalize: { terms, temporal },
+      candidate_generation: { total: scored.length },
+      keyword_scoring: scored.filter((e) => e.kwScore > 0).slice(0, 5).map((e) => ({ id: e.m.id, score: e.kwScore })),
+      vector_scoring: scored.filter((e) => e.vecScore > 0).slice(0, 5).map((e) => ({ id: e.m.id, score: e.vecScore })),
+      rrf_fusion: { method: "reciprocal_rank", k: 60 },
+      ranking_modifiers: { recency_boost: true, importance_boost: true, aging_penalty: process.env.REMEMBRA_AGING_BOOST ?? "-50" },
+      standing_instruction_gate: { skipped: [], promoted: gated.filter((e) => isStandingInstruction(e.m)).map((e) => e.m.id) },
+      mmr_diversity: { lambda: 0.5, removed_duplicates: ranked.length - finalRanked.length },
+      final_context_selection: { max_tokens: 4000, memories_selected: finalRanked.length },
+    };
+    logEvent("debug", "retrieval.debug", { query: q.query, pipeline, latency_ms: Date.now() - now }, "Remembra: retrieval debug trace");
+  }
 
   return { results: finalRanked, explanations };
 }

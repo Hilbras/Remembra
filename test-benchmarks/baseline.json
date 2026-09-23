@@ -1,0 +1,13 @@
+{
+  "version": "4.6.0",
+  "generated_at": "2026-09-23",
+  "metrics": {
+    "precision_at_k": 1.0,
+    "recall_at_k": 1.0,
+    "mrr": 1.0,
+    "ndcg_at_k": 1.0,
+    "hit_rate_at_k": 1.0,
+    "avg_latency_ms": 0
+  },
+  "note": "Baseline for V4.6.0 — update after first full benchmark run"
+}
