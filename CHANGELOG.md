@@ -7,6 +7,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3). Earlier releases used independent semver: 0.1.0 = v1,
 > 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [3.1.0] — 2026-09-23
+
+**Security hardening** in response to the deep audit (`HILBRAS-MEMORY-DEEP-AUDIT.md`).
+
+### Fixed
+- **P0 directory traversal**: scopes containing `..` are rejected by validation,
+  and `fileFor()` verifies the resolved path stays under `REMEMBRA_HOME`
+  (defense in depth). Penetration test added.
+- **Default-deny HTTP**: no API key → binds `127.0.0.1` only; non-loopback
+  `REMEMBRA_HOST` without a key refuses to start.
+- **Timing-safe API key comparison** (`crypto.timingSafeEqual`).
+- **Request body size limit** (10 MiB default, `REMEMBRA_MAX_BODY`) → `413`.
+- **Atomic writes** (temp file + `rename`) — crash can no longer leave
+  half-written memory files.
+- **ID length** 8 → 12 hex chars (2⁴⁸) + existence check on store (collision-safe).
+- **Digest validation** on both transports (`DigestInput` Zod schema).
+- **`Content-Length`** on all HTTP responses.
+- `memory_list` MCP tool now exposes `includeArchived`; HTTP accepts
+  `includeArchived=true`.
+
+### Added
+- `docs/security.md` — trust model (incl. role prompt-injection guidance),
+  enforced protections, deployment checklist.
+- 14 security tests (traversal pen test ×2, listen policy, body limit,
+  digest validation, atomic-write leftovers, ID uniqueness).
+
 ## [3.0.0] — 2026-09-23
 
 **Same content as 0.4.0** — version renumbered so the package version equals the

@@ -31,13 +31,22 @@ export class MemoryStore {
         ? path.join(this.root, "archived", "global")
         : path.join(this.root, "archived", "scopes", safeScope);
     const dir = m.archivedAt ? archivedBase : base;
-    return path.join(dir, `${m.id}.md`);
+    const file = path.resolve(path.join(dir, `${m.id}.md`));
+    // Defense in depth (P0): never touch anything outside the storage root.
+    const root = path.resolve(this.root);
+    if (!file.startsWith(root + path.sep)) {
+      throw new Error(`Invalid scope "${m.scope}": resolves outside the storage root`);
+    }
+    return file;
   }
 
   async store(input: StoreInput, embedding?: number[]): Promise<Memory> {
     const now = new Date().toISOString();
+    // 12 hex chars (2^48): collision-safe; existence check guards the rest (P2 audit #9).
+    let id = genId();
+    for (let i = 0; i < 10 && (await this.findFile(id)); i++) id = genId();
     const memory: Memory = {
-      id: randomUUID().slice(0, 8),
+      id,
       type: input.type,
       content: input.content,
       scope: input.scope,
@@ -50,7 +59,7 @@ export class MemoryStore {
     };
     const file = this.fileFor(memory);
     await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, render(memory), "utf8");
+    await writeFileAtomic(file, render(memory), fs);
     return memory;
   }
 
@@ -87,7 +96,7 @@ export class MemoryStore {
     const newFile = this.fileFor(updated);
     if (oldFile === newFile) return null;
     await fs.mkdir(path.dirname(newFile), { recursive: true });
-    await fs.writeFile(newFile, render(updated), "utf8");
+    await writeFileAtomic(newFile, render(updated), fs);
     await fs.unlink(oldFile);
     return updated;
   }
@@ -101,7 +110,7 @@ export class MemoryStore {
     const updated: Memory = { ...m, archivedAt: undefined, lastSeen: now, updatedAt: now };
     const newFile = this.fileFor(updated);
     await fs.mkdir(path.dirname(newFile), { recursive: true });
-    await fs.writeFile(newFile, render(updated), "utf8");
+    await writeFileAtomic(newFile, render(updated), fs);
     await fs.unlink(oldFile);
     return updated;
   }
@@ -111,7 +120,7 @@ export class MemoryStore {
     const updated: Memory = { ...memory, updatedAt: new Date().toISOString() };
     const file = this.fileFor(updated);
     await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, render(updated), "utf8");
+    await writeFileAtomic(file, render(updated), fs);
     return updated;
   }
 
@@ -122,7 +131,7 @@ export class MemoryStore {
     const last = Date.parse(m.lastSeen ?? m.updatedAt);
     if (Number.isFinite(last) && Date.now() - last < 3_600_000) return;
     m.lastSeen = new Date().toISOString();
-    await fs.writeFile(this.fileFor(m), render(m), "utf8");
+    await writeFileAtomic(this.fileFor(m), render(m), fs);
   }
 
   private async findFile(id: string): Promise<string | null> {
@@ -132,6 +141,26 @@ export class MemoryStore {
       path.join(this.root, "archived"),
     );
     return files.find((f) => path.basename(f, ".md") === id) ?? null;
+  }
+}
+
+function genId(): string {
+  return randomUUID().replace(/-/g, "").slice(0, 12);
+}
+
+/**
+ * Atomic write (P1 audit): write to a temp file in the same directory,
+ * then rename() over the target — POSIX-atomic, so a crash mid-write can
+ * never leave a half-written memory file.
+ */
+async function writeFileAtomic(file: string, data: string, fsmod: typeof fs): Promise<void> {
+  const tmp = `${file}.${genId().slice(0, 6)}.tmp`;
+  try {
+    await fsmod.writeFile(tmp, data, "utf8");
+    await fsmod.rename(tmp, file);
+  } catch (err) {
+    await fsmod.unlink(tmp).catch(() => {});
+    throw err;
   }
 }
 

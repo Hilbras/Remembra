@@ -90,6 +90,8 @@ REMEMBRA_API_KEY="your-secret" remembra --http
 | `REMEMBRA_EMBEDDINGS` | `none` | Semantic search: `openai` \| `ollama` \| `none` |
 | `REMEMBRA_ARCHIVE_AFTER_DAYS` | `90` | Unused active memory → archived |
 | `REMEMBRA_ARCHIVE_TTL_DAYS` | `365` | Archived memory → deleted |
+| `REMEMBRA_HOST` | *(see security.md)* | HTTP bind address (loopback without key) |
+| `REMEMBRA_MAX_BODY` | `10485760` | Max HTTP request body bytes |
 
 LLM/embedding key setup: see **[providers.md](providers.md)**.
 

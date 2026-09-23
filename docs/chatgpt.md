@@ -19,7 +19,9 @@ curl http://localhost:8787/health
 # {"status": "ok"}
 ```
 
-- `REMEMBRA_API_KEY` **strongly recommended** — without it every endpoint is open.
+- `REMEMBRA_API_KEY` **mandatory for public exposure** — without it the server
+  binds to `127.0.0.1` only, and a non-loopback `REMEMBRA_HOST` without a key
+  refuses to start (default-deny, see [security.md](security.md)).
 - The server binds to localhost by default. For ChatGPT to reach it you must expose it
   publicly (see [§4](#4-exposing-the-server)).
 

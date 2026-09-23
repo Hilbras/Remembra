@@ -96,6 +96,11 @@ Then wire a Custom GPT to the API — full walkthrough in **[docs/chatgpt.md](do
 All routes except `/health` require `x-api-key` (or `Authorization: Bearer`) when
 `REMEMBRA_API_KEY` is set.
 
+> 🔒 **Auth is now default-deny**: without `REMEMBRA_API_KEY` the server binds
+> to `127.0.0.1` only, and a non-loopback `REMEMBRA_HOST` without a key refuses
+> to start. Public deployments (ChatGPT) must set a key. See
+> [security.md](docs/security.md).
+
 ## Tools
 
 | Tool | Purpose |
@@ -119,6 +124,7 @@ Full reference: **[docs/tools.md](docs/tools.md)**
 | [ChatGPT setup](docs/chatgpt.md) | HTTP API + Custom GPT walkthrough |
 | [AI providers](docs/providers.md) | Digest LLM + embeddings configuration |
 | [Lifecycle](docs/lifecycle.md) | Decay, archiving, auto-delete, contradiction merging |
+| [Security](docs/security.md) | Trust model, enforced protections, deployment checklist |
 | [Contributing](CONTRIBUTING.md) | Dev workflow and guidelines |
 | [Changelog](CHANGELOG.md) | Release history |
 

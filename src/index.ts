@@ -5,6 +5,7 @@ import { z } from "zod";
 import { MemoryStore } from "./store.js";
 import { MemoryService } from "./service.js";
 import { createHttpServer } from "./http.js";
+import { DigestInput } from "./types.js";
 
 const store = new MemoryStore(MemoryStore.defaultRoot());
 const service = new MemoryService(store);
@@ -31,7 +32,7 @@ if (maintainFlag) {
 }
 
 async function startMcp(): Promise<void> {
-  const server = new McpServer({ name: "remembra", version: "3.0.0" });
+  const server = new McpServer({ name: "remembra", version: "3.1.0" });
 
   server.registerTool(
     "memory_store",
@@ -75,8 +76,8 @@ async function startMcp(): Promise<void> {
         source: z.string().optional().describe("Originating session/client"),
       },
     },
-    async ({ transcript, scope, source }) => {
-      const result = await service.digest({ transcript, scope, source });
+    async (args) => {
+      const result = await service.digest(DigestInput.parse(args));
       const text =
         `Digest complete: ${result.extracted} extracted, ${result.stored.length} stored, ` +
         `${result.merged} merged/revived, ${result.skippedDuplicates} duplicates skipped.` +
@@ -134,6 +135,7 @@ async function startMcp(): Promise<void> {
       inputSchema: {
         scope: z.string().optional(),
         type: z.enum(["fact", "decision", "role", "history"]).optional(),
+        includeArchived: z.boolean().optional().describe("Include archived memories (flagged)"),
       },
     },
     async (args) => {

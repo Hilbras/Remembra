@@ -67,7 +67,9 @@ test("unused active memory gets archived, fresh one stays", async () => {
 
 test("search-hit refreshes the decay clock (lastSeen bumped)", async () => {
   const store = await tempStore();
-  const svc = new MemoryService(store, { decayIntervalMs: 0 });
+  // Huge archive cutoff: the decay pass may run concurrently with touch —
+  // with a far-future cutoff it never archives, so no unlink race.
+  const svc = new MemoryService(store, { archiveAfterDays: 100_000 });
   const m = await agedMemory(store, { updatedAt: oldDate(100), lastSeen: oldDate(100) });
   await svc.search({ query: "aged", scope: "global" });
   // touch is fire-and-forget — give it a tick.
