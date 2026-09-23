@@ -55,12 +55,14 @@ Prepare Remembra for large memory collections without changing existing single-m
 ### Phase 3: Background work
 
 - [ ] Task 5: Add internal `JobQueue` with typed jobs, bounded capacity, retry/error policy, and drain/shutdown.
+  - Progress: bounded queue, retries, cancellation, metrics, and maintenance handler are landed; remaining job handlers are pending.
   - Acceptance: embedding, consolidation, maintenance, and validation jobs can be enqueued; queue-full and worker errors are typed; no job runs after shutdown begins.
   - Verification: deterministic fake-worker tests for ordering, concurrency, capacity, retries, and shutdown.
   - Files: `src/job-queue.ts`, `src/service.ts`, tests.
   - Scope: M.
 
 - [ ] Task 6: Add resource-limit configuration and metrics.
+  - Progress: queue lifecycle/failure counters are landed; provider and batch limit configuration remains.
   - Acceptance: queue, batch, embedding, and LLM limits are configurable, bounded, and exposed through existing metrics conventions.
   - Verification: configuration and metrics tests; audit shows no secrets.
   - Files: `src/metrics.ts`, `src/service.ts`, `docs/observability.md`, tests.
