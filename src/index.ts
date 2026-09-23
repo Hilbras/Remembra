@@ -159,6 +159,20 @@ if (argv[0] === "export") {
     await fs.rename(tmp, dst);
     console.log(`Restored from ${inFile}`);
     process.exit(0);
+  } else if (argv[0] === "migrate") {
+    // V4.3.0: explicit manual migration from legacy flat files.
+    if (!(store instanceof SqliteBackend)) {
+      console.error("migrate requires SQLite backend");
+      process.exit(1);
+    }
+    try {
+      const result = await (store as SqliteBackend).migrate();
+      console.log(JSON.stringify(result, null, 2));
+      process.exit(0);
+    } catch (err) {
+      console.error(`migrate failed: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
   } else if (maintainFlag) {
   // CLI maintenance: `remembra maintain` — one-shot, prints JSON, exits.
   const result = await service.maintain();

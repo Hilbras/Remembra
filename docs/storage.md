@@ -166,3 +166,24 @@ changed or it didn't.
 
 Full env index: [clients.md](clients.md#environment). Migration/export:
 `remembra export` / `remembra import` (see [public-api.md](public-api.md)).
+Migration CLI (`remembra migrate`, `export-markdown`, `import-markdown`,
+`backup`, `restore`) is documented in [public-api.md](public-api.md).
+
+## SQLite Backend (V4.3.0)
+
+Since 4.3.0 the **runtime** backend is SQLite (`SqliteBackend`). The file tree
+remains the **export format** and the source for migration. On first launch,
+legacy `.md` files are read into the database and moved to `<root>/.legacy/`.
+
+Schema (auto-created):
+
+| Table | Purpose |
+|-------|---------|
+| `memories` | Main memory rows; BLOB column for embeddings |
+| `memories_fts` | FTS5 virtual table for keyword search |
+| `memory_versions` | Content-change snapshots (history) |
+| `memory_audit` | Immutable audit log of all mutations |
+
+FTS5 is optional: if the SQLite build lacks FTS5 support the backend starts
+without the virtual table and degrades to keyword-only scoring with a startup
+warning. See [v4.3.0-spec.md](v4.3.0-spec.md) for the full schema SQL.

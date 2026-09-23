@@ -121,6 +121,11 @@ Envelope written by `remembra export` and `GET /snapshot`:
 | `remembra import [file]` | atomic, idempotent import |
 | `remembra maintain` | one-shot decay sweep + backfill, prints JSON |
 | `remembra encrypt` / `remembra decrypt` | convert the tree at rest (needs `REMEMBRA_ENCRYPT_KEY`) |
+| `remembra migrate` | manually trigger file → SQLite migration (V4.3.0) |
+| `remembra export-markdown <dir>` | dump active memories as `.md` files (V4.3.0) |
+| `remembra import-markdown <dir>` | import `.md` files into SQLite (V4.3.0) |
+| `remembra backup <file>` | copy DB + write SHA-256 sidecar (V4.3.0) |
+| `remembra restore <file>` | verify checksum and atomically replace DB (V4.3.0) |
 
 ## Provider policy (4.0.1, plan §3.7)
 

@@ -700,6 +700,15 @@ export class SqliteBackend implements MemoryBackend {
       }
     }
   }
+
+  /** Public entry point for manual migration: `remembra migrate`. */
+  async migrate(): Promise<{ imported: number; skipped: number }> {
+    const root = path.dirname(this.db.name);
+    // Run migration even if DB exists (idempotent: skips if no legacy files).
+    await this.maybeMigrate(root);
+    const count = this.db.prepare("SELECT count(*) AS cnt FROM memories").get() as { cnt: number };
+    return { imported: count.cnt, skipped: 0 };
+  }
 }
 
 // ---------------------------------------------------------------------------

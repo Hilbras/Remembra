@@ -18,11 +18,12 @@ How Remembra is put together, and where the extension seams are.
 │ MemoryBackend (backend.ts)       │  The storage contract
 └──────────────┬───────────────────┘
                ▼
-┌──────────────────────────────────┐
-│ MemoryStore (store.ts)           │  Plain markdown files + frontmatter
-│  .remembra lock · crash recovery │  (no database, by decision — Q5-A)
-│  history snapshots · AES-GCM at  │  (encryption + history opt-in, Phase 8)
-└──────────────────────────────────┘
+┌──────────────────────────────────┐   ┌──────────────────────────┐
+│ SqliteBackend (sqlite-backend.ts)│   │ MemoryStore (store.ts)   │
+│  WAL mode · FTS5 · BLOB vectors  │◄─►│  Plain markdown files    │
+│  optimistic concurrency          │   │  (export target / legacy)│
+│  auto-migration from flat files  │   │                          │
+└──────────────────────────────────┘   └──────────────────────────┘
 ```
 
 ## MemoryBackend: the swap seam (audit Phase 3)
