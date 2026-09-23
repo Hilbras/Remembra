@@ -27,6 +27,12 @@ export interface Memory {
   createdAt: string; // ISO date
   updatedAt: string; // ISO date
   source?: string; // originating session/client
+  /**
+   * How the memory entered the store: `explicit` = deliberately stored via
+   * the tool/API, `auto` = extracted by a digest. Missing on pre-3.4.0 files
+   * (neutral — scores as neither). Ranked: explicit +10.
+   */
+  provenance?: "explicit" | "auto";
   /** Last time the memory surfaced in search results (decay signal). */
   lastSeen?: string;
   /** Set when archived; archived memories are out of search until revived. */
@@ -140,6 +146,7 @@ export const SnapshotInput = z.object({
         source: z.string().optional(),
         lastSeen: z.string().optional(),
         archivedAt: z.string().optional(),
+        provenance: z.enum(["explicit", "auto"]).optional(),
         embedding: z.array(z.number()).optional(),
       }),
     )

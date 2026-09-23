@@ -16,7 +16,11 @@ import type { Memory, StoreInput } from "./types.js";
  *  - `importMemory` must refuse ids that already exist (return false).
  */
 export interface MemoryBackend {
-  store(input: StoreInput, embedding?: number[]): Promise<Memory>;
+  store(
+    input: StoreInput,
+    embedding?: number[],
+    opts?: { provenance?: Memory["provenance"] },
+  ): Promise<Memory>;
   get(id: string): Promise<Memory | null>;
   all(includeArchived?: boolean): Promise<Memory[]>;
   update(memory: Memory): Promise<Memory>;

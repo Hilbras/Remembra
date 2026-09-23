@@ -2,17 +2,18 @@ import { Memory, SearchQuery } from "./types.js";
 import { cosine } from "./embeddings.js";
 
 /**
- * Layered retrieval (decisions Q4 + v2-Q3):
+ * Layered retrieval (decisions Q4 + v2-Q3, Phase 4 quality pass):
  *
  * Hard gates (never bypassed by scores):
  *   - roles always pass (+1000)
  *   - other scopes' memories are excluded entirely
  *
- * Ranking:
- *   - embeddings ON (queryVec provided): semantic similarity is the primary
- *     signal; importance + recency act as modifiers; keywords still help as
- *     a tie-breaker for memories missing vectors.
- *   - embeddings OFF: keyword overlap is the primary signal (v1 behavior).
+ * Ranking (additive terms are identical in keyword and semantic mode so a
+ * memory ranks consistently whether embeddings are on or off — audit #2):
+ *   - provenance: deliberate `explicit` stores +10 over auto-extracted (#4)
+ *   - importance: importance × 4 (both modes)
+ *   - recency: exponential decay, ~30-day half-life, no cliff (#1)
+ *   - keywords (keyword mode) / cosine similarity (semantic mode)
  */
 export function search(memories: Memory[], q: SearchQuery, queryVec?: number[] | null): Memory[] {
   const now = Date.now();
@@ -30,7 +31,8 @@ export function search(memories: Memory[], q: SearchQuery, queryVec?: number[] |
   return scored.slice(0, q.limit ?? 10).map(({ m }) => m);
 }
 
-function score(
+/** Scored exposed for tests — the full layered formula for one memory. */
+export function score(
   m: Memory,
   terms: string[],
   scope: string | undefined,
@@ -46,6 +48,9 @@ function score(
   if (m.scope === "global") s += 100;
   if (scope && m.scope === scope) s += 150;
 
+  // --- provenance (Phase 4 / audit #4): deliberate stores beat auto-extracts ---
+  if (m.provenance === "explicit") s += 10;
+
   // --- semantic mode (embeddings on) ---
   if (queryVec && queryVec.length > 0) {
     if (m.embedding && m.embedding.length > 0) {
@@ -58,24 +63,29 @@ function score(
       // Memory without a vector: fall back to keyword scoring for it.
       s += keywordScore(m, terms);
     }
-    // Modifiers (smaller weight than keywords-only mode).
+    // Modifiers — same weights as keyword mode (normalized, audit #2).
     s += m.importance * 4;
     s += recencyScore(m, now) * 0.5;
     return s;
   }
 
   // --- keyword mode (embeddings off — v1 behavior) ---
-  s += m.importance * 10;
+  s += m.importance * 4;
   s += recencyScore(m, now);
   if (terms.length > 0) s += keywordScore(m, terms);
   else s += 10; // no query: everything eligible scores a little
   return s;
 }
 
-function recencyScore(m: Memory, now: number): number {
+/**
+ * Exponential recency decay (audit #20): ~30-day half-life, never a hard
+ * cutoff — a 60-day-old memory keeps ~5 points instead of dropping to 0.
+ */
+export function recencyScore(m: Memory, now: number): number {
   const ageDays = (now - Date.parse(m.updatedAt)) / 86_400_000;
-  if (Number.isNaN(ageDays)) return 0;
-  return Math.max(0, 20 - ageDays / 3);
+  if (!Number.isFinite(ageDays)) return 0;
+  const age = Math.max(0, ageDays); // future-dated files count as fresh
+  return 20 * Math.pow(2, -age / 30);
 }
 
 function keywordScore(m: Memory, terms: string[]): number {

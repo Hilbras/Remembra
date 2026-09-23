@@ -28,7 +28,11 @@ class InMemoryBackend implements MemoryBackend {
   private map = new Map<string, Memory>();
   private now = () => new Date().toISOString();
 
-  async store(input: StoreInput, embedding?: number[]): Promise<Memory> {
+  async store(
+    input: StoreInput,
+    embedding?: number[],
+    opts?: { provenance?: Memory["provenance"] },
+  ): Promise<Memory> {
     const now = this.now();
     const m: Memory = {
       id: hex12(),
@@ -40,6 +44,7 @@ class InMemoryBackend implements MemoryBackend {
       createdAt: now,
       updatedAt: now,
       source: input.source,
+      provenance: opts?.provenance ?? "explicit",
       embedding,
     };
     this.map.set(m.id, m);

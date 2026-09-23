@@ -83,7 +83,7 @@ if (argv[0] === "export") {
 }
 
 async function startMcp(): Promise<void> {
-  const server = new McpServer({ name: "remembra", version: "3.3.0" });
+  const server = new McpServer({ name: "remembra", version: "3.4.0" });
 
   server.registerTool(
     "memory_store",
@@ -111,7 +111,8 @@ async function startMcp(): Promise<void> {
       title: "Digest a session",
       description:
         "Extract facts, decisions, roles and history from a conversation transcript and store " +
-        "them automatically (exact duplicates are skipped). Call at the end of a session with " +
+        "them automatically (exact and near-identical duplicates are skipped; changed "
+        + "quantities go to the LLM merge). Call at the end of a session with " +
         "the transcript or a detailed summary of it. Requires REMEMBRA_LLM + an API key.",
       inputSchema: digestInputShape,
     },

@@ -7,6 +7,48 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3). Earlier releases used independent semver: 0.1.0 = v1,
 > 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [3.4.0] — 2026-09-23
+
+**Phase 4 of the deep audit** — retrieval & memory quality.
+
+### Changed
+- **Exponential recency decay** — ~30-day half-life replaces the linear ramp
+  that hit a hard zero at 60 days (audit #20): a 60-day-old memory now earns
+  ~5 points instead of 0, and old-but-important facts stop falling off a
+  cliff. Future-dated files clamp to "fresh"; invalid dates score 0.
+- **Importance normalized across modes** — keyword mode drops ×10 → ×4 to
+  match semantic mode (audit: "same memory ranks differently depending on
+  embedding enablement"). The delta for importance 1→5 is now identical
+  (+16) in both modes.
+
+### Added
+- **Provenance weighting** (audit: "source stored but never ranked") —
+  memories carry `provenance: explicit | auto` in frontmatter: direct
+  tool/API stores are `explicit` (+10 in ranking, both modes), digest
+  extractions are `auto`. Pre-3.4.0 files have no field and score neutrally.
+  Preserved through export/import.
+- **Fuzzy dedup fast path** (audit: "dedup tolerance for fuzzy matches") —
+  three dedup tiers now: exact → textual near-identity (Sørensen–Dice ≥ 0.9
+  over bigrams; punctuation/case/typos) skipped **without an LLM call** →
+  LLM merge for everything semantically evolved. Changed quantities
+  (100→500 rpm, v2→v3) are explicitly *not* near-duplicates — they always
+  reach the merge arbiter. Works against active, revives archived, and
+  dedupes within a single digest batch.
+- `docs/memory-model.md`: dedup tiers, corrected ranking weights, provenance
+  row, stale "8-char id"/"embeddings planned for v2" text fixed.
+
+### Deferred (recorded, not dropped)
+- **Lazy loading for >10K stores** (audit Phase 4, P2) — the mechanism that
+  actually serves this is the parsed-memory cache scheduled for Phase 5
+  (performance); building a separate metadata index now would duplicate it.
+  Tracked here per scope decision.
+
+### Added (tests)
+10 Phase-4 tests: decay curve + half-life + no-cliff, importance-delta
+equality across modes, provenance deltas + ordering + persistence + snapshot
+round trip, fuzzy skip (punctuation/typo/quantity guard), in-batch dedup,
+archived revive, cross-scope isolation. **96/96 total.**
+
 ## [3.3.0] — 2026-09-23
 
 **Phase 3 of the deep audit** — architecture: swappable backend, cross-process

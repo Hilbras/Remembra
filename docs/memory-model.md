@@ -63,9 +63,10 @@ in `/repo/b`. Global memories are always visible.
 | `content` | string | required — written as a standalone statement |
 | `scope` | string | defaults to `global` |
 | `tags` | string[] | boosts keyword matching |
-| `importance` | 1–5 | defaults to 3; higher ranks higher |
+| `importance` | 1–5 | defaults to 3; higher ranks higher (same weight in both modes) |
 | `source` | string | originating session/client (optional) |
-| `id` | 8-char id | assigned automatically |
+| `provenance` | `explicit \| auto` | set automatically: `explicit` = stored deliberately, `auto` = digest-extracted; pre-3.4.0 files are neutral |
+| `id` | 12-char id | assigned automatically (collision-safe) |
 | `createdAt` / `updatedAt` | ISO timestamps | assigned automatically |
 
 ## Retrieval ranking
@@ -75,13 +76,29 @@ When `memory_search` runs, memories are scored in layers:
 1. **Roles always pass** (+1000) — instructions never get filtered out.
 2. **Scope gate** — other projects' memories are excluded entirely;
    the current scope scores highest (+150), `global` always passes (+100).
-3. **Importance** — up to +50 for importance 5.
-4. **Recency** — decays over roughly a 30-day half-life (up to +20).
-5. **Keyword overlap** — up to +60 based on the fraction of query terms matched
-   in content and tags.
+3. **Provenance** — deliberately stored memories +10 over auto-extracted ones.
+4. **Importance** — up to +20 for importance 5 — *identical weight in keyword
+   and semantic mode, so enabling embeddings never reorders by importance*.
+5. **Recency** — exponential decay, ~30-day half-life (up to +20). Never a
+   hard cutoff: a 90-day-old memory still earns ~2.5 points.
+6. **Keyword overlap** — up to +60 based on the fraction of query terms matched
+   in content and tags (keyword mode). With embeddings on, cosine similarity
+   (up to +100) takes over as the primary signal while importance, provenance
+   and recency keep the same weights.
 
-Embeddings are planned for v2 and will slot in behind the same `memory_search`
-interface without changing any client.
+## Duplicate handling
+
+Digest extraction dedupes in three tiers:
+
+1. **Exact** — normalized `type + scope + content` match → skip (or revive if
+   archived).
+2. **Fuzzy fast path** — textually near-identical (punctuation/case/typos,
+   Sørensen–Dice ≥ 0.9 over bigrams) *and* unchanged quantities → skip
+   without an LLM call. A changed number (100→500 rpm, v2→v3) is a different
+   fact and always falls through.
+3. **LLM merge** — similar-but-evolved memories go to the model, which stores,
+   skips, or merges them (the old text is preserved under a `> superseded`
+   note).
 
 ## Storage format
 

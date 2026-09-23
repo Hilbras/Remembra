@@ -62,9 +62,13 @@ export class MemoryStore implements MemoryBackend {
   // (the queue/lock are not reentrant); reads (get/all) never lock.
   // -------------------------------------------------------------------------
 
-  async store(input: StoreInput, embedding?: number[]): Promise<Memory> {
+  async store(
+    input: StoreInput,
+    embedding?: number[],
+    opts?: { provenance?: Memory["provenance"] },
+  ): Promise<Memory> {
     await this.ensureRecovered();
-    return this.withLock(() => this.storeLocked(input, embedding));
+    return this.withLock(() => this.storeLocked(input, embedding, opts));
   }
 
   async forget(id: string): Promise<boolean> {
@@ -174,7 +178,11 @@ export class MemoryStore implements MemoryBackend {
   // Locked body helpers (no reentrant locking inside these).
   // -------------------------------------------------------------------------
 
-  private async storeLocked(input: StoreInput, embedding?: number[]): Promise<Memory> {
+  private async storeLocked(
+    input: StoreInput,
+    embedding?: number[],
+    opts?: { provenance?: Memory["provenance"] },
+  ): Promise<Memory> {
     const now = new Date().toISOString();
     // 12 hex chars (2^48): collision-safe; existence check guards the rest (P2 audit #9).
     let id = genId();
@@ -192,6 +200,7 @@ export class MemoryStore implements MemoryBackend {
       createdAt: now,
       updatedAt: now,
       source: input.source,
+      provenance: opts?.provenance ?? "explicit",
       embedding,
     };
     const file = this.fileFor(memory);
@@ -466,6 +475,7 @@ function render(m: Memory): string {
     m.lastSeen ? `lastSeen: ${m.lastSeen}` : undefined,
     m.archivedAt ? `archivedAt: ${m.archivedAt}` : undefined,
     m.source ? `source: ${m.source}` : undefined,
+    m.provenance ? `provenance: ${m.provenance}` : undefined,
     m.embedding && m.embedding.length > 0 ? `embedding: [${m.embedding.join(",")}]` : undefined,
     "---",
     "",
@@ -516,6 +526,8 @@ async function parse(file: string): Promise<Memory | null> {
       lastSeen: meta.lastSeen,
       archivedAt: meta.archivedAt,
       source: meta.source,
+      provenance:
+        meta.provenance === "explicit" || meta.provenance === "auto" ? meta.provenance : undefined,
       embedding,
     };
   } catch (err) {

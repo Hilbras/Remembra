@@ -91,7 +91,10 @@ export class MemoryService {
     }
   }
 
-  async store(input: unknown) {
+  async store(
+    input: unknown,
+    opts?: { provenance?: Memory["provenance"] },
+  ) {
     let parsed: StoreInput;
     try {
       parsed = StoreInput.parse(input);
@@ -99,7 +102,9 @@ export class MemoryService {
       throw inputError(err, "INVALID_INPUT");
     }
     const embedding = await this.maybeEmbed(parsed.content);
-    const memory = await this.db.store(parsed, embedding);
+    const memory = await this.db.store(parsed, embedding, {
+      provenance: opts?.provenance ?? "explicit",
+    });
     return {
       id: memory.id,
       message: `Stored ${memory.type} memory ${memory.id} (scope: ${memory.scope})`,
@@ -209,6 +214,29 @@ export class MemoryService {
         }
       }
 
+      // Fuzzy fast path (Phase 4 / audit: dedup tolerance): textually
+      // near-identical same-type/same-scope memory → skip without an LLM
+      // call. Semantic near-duplicates (paraphrases) stay below this
+      // threshold and still go through the LLM merge below.
+      const fuzzyActive = active.find(
+        (m) => m.type === item.type && m.scope === scope && nearDuplicate(item.content, m.content),
+      );
+      if (fuzzyActive) {
+        skippedDuplicates++;
+        continue;
+      }
+      const fuzzyArchived = archived.find(
+        (m) => m.type === item.type && m.scope === scope && nearDuplicate(item.content, m.content),
+      );
+      if (fuzzyArchived) {
+        const revived = await this.db.revive(fuzzyArchived.id);
+        if (revived) {
+          seen.add(key);
+          merged++;
+          continue;
+        }
+      }
+
       // Evolved fact → LLM decides: store fresh, skip, or merge.
       const itemVec = (await this.maybeEmbed(item.content)) ?? null;
       const candidate = this.findCandidate(item, scope, [...active, ...archived], itemVec);
@@ -247,15 +275,19 @@ export class MemoryService {
       }
 
       seen.add(key);
-      const { memory } = await this.store({
-        type: item.type,
-        content: item.content,
-        scope,
-        tags: item.tags,
-        importance: item.importance,
-        source: opts.source,
-      });
+      const { memory } = await this.store(
+        {
+          type: item.type,
+          content: item.content,
+          scope,
+          tags: item.tags,
+          importance: item.importance,
+          source: opts.source,
+        },
+        { provenance: "auto" },
+      );
       stored.push(memory);
+      active.push(memory); // so later items in this batch dedup against it
     }
 
     return {
@@ -401,6 +433,53 @@ export class MemoryService {
 /** Normalized identity for exact-match dedup. */
 function dedupKey(type: string, content: string, scope: string): string {
   return `${type}|${scope}|${content.toLowerCase().replace(/\s+/g, " ").trim()}`;
+}
+
+/** Punctuation/case-folded text for fuzzy comparison. */
+function normalizeForFuzzy(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Textual near-identity (Phase 4 fast path): normalized equality or a
+ * Sørensen–Dice coefficient over character bigrams ≥ 0.9. Catches typos,
+ * punctuation and minor edits without spending an LLM call. Genuinely
+ * different wordings score well below 0.9 and keep going to the LLM merge.
+ */
+function nearDuplicate(a: string, b: string): boolean {
+  const na = normalizeForFuzzy(a);
+  const nb = normalizeForFuzzy(b);
+  if (na === nb) return true; // equal apart from punctuation/case (dedupKey only folds case+whitespace)
+  // A changed quantity (100→500 rpm, v2→v3, dates) is a *different fact*,
+  // textually near-identical or not — defer to the LLM merge.
+  const numsA = (na.match(/\d+/g) ?? []).join(",");
+  const numsB = (nb.match(/\d+/g) ?? []).join(",");
+  if (numsA !== numsB) return false;
+  if (na.length < 8 || nb.length < 8) return false; // too short to judge by bigrams
+  return diceBigrams(na, nb) >= 0.9;
+}
+
+function diceBigrams(a: string, b: string): number {
+  const grams = (s: string): Map<string, number> => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) {
+      const g = s.slice(i, i + 2);
+      m.set(g, (m.get(g) ?? 0) + 1);
+    }
+    return m;
+  };
+  const ga = grams(a);
+  const gb = grams(b);
+  let overlap = 0;
+  for (const [g, c] of ga) overlap += Math.min(c, gb.get(g) ?? 0);
+  const totalA = [...ga.values()].reduce((x, y) => x + y, 0);
+  const totalB = [...gb.values()].reduce((x, y) => x + y, 0);
+  if (totalA === 0 || totalB === 0) return 0;
+  return (2 * overlap) / (totalA + totalB);
 }
 
 /** Similarity: embeddings (cosine) when both sides have vectors, else keyword overlap. */
