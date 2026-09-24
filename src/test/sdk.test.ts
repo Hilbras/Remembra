@@ -138,9 +138,11 @@ test("published SDK and tenant subpaths resolve without starting the CLI", async
   const packageSdk = await import("@hilbras/remembra/sdk");
   const packageTenant = await import("@hilbras/remembra/tenant");
   const packageDirectory = await import("@hilbras/remembra/tenant-directory");
+  const packageMigration = await import("@hilbras/remembra/tenant-migration");
   assert.equal(typeof packageSdk.Remembra, "function");
   assert.equal(typeof packageTenant.createTenantContext, "function");
   assert.equal(typeof packageDirectory.InMemoryTenantDirectory, "function");
+  assert.equal(typeof packageMigration.planTenantMigration, "function");
 });
 
 test("SDK rejects invalid endpoints and does not require an API key", async () => {

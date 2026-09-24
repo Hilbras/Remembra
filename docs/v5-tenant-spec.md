@@ -363,6 +363,10 @@ The operation has:
 6. atomic publication of the migrated destination;
 7. a retained rollback source until the operator confirms success.
 
+The shipped migration runner performs steps 1–5 in memory and applies records
+idempotently to a tenant-capable backend. Durable crash-state publication and
+atomic rollback are still required before strict rollout.
+
 A failed or partial migration never switches the service into strict mode.
 Legacy defaults for owner/access are not tenant ownership: migration must assign
 an explicit organization and must reject ambiguous or malformed records rather

@@ -8,7 +8,6 @@ import {
   MEMORY_ID_RE,
   MemoryOwner,
   MemoryAccess,
-  RelationKind,
 } from "./types.js";
 
 export const TENANT_MIGRATION_FORMAT = "remembra-tenant-migration";
@@ -50,7 +49,7 @@ const referenceSchema = z
     organizationId: identifier,
     sourceId: z.string().regex(MEMORY_ID_RE, "invalid source memory id"),
     targetId: z.string().regex(MEMORY_ID_RE, "invalid target memory id"),
-    kind: RelationKind,
+    kind: z.string().min(1).max(64),
     sha256: checksum,
   })
   .strict();
