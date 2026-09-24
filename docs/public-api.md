@@ -218,6 +218,9 @@ Envelope written by `remembra export` and `GET /snapshot`:
   over the canonical envelope. Unsigned, tampered, or wrongly keyed snapshots
   return `SNAPSHOT_INVALID` before any record is read or written. Legacy mode
   continues to accept unsigned V4 snapshots during migration.
+- Strict HTTP data requests reject tenant-bearing headers, query parameters,
+  and body fields with `400`; signed snapshot records are the only permitted
+  exception and are still bound to the authenticated tenant context.
 
 ## CLI
 

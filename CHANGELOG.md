@@ -35,6 +35,9 @@ V5 work is additive until the tenant/schema migration contract is approved.
   envelopes, strict export/import verification, reference sanitization, and
   operator key configuration. Legacy mode continues to accept unsigned V4
   snapshots during migration.
+- **Strict HTTP ingress hardening** rejects tenant-bearing headers, query
+  parameters, and request fields (while allowing signed snapshot records) so
+  public callers cannot select an organization.
 - **File-backend tenant boundary** adds encoded tenant namespaces and
   tenant-filtered point reads, writes, lifecycle operations, and history;
   unscoped legacy reads never enumerate tenant directories.
