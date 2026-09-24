@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import Database from "better-sqlite3";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SqliteBackend } from "../sqlite-backend.js";
+import { SqliteBackend, SQLITE_SCHEMA_SQL } from "../sqlite-backend.js";
 import { StoreInput } from "../types.js";
 import type { TenantFilter } from "../tenant.js";
 
@@ -70,6 +71,32 @@ test("SQLite candidate SQL applies tenant and project predicates before limits/c
   assert.equal(page.memories.length, 1);
   assert.equal(page.memories[0].tenantId, "org-a");
 
+  store.close();
+  await fs.rm(root, { recursive: true, force: true });
+});
+
+test("SQLite reopens a pre-tenant database before creating tenant indexes", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-legacy-sqlite-"));
+  const dbPath = path.join(root, "data.sqlite");
+  const legacySql = SQLITE_SCHEMA_SQL
+    .replace(/\n  tenant_id         TEXT,/g, "")
+    .replace(/\n  project_id        TEXT,/g, "")
+    .replace(/\n  user_id           TEXT,/g, "")
+    .replace(/\n  agent_id          TEXT,/g, "")
+    .replace(/\n  tenant_id  TEXT,/g, "")
+    .replace(/\n  project_id TEXT,/g, "")
+    .replace(/CREATE INDEX IF NOT EXISTS idx_tenant[^;]*;/g, "")
+    .replace(/CREATE INDEX IF NOT EXISTS idx_versions_tenant[^;]*;/g, "")
+    .replace(/CREATE INDEX IF NOT EXISTS idx_audit_tenant[^;]*;/g, "");
+  const legacy = new Database(dbPath);
+  legacy.exec(legacySql);
+  legacy.close();
+
+  const store = new SqliteBackend({ root });
+  const sqlite = store as unknown as { db: { pragma: (sql: string) => Array<{ name: string }> } };
+  assert.ok(sqlite.db.pragma("table_info(memories)").some((column) => column.name === "tenant_id"));
+  assert.ok(sqlite.db.pragma("table_info(memory_versions)").some((column) => column.name === "tenant_id"));
+  assert.ok(sqlite.db.pragma("table_info(memory_audit)").some((column) => column.name === "tenant_id"));
   store.close();
   await fs.rm(root, { recursive: true, force: true });
 });

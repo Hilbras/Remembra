@@ -211,6 +211,7 @@ Full reference: **[docs/tools.md](docs/tools.md)**
 | [V5 context contract](docs/v5-context-spec.md) | Token-budget API contract |
 | [V5 policy configuration](docs/v5-policy.md) | Validated fail-closed policy settings |
 | [V5 tenant contract](docs/v5-tenant-spec.md) | Organization isolation and migration boundaries |
+| [V5 performance gates](docs/v5-performance.md) | Reproducible strict-tenant scale budgets and baseline |
 | [V5 threat model](docs/v5-threat-model.md) | Context/tenant security boundaries |
 | [Memory model](docs/memory-model.md) | Types, scopes, ranking, storage format |
 | [Tool reference](docs/tools.md) | Every MCP tool with arguments |

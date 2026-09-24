@@ -160,8 +160,6 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scope       ON memories(scope);
-CREATE INDEX IF NOT EXISTS idx_tenant      ON memories(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_tenant_scope ON memories(tenant_id, scope);
 CREATE INDEX IF NOT EXISTS idx_type        ON memories(type);
 CREATE INDEX IF NOT EXISTS idx_archived    ON memories(archived_at);
 CREATE INDEX IF NOT EXISTS idx_updated     ON memories(updated_at DESC);
@@ -177,7 +175,6 @@ CREATE TABLE IF NOT EXISTS memory_versions (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_versions_memory ON memory_versions(memory_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_versions_tenant ON memory_versions(tenant_id, memory_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS memory_audit (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,7 +188,6 @@ CREATE TABLE IF NOT EXISTS memory_audit (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_memory ON memory_audit(memory_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_audit_tenant ON memory_audit(tenant_id, memory_id, created_at DESC);
 `;
 
 // ---------------------------------------------------------------------------
@@ -212,8 +208,19 @@ export interface SqliteOptions {
 export class SqliteBackend implements MemoryBackend {
   readonly tenantCapable = true;
   protected readonly db: Database.Database;
+  private readonly statementCache = new Map<string, Database.Statement>();
   private readonly idGen: () => string;
   private ftsEnabled: boolean;
+
+  private prepare(sql: string): Database.Statement {
+    let statement = this.statementCache.get(sql);
+    if (!statement) {
+      statement = this.db.prepare(sql);
+      this.statementCache.set(sql, statement);
+    }
+    return statement;
+  }
+
   /**
    * Reuse hot read statements. Besides avoiding repeated SQL compilation,
    * retaining the statements avoids a better-sqlite3/Node 24 native cleanup
@@ -248,10 +255,10 @@ export class SqliteBackend implements MemoryBackend {
     this.db.exec(SQLITE_SCHEMA_SQL);
     this.ensureAgentColumns();
     this.ensureTenantAuxColumns();
-    this.allActiveStatement = this.db.prepare(
+    this.allActiveStatement = this.prepare(
       "SELECT * FROM memories WHERE archived_at IS NULL AND tenant_id IS NULL ORDER BY updated_at DESC",
     );
-    this.allIncludingArchivedStatement = this.db.prepare(
+    this.allIncludingArchivedStatement = this.prepare(
       "SELECT * FROM memories WHERE tenant_id IS NULL ORDER BY updated_at DESC",
     );
 
@@ -272,7 +279,7 @@ export class SqliteBackend implements MemoryBackend {
     // Retain hot statements. Recreating these for every operation adds
     // avoidable compilation and has exposed a native cleanup assertion with
     // better-sqlite3 under Node 24 when the collection is large.
-    this.insertMemoryStatement = this.db.prepare(`
+    this.insertMemoryStatement = this.prepare(`
       INSERT INTO memories (
         id, type, content, scope, tenant_id, project_id, user_id, agent_id, tags, importance, confidence, trust,
         provenance, owner, access, valid_from, valid_until, observed_at, superseded_by, meta,
@@ -280,14 +287,14 @@ export class SqliteBackend implements MemoryBackend {
         last_seen, archived_at, embedding
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    this.lastInsertRowidStatement = this.db.prepare("SELECT last_insert_rowid() AS rowid");
+    this.lastInsertRowidStatement = this.prepare("SELECT last_insert_rowid() AS rowid");
     this.insertFtsStatement = this.ftsEnabled
-      ? this.db.prepare("INSERT INTO memories_fts(rowid, content) VALUES (?, ?)")
+      ? this.prepare("INSERT INTO memories_fts(rowid, content) VALUES (?, ?)")
       : null;
     this.deleteFtsStatement = this.ftsEnabled
-      ? this.db.prepare("DELETE FROM memories_fts WHERE rowid = ?")
+      ? this.prepare("DELETE FROM memories_fts WHERE rowid = ?")
       : null;
-    this.auditStatement = this.db.prepare(
+    this.auditStatement = this.prepare(
       "INSERT INTO memory_audit (memory_id, tenant_id, project_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?)",
     );
     const eligibleFilter = `
@@ -331,7 +338,7 @@ export class SqliteBackend implements MemoryBackend {
            OR instr(lower(m.tags), lower(terms.value)) > 0
       )
     `;
-    this.candidateMatchStatement = this.db.prepare(`
+    this.candidateMatchStatement = this.prepare(`
       SELECT m.*
       FROM memories AS m
       WHERE ${candidateFilter}
@@ -339,7 +346,7 @@ export class SqliteBackend implements MemoryBackend {
       ORDER BY m.updated_at DESC
       LIMIT ?
     `);
-    this.candidateZeroStatement = this.db.prepare(`
+    this.candidateZeroStatement = this.prepare(`
       SELECT m.*
       FROM memories AS m
       WHERE ${candidateFilter}
@@ -372,7 +379,7 @@ export class SqliteBackend implements MemoryBackend {
       , m.id ASC
       LIMIT ?
     `);
-    this.candidateCountStatement = this.db.prepare(`
+    this.candidateCountStatement = this.prepare(`
       SELECT count(*) AS count
       FROM memories AS m
       WHERE ${eligibleFilter}${tenantFilter}
@@ -423,6 +430,12 @@ export class SqliteBackend implements MemoryBackend {
       if (!names.has("tenant_id")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN tenant_id TEXT`);
       if (!names.has("project_id")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN project_id TEXT`);
     }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_tenant ON memories(tenant_id);
+      CREATE INDEX IF NOT EXISTS idx_tenant_scope ON memories(tenant_id, scope);
+      CREATE INDEX IF NOT EXISTS idx_versions_tenant ON memory_versions(tenant_id, memory_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_audit_tenant ON memory_audit(tenant_id, memory_id, created_at DESC);
+    `);
   }
 
   // -------------------------------------------------------------------------
@@ -483,8 +496,7 @@ export class SqliteBackend implements MemoryBackend {
 
   async get(id: string, tenant?: TenantFilter): Promise<Memory | null> {
     const scoped = tenantWhere("m", tenant);
-    const row = this.db
-      .prepare(`SELECT m.* FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+    const row = this.prepare(`SELECT m.* FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
       .get(id, ...scoped.params) as Record<string, unknown> | undefined;
     if (!row) return null;
     try {
@@ -505,8 +517,7 @@ export class SqliteBackend implements MemoryBackend {
     } else {
       const scoped = tenantWhere("m", tenant);
       const archived = includeArchived ? "" : " AND m.archived_at IS NULL";
-      rows = this.db
-        .prepare(`SELECT m.* FROM memories AS m WHERE ${scoped.sql}${archived} ORDER BY m.updated_at DESC`)
+      rows = this.prepare(`SELECT m.* FROM memories AS m WHERE ${scoped.sql}${archived} ORDER BY m.updated_at DESC`)
         .all(...scoped.params) as Record<string, unknown>[];
     }
     return rows.map(rowToMemory).filter((m): m is Memory => m !== null);
@@ -612,8 +623,7 @@ export class SqliteBackend implements MemoryBackend {
         throw new RemembraError("NOT_FOUND", `memory ${memory.id} not found`);
       }
       const scoped = tenantWhere("m", tenant);
-      const existingRow = this.db
-        .prepare(`SELECT rowid, version, content, tenant_id, project_id FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+      const existingRow = this.prepare(`SELECT rowid, version, content, tenant_id, project_id FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
         .get(memory.id, ...scoped.params) as {
           rowid: number;
           version: number;
@@ -645,8 +655,7 @@ export class SqliteBackend implements MemoryBackend {
         await this.snapshotHistory(memory.id, existingRow.content, opts?.reason, tenant);
       }
 
-      this.db
-        .prepare(`
+      this.prepare(`
           UPDATE memories SET
             type = ?, content = ?, scope = ?, tenant_id = ?, project_id = ?, user_id = ?, agent_id = ?, tags = ?, importance = ?,
             confidence = ?, trust = ?, provenance = ?, owner = ?, access = ?,
@@ -700,13 +709,11 @@ export class SqliteBackend implements MemoryBackend {
   async archive(id: string, tenant?: TenantFilter): Promise<Memory | null> {
     return this.withLock(async () => {
       const scoped = tenantWhere("m", tenant);
-      const row = this.db
-        .prepare(`SELECT rowid, m.* FROM memories AS m WHERE m.id = ? AND ${scoped.sql} AND m.archived_at IS NULL`)
+      const row = this.prepare(`SELECT rowid, m.* FROM memories AS m WHERE m.id = ? AND ${scoped.sql} AND m.archived_at IS NULL`)
         .get(id, ...scoped.params) as Record<string, unknown> | undefined;
       if (!row) return null;
       const now = new Date().toISOString();
-      this.db
-        .prepare(
+      this.prepare(
           `UPDATE memories SET archived_at = ?, updated_at = ? WHERE id = ? AND ${tenantWhere("", tenant).sql}`,
         )
         .run(now, now, id, ...tenantWhere("", tenant).params);
@@ -722,13 +729,11 @@ export class SqliteBackend implements MemoryBackend {
   async revive(id: string, tenant?: TenantFilter): Promise<Memory | null> {
     return this.withLock(async () => {
       const scoped = tenantWhere("m", tenant);
-      const row = this.db
-        .prepare(`SELECT rowid, m.* FROM memories AS m WHERE m.id = ? AND ${scoped.sql} AND m.archived_at IS NOT NULL`)
+      const row = this.prepare(`SELECT rowid, m.* FROM memories AS m WHERE m.id = ? AND ${scoped.sql} AND m.archived_at IS NOT NULL`)
         .get(id, ...scoped.params) as Record<string, unknown> | undefined;
       if (!row) return null;
       const now = new Date().toISOString();
-      this.db
-        .prepare(
+      this.prepare(
           `UPDATE memories SET archived_at = NULL, last_seen = ?, updated_at = ? WHERE id = ? AND ${tenantWhere("", tenant).sql}`,
         )
         .run(now, now, id, ...tenantWhere("", tenant).params);
@@ -744,14 +749,12 @@ export class SqliteBackend implements MemoryBackend {
   async touch(id: string, tenant?: TenantFilter): Promise<void> {
     return this.withLock(async () => {
       const scoped = tenantWhere("m", tenant);
-      const row = this.db
-        .prepare(`SELECT last_seen, updated_at FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+      const row = this.prepare(`SELECT last_seen, updated_at FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
         .get(id, ...scoped.params) as { last_seen: string; updated_at: string } | undefined;
       if (!row) return;
       const last = Date.parse(row.last_seen ?? row.updated_at);
       if (Number.isFinite(last) && Date.now() - last < 3_600_000) return;
-      this.db
-        .prepare(`UPDATE memories SET last_seen = ? WHERE id = ? AND ${tenantWhere("", tenant).sql}`)
+      this.prepare(`UPDATE memories SET last_seen = ? WHERE id = ? AND ${tenantWhere("", tenant).sql}`)
         .run(new Date().toISOString(), id, ...tenantWhere("", tenant).params);
     });
   }
@@ -760,8 +763,7 @@ export class SqliteBackend implements MemoryBackend {
     return this.withLock(async () => {
       // Look up the integer rowid for FTS sync.
       const scoped = tenantWhere("m", tenant);
-      const memRow = this.db
-        .prepare(`SELECT rowid, m.provenance FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+      const memRow = this.prepare(`SELECT rowid, m.provenance FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
         .get(id, ...scoped.params) as { rowid: number; provenance: string } | undefined;
       if (!memRow) return false;
       // Audit before deleting so the FK reference is valid.
@@ -777,14 +779,11 @@ export class SqliteBackend implements MemoryBackend {
       }
       // Delete child rows first (foreign key constraints).
       const childScope = tenantWhere("", tenant);
-      this.db
-        .prepare(`DELETE FROM memory_audit WHERE memory_id = ? AND ${childScope.sql}`)
+      this.prepare(`DELETE FROM memory_audit WHERE memory_id = ? AND ${childScope.sql}`)
         .run(id, ...childScope.params);
-      this.db
-        .prepare(`DELETE FROM memory_versions WHERE memory_id = ? AND ${childScope.sql}`)
+      this.prepare(`DELETE FROM memory_versions WHERE memory_id = ? AND ${childScope.sql}`)
         .run(id, ...childScope.params);
-      const info = this.db
-        .prepare(`DELETE FROM memories WHERE id = ? AND ${tenantWhere("", tenant).sql}`)
+      const info = this.prepare(`DELETE FROM memories WHERE id = ? AND ${tenantWhere("", tenant).sql}`)
         .run(id, ...tenantWhere("", tenant).params);
       if (info.changes === 0) return false;
       return true;
@@ -798,8 +797,7 @@ export class SqliteBackend implements MemoryBackend {
         (tenant && (m.tenantId !== tenant.organizationId || (tenant.projectId && m.projectId !== tenant.projectId)))
       ) return false;
       const scoped = tenantWhere("m", tenant);
-      const existing = this.db
-        .prepare(`SELECT 1 FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+      const existing = this.prepare(`SELECT 1 FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
         .get(m.id, ...scoped.params) as { 1: number } | undefined;
       if (existing) return false;
       this.insertRow(m);
@@ -810,8 +808,7 @@ export class SqliteBackend implements MemoryBackend {
 
   async history(id: string, tenant?: TenantFilter): Promise<HistoryEntry[]> {
     const scoped = tenantWhere("", tenant);
-    const rows = this.db
-      .prepare(
+    const rows = this.prepare(
         `SELECT content, reason, created_at FROM memory_versions WHERE memory_id = ? AND ${scoped.sql} ORDER BY created_at DESC`,
       )
       .all(id, ...scoped.params) as Array<{ content: string; reason: string | null; created_at: string }>;
@@ -824,8 +821,7 @@ export class SqliteBackend implements MemoryBackend {
   }
 
   cacheStats(): { size: number; capacity: number } {
-    const info = this.db
-      .prepare(
+    const info = this.prepare(
         "SELECT count(*) AS cnt FROM memories WHERE archived_at IS NULL",
       )
       .get() as { cnt: number };
@@ -849,7 +845,7 @@ export class SqliteBackend implements MemoryBackend {
     sql += " ORDER BY created_at DESC";
     const limit = opts?.limit ?? 50;
     sql += ` LIMIT ${Number(limit)}`;
-    const rows = this.db.prepare(sql).all(...params) as Array<{
+    const rows = this.prepare(sql).all(...params) as Array<{
       memory_id: string;
       action: string;
       details: string | null;
@@ -879,7 +875,7 @@ export class SqliteBackend implements MemoryBackend {
 
   /** Test hook: execute arbitrary SQL (for test setup only). */
   _testExec(sql: string, ...params: unknown[]): void {
-    this.db.prepare(sql).run(...params);
+    this.prepare(sql).run(...params);
   }
 
   // -------------------------------------------------------------------------
@@ -927,8 +923,7 @@ export class SqliteBackend implements MemoryBackend {
     const limit = Number(process.env.REMEMBRA_HISTORY_LIMIT ?? 20);
     if (limit <= 0) return;
     const scoped = tenantWhere("", tenant);
-    this.db
-      .prepare(
+    this.prepare(
         "INSERT INTO memory_versions (memory_id, tenant_id, project_id, content, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
       )
       .run(
@@ -941,8 +936,7 @@ export class SqliteBackend implements MemoryBackend {
       );
     metrics.inc("remembra_history_snapshots_total");
     if (limit > 0) {
-      this.db
-        .prepare(
+      this.prepare(
           "DELETE FROM memory_versions WHERE " + scoped.sql + " AND id NOT IN (" +
           "SELECT id FROM memory_versions WHERE memory_id = ? AND " + scoped.sql + " ORDER BY created_at DESC LIMIT ?" +
           ")",
@@ -1042,8 +1036,7 @@ export class SqliteBackend implements MemoryBackend {
     if (!this.ftsEnabled) return [];
     try {
       const scoped = tenantWhere("m", tenant);
-      const rows = this.db
-        .prepare(
+      const rows = this.prepare(
           `SELECT m.id FROM memories_fts JOIN memories AS m ON m.rowid = memories_fts.rowid WHERE memories_fts MATCH ? AND ${scoped.sql}`,
         )
         .all(query, ...scoped.params) as Array<{ id: string }>;
@@ -1149,7 +1142,7 @@ export class SqliteBackend implements MemoryBackend {
     const root = path.dirname(this.db.name);
     // Run migration even if DB exists (idempotent: skips if no legacy files).
     await this.startMigration(root);
-    const count = this.db.prepare("SELECT count(*) AS cnt FROM memories").get() as { cnt: number };
+    const count = this.prepare("SELECT count(*) AS cnt FROM memories").get() as { cnt: number };
     return { imported: count.cnt, skipped: 0 };
   }
 }

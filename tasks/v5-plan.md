@@ -134,6 +134,9 @@ Implementation slices:
     path silently scans the full database.
   - Verification: reproducible benchmark harness, resource telemetry, and
     documented hardware/dataset assumptions.
+  - Current evidence: `npm run bench:tenant` covers strict 10K/100K candidate
+    search, p50/p95 latency, seed time, and heap ceilings in
+    [v5-performance.md](../docs/v5-performance.md).
   - Scope: M/L.
 
 ### Phase 5 — Recovery and security
