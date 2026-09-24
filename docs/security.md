@@ -138,8 +138,21 @@ remembra --http     # from here on, writes are AES-256-GCM
 | **What it protects** | At-rest exfiltration: stolen backups, copied `~/.remembra`, a leaked git history of the directory |
 | **What it does not** | A runtime attacker on your machine can read the env of the process holding the key — this is not a substitute for OS disk encryption & process isolation; and files stop being human-readable (decrypt first: unset the key after `remembra decrypt`) |
 
-Export snapshots (`remembra export`) contain **decrypted** JSON — they are
-protected by file permissions like any other backup.
+### Encryption scope by data plane
+
+`REMEMBRA_ENCRYPT_KEY` is a file-backend storage control. It is not a universal
+"encrypt everything" switch:
+
+| Data plane | What the key currently protects | What it does not protect |
+|---|---|---|
+| File-backed memory and history | Per-file AES-256-GCM ciphertext, including history pre-images and reason metadata written through the file store | SQLite database pages, process memory, OS swap, or a runtime attacker who can read the key |
+| SQLite backend | No application-level page encryption; use encrypted volumes/filesystem or disk encryption where required | Database files, WAL/SHM files, backups, or query results while the process is running |
+| `remembra export` snapshots | Snapshot HMAC authenticity/integrity when a snapshot key is configured | Confidentiality; exported JSON is decrypted and must be protected as a backup |
+| HTTP/MCP transport | Nothing by itself; the application speaks plain HTTP | Network confidentiality; put TLS/authenticated transport in front of non-loopback deployments |
+
+The file encryption migration commands are intentionally separate from SQLite
+and snapshot handling. Do not treat an encrypted file tree as proof that every
+copy of the data is encrypted.
 
 ## PII redaction (opt-in, 3.8.0)
 

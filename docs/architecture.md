@@ -209,6 +209,11 @@ ciphertext without/with a wrong key throws `ENCRYPTED_NO_KEY` (503). The
 warn-once "skip malformed file" path explicitly re-throws `RemembraError`s —
 unreadable storage must never degrade into *smaller* search results.
 
+Encryption is deliberately scoped to the file store's memory/history payloads.
+It does not encrypt SQLite pages, exported snapshot JSON, process memory, or
+HTTP transport. Snapshot HMAC signing provides authenticity, not confidentiality;
+use encrypted volumes/backups and TLS for those data planes.
+
 ## Version history (audit Phase 8 — `snapshotHistory` / `history`)
 
 `MemoryStore.update()` is the single content-mutation chokepoint (merge

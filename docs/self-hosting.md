@@ -47,6 +47,14 @@ Test restores regularly. Import validates the complete snapshot before writing
 and skips existing ids/content idempotently. Protect backups as sensitive
 memory data.
 
+## Encryption boundaries
+
+`REMEMBRA_ENCRYPT_KEY` encrypts file-backend memory and history files; it does
+not encrypt SQLite pages, decrypted export JSON, process memory, or network
+transport. Snapshot HMAC signing provides integrity/authenticity, not
+confidentiality. For a non-loopback deployment, terminate TLS at the proxy and
+use encrypted volumes or backups for the selected backend.
+
 ## Resource limits
 
 The server bounds request bodies, batch size, provider concurrency, background
