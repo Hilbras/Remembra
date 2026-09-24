@@ -215,8 +215,10 @@ startup rather than silently resetting the state.
 Structural validation (shape, count, duplicate IDs, and the 10 MiB compact JSON
 limit) completes before any write. Valid mutations then run sequentially;
 operational failures are returned per item and successful/failed rows retain
-input order. The first batch slice is **not** a cross-item transaction. Export
-returns a normal import-compatible snapshot plus per-item selection outcomes;
+input order. Responses include `execution` metadata: mutation batches report
+`transactionPolicy: "per-item"` and `idempotency: "unsupported"`; export reports
+read-only execution. The first batch slice is **not** a cross-item transaction.
+Export returns a normal import-compatible snapshot plus per-item selection outcomes;
 relations to unselected memories are omitted. In strict mode the export branch
 requires the explicit `tenant:export` capability and signs its result when a
 snapshot key is configured.

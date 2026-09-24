@@ -97,6 +97,7 @@ test("batch update and delete report item-local failures", async () => {
     ],
   });
   assert.equal(updated.operation, "update");
+  assert.deepEqual(updated.execution, { transactionPolicy: "per-item", idempotency: "unsupported" });
   if (updated.operation !== "update") return;
   assert.deepEqual(updated.summary, { requested: 3, succeeded: 1, failed: 2 });
   assert.equal(updated.results[0].ok, true);
@@ -106,6 +107,7 @@ test("batch update and delete report item-local failures", async () => {
 
   const deleted = await svc.batch({ operation: "delete", ids: [first.id, "does-not-exist"] });
   assert.deepEqual(deleted.summary, { requested: 2, succeeded: 1, failed: 1 });
+  assert.deepEqual(deleted.execution, { transactionPolicy: "per-item", idempotency: "unsupported" });
   assert.equal(deleted.results[1].ok, false);
   await assert.rejects(() => svc.get(first.id), expectCode("NOT_FOUND"));
 });
@@ -118,6 +120,7 @@ test("batch export selects visible records and remains import-compatible", async
   const result = await svc.batch({ operation: "export", ids: [first.id] });
   if (result.operation !== "export") assert.fail("expected export result");
   assert.deepEqual(result.summary, { requested: 1, succeeded: 1, failed: 0 });
+  assert.deepEqual(result.execution, { transactionPolicy: "read-only", idempotency: "read-only" });
   assert.deepEqual(result.memories.map((memory) => memory.id), [first.id]);
   assert.equal(result.memories[0].relations, undefined);
   const imported = await service();

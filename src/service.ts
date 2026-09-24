@@ -1,7 +1,7 @@
 import type { MemoryBackend } from "./backend.js";
 import { extractQuery, searchQ, expandRelationCandidates } from "./retrieval.js";
 import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, TENANT_SCHEMA_VERSION, Provenance, defaultTrust, CompressInput, BatchRequest, MAX_BATCH_BYTES, BatchOutcome, BatchSummary, BatchFailure } from "./types.js";
-import { RemembraError, inputError, errorLabel } from "./errors.js";
+import { RemembraError, inputError, errorLabel, publicErrorMessage } from "./errors.js";
 import {
   ContextInput,
   defaultTokenCounter,
@@ -174,7 +174,7 @@ function batchFailure(index: number, id: string | undefined, error: unknown): Ba
     ok: false,
     error: {
       code: errorLabel(error),
-      message: error instanceof Error ? error.message : String(error),
+      message: publicErrorMessage(error),
     },
   };
 }
@@ -221,6 +221,9 @@ function compareMemoryDescending(left: Memory, right: Memory | ListCursor): numb
   if (left.id === right.id) return 0;
   return left.id < right.id ? 1 : -1;
 }
+
+const BATCH_PER_ITEM_EXECUTION = { transactionPolicy: "per-item", idempotency: "unsupported" } as const;
+const BATCH_READ_ONLY_EXECUTION = { transactionPolicy: "read-only", idempotency: "read-only" } as const;
 
 function recordBatchMetrics(operation: string, results: readonly BatchOutcome[]): void {
   for (const result of results) {
@@ -1038,7 +1041,7 @@ export class MemoryService {
         }
       }
       recordBatchMetrics("store", results);
-      return { operation: "store" as const, summary: batchSummary(results), results };
+      return { operation: "store" as const, summary: batchSummary(results), results, execution: BATCH_PER_ITEM_EXECUTION };
     }
 
     if (request.operation === "update") {
@@ -1058,7 +1061,7 @@ export class MemoryService {
         }
       }
       recordBatchMetrics("update", results);
-      return { operation: "update" as const, summary: batchSummary(results), results };
+      return { operation: "update" as const, summary: batchSummary(results), results, execution: BATCH_PER_ITEM_EXECUTION };
     }
 
     if (request.operation === "delete") {
@@ -1073,7 +1076,7 @@ export class MemoryService {
         }
       }
       recordBatchMetrics("delete", results);
-      return { operation: "delete" as const, summary: batchSummary(results), results };
+      return { operation: "delete" as const, summary: batchSummary(results), results, execution: BATCH_PER_ITEM_EXECUTION };
     }
 
     const selected: Memory[] = [];
@@ -1111,6 +1114,7 @@ export class MemoryService {
       operation: "export" as const,
       summary: batchSummary(results),
       results,
+      execution: BATCH_READ_ONLY_EXECUTION,
     };
   }
 

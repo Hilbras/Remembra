@@ -5,6 +5,7 @@ import type { TenantEntity, TenantEntityKind, TenantEntityPage, TenantMembership
 export type { TenantEntity, TenantEntityKind, TenantEntityPage, TenantMembershipPage } from "./tenant-entities.js";
 export type { ContextMemory, ContextResult } from "./context.js";
 import type {
+  BatchExecutionMetadata,
   BatchOutcome,
   BatchRequest,
   BatchSummary,
@@ -284,7 +285,12 @@ export interface HistoryResponse {
 }
 
 export type BatchResponse =
-  | { operation: "store" | "update" | "delete"; summary: BatchSummary; results: BatchOutcome[] }
+  | {
+      operation: "store" | "update" | "delete";
+      summary: BatchSummary;
+      results: BatchOutcome[];
+      execution: BatchExecutionMetadata;
+    }
   | {
       operation: "export";
       format: string;
@@ -293,6 +299,7 @@ export type BatchResponse =
       memories: Memory[];
       summary: BatchSummary;
       results: BatchOutcome[];
+      execution: BatchExecutionMetadata;
     };
 
 /**

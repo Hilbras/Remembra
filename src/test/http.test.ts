@@ -231,6 +231,7 @@ test("POST /memories/batch returns ordered outcomes and validates structure", as
   const body = await res.json();
   assert.equal(body.operation, "store");
   assert.deepEqual(body.summary, { requested: 2, succeeded: 2, failed: 0 });
+  assert.deepEqual(body.execution, { transactionPolicy: "per-item", idempotency: "unsupported" });
   assert.deepEqual(body.results.map((item: { index: number }) => item.index), [0, 1]);
 
   const invalid = await fetch(`${base}/memories/batch`, {
