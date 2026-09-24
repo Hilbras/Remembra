@@ -30,6 +30,7 @@ export interface HttpOptions {
 }
 
 const DEFAULT_MAX_BODY = 10 * 1024 * 1024; // transcripts can be large — 10 MiB
+const API_V1_PREFIX = "/api/v1";
 
 /** Web UI root: dist/ui (TS from src/ui + HTML/CSS copied by scripts/copy-ui.mjs). */
 const UI_ROOT = path.resolve(fileURLToPath(new URL("./ui/", import.meta.url)));
@@ -164,11 +165,14 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
-      const path = url.pathname.replace(/\/+$/, "") || "/";
+      const rawPath = url.pathname.replace(/\/+$/, "") || "/";
+      const isApiV1 = rawPath === API_V1_PREFIX || rawPath.startsWith(`${API_V1_PREFIX}/`);
+      const path = isApiV1 ? rawPath.slice(API_V1_PREFIX.length) || "/" : rawPath;
+      if (isApiV1) res.setHeader("x-remembra-api-version", "v1");
 
       // Request instrumentation (audit Phase 7) — low-cardinality route label,
       // counted on finish so the real status code is visible.
-      const route = routeLabel(path);
+      const route = routeLabel(path, isApiV1);
       const startedAt = performance.now();
       res.on("finish", () => {
         metrics.inc("remembra_http_requests_total", {
@@ -216,6 +220,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // carries the key. REMEMBRA_UI=0 turns serving off entirely.
       if (
         process.env.REMEMBRA_UI !== "0" &&
+        !isApiV1 &&
         (path === "/" || path === "/ui" || path.startsWith("/ui/"))
       ) {
         applySecureHeaders(res);
@@ -499,7 +504,12 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 }
 
 /** Low-cardinality route label for metrics (never the raw path). */
-function routeLabel(p: string): string {
+function routeLabel(p: string, apiV1 = false): string {
+  const label = routeLabelInternal(p);
+  return apiV1 ? `api_v1_${label}` : label;
+}
+
+function routeLabelInternal(p: string): string {
   switch (p) {
     case "/health":
       return "health";

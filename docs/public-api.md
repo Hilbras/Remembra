@@ -75,6 +75,22 @@ Remembra does not trust an `agentId` JSON field or public agent header. See
 | POST | `/import` | idempotent, atomic import |
 | DELETE | `/memories/:id` | forget |
 
+### Versioned API
+
+V4.9 introduces the additive `/api/v1` namespace. Requests such as
+`POST /api/v1/memories`, `GET /api/v1/memories/search`, and
+`POST /api/v1/memories/batch` use the same authentication, trusted agent
+resolver, limits, and response shapes as their legacy unversioned equivalents.
+Every `/api/v1` response includes:
+
+```http
+X-Rembra-API-Version: v1
+```
+
+Legacy routes remain supported for compatibility. The v1 namespace does not
+accept a client-supplied agent identity; trusted host resolution remains the
+only source of agent context.
+
 ### Batches
 
 `POST /memories/batch` accepts one discriminated `operation`:

@@ -26,6 +26,37 @@ test("requests without API key are rejected", async () => {
   assert.equal(res.status, 401);
 });
 
+test("v1 API namespace preserves auth, headers, and legacy handler behavior", async () => {
+  const health = await fetch(`${base}/api/v1/health`);
+  assert.equal(health.status, 200);
+  assert.equal(health.headers.get("x-remembra-api-version"), "v1");
+
+  const unauthorized = await fetch(`${base}/api/v1/memories`);
+  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.headers.get("x-remembra-api-version"), "v1");
+
+  const created = await fetch(`${base}/api/v1/memories`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": "test-key" },
+    body: JSON.stringify({ type: "fact", content: "versioned HTTP memory" }),
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.headers.get("x-remembra-api-version"), "v1");
+  const { id } = await created.json();
+
+  const found = await fetch(`${base}/api/v1/memories/search?query=versioned`, {
+    headers: { authorization: "Bearer test-key" },
+  });
+  assert.equal(found.status, 200);
+  assert.ok((await found.json()).results.some((m: { id: string }) => m.id === id));
+
+  const missing = await fetch(`${base}/api/v1/does-not-exist`, {
+    headers: { "x-api-key": "test-key" },
+  });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.headers.get("x-remembra-api-version"), "v1");
+});
+
 test("store → search → delete round-trip", async () => {
   const created = await fetch(`${base}/memories`, {
     method: "POST",
