@@ -604,6 +604,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
           type: (url.searchParams.get("type") as never) ?? undefined,
           includeArchived: url.searchParams.get("includeArchived") === "true",
           offset: intParam(url.searchParams.get("offset"), 0),
+          cursor: url.searchParams.get("cursor") ?? undefined,
           limit: intParam(url.searchParams.get("limit"), 1),
           includeQuarantined: url.searchParams.get("includeQuarantined") === "true",
           includeExpired: url.searchParams.get("includeExpired") === "true",
