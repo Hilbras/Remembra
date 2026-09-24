@@ -47,6 +47,6 @@ export function createOperatorTenantContext(env: OperatorEnvironment = process.e
     ...(userId ? { userId } : {}),
     ...(agentId ? { agentId } : {}),
     scopes: projectId ? ["global", `project/${projectId}`] : ["global"],
-    capabilities: ["tenant:read", "tenant:write", "tenant:admin"],
+    capabilities: ["tenant:read", "tenant:write", "tenant:export", "tenant:admin"],
   });
 }

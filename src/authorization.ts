@@ -71,7 +71,7 @@ export function evaluateAuthorization(
   const capabilities = context.principal.capabilities ?? [];
   const required = REQUIRED_CAPABILITY[operation];
   const hasCapability = capabilities.includes(required) ||
-    (required !== "tenant:admin" && capabilities.includes("tenant:admin"));
+    (required !== "tenant:admin" && required !== "tenant:export" && capabilities.includes("tenant:admin"));
   if (!hasCapability) return { allowed: false, reason: "missing_capability" };
 
   if (resource && !memoryBelongsToTenant(resource, tenantFilterFromContext(context))) {

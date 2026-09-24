@@ -128,6 +128,7 @@ test("SEC-TENANT-001: strict service requires opaque context and isolates core m
 test("queued tenant work rechecks membership before provider/write side effects", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-tenant-job-"));
   let valid = true;
+  let membershipChecks = 0;
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const tenant = context("org-a", "p1");
@@ -140,6 +141,8 @@ test("queued tenant work rechecks membership before provider/write side effects"
       return [0.1, 0.2];
     },
     verifyTenantContext: async () => {
+      membershipChecks++;
+      if (membershipChecks === 1) return true;
       await gate;
       return valid;
     },
@@ -154,9 +157,11 @@ test("queued tenant work rechecks membership before provider/write side effects"
   assert.equal(result.state, "failed");
   assert.ok(result.error instanceof RemembraError);
   assert.equal((result.error as RemembraError).code, "TENANT_REQUIRED");
-  const unchanged = await service.get(stored.id, { tenant });
+  await assert.rejects(
+    () => service.get(stored.id, { tenant }),
+    (error: unknown) => error instanceof RemembraError && error.code === "TENANT_REQUIRED",
+  );
   assert.equal(embedCalls, callsBeforeJob);
-  assert.deepEqual(unchanged.memory.embedding, [0.1, 0.2]);
   await service.shutdownBackgroundJobs();
   await fs.rm(root, { recursive: true, force: true });
 });

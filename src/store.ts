@@ -303,6 +303,10 @@ export class MemoryStore implements MemoryBackend {
     await this.ensureRecovered();
     assertSafeHistoryId(id);
     const base = tenant ? this.tenantRoot(tenant) : this.root;
+    if (tenant) {
+      const current = await this.get(id, tenant);
+      if (!current) return [];
+    }
     if (!(await isExistingSafeDirectory(base, "storage root"))) return [];
     const historyRoot = path.join(base, ".history");
     assertContained(base, historyRoot);
@@ -333,7 +337,7 @@ export class MemoryStore implements MemoryBackend {
       assertContained(dir, file);
       await assertRegularFile(file, "history snapshot");
       const m = await parse(file); // decrypts transparently; throws ENCRYPTED_NO_KEY loudly
-      if (!m) continue;
+      if (!m || (tenant && !memoryBelongsToTenant(m, tenant))) continue;
       const epoch = Number(name.split("-")[0]);
       const why = reasons[name];
       out.push({

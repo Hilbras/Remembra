@@ -105,6 +105,10 @@ if (argv[0] === "export") {
   }
 } else if (argv[0] === "export-markdown") {
     // V4.3.0: dump active memories as human-readable .md files.
+    if (tenantMode === "strict") {
+      console.error("export-markdown requires the dedicated tenant-aware snapshot workflow in strict mode");
+      process.exit(1);
+    }
     const outDir = argv[1];
     if (!outDir) {
       console.error("Usage: remembra export-markdown <directory>");
@@ -121,6 +125,10 @@ if (argv[0] === "export") {
     process.exit(0);
   } else if (argv[0] === "import-markdown") {
     // V4.3.0: import .md files into the SQLite store.
+    if (tenantMode === "strict") {
+      console.error("import-markdown requires the dedicated tenant-aware snapshot workflow in strict mode");
+      process.exit(1);
+    }
     const inDir = argv[1];
     if (!inDir) {
       console.error("Usage: remembra import-markdown <directory>");
@@ -301,8 +309,8 @@ if (argv[0] === "export") {
       console.error("audit requires SQLite backend");
       process.exit(1);
     }
-    const events = await (store as SqliteBackend).getAudit({ limit, since }, operatorFilter);
-    console.log(JSON.stringify({ events, count: events.length }, null, 2));
+    const result = await service.getAudit({ limit, since }, operatorOptions);
+    console.log(JSON.stringify({ events: result.events, count: result.events.length }, null, 2));
     process.exit(0);
   } else if (maintainFlag) {
   // CLI maintenance: `remembra maintain` — one-shot, prints JSON, exits.

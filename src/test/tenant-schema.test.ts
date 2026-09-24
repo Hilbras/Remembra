@@ -77,7 +77,7 @@ test("SQLite preserves optional V5 tenant metadata and V4 rows remain readable",
   const updated = await store.update(
     { ...loaded, content: "Updated tenant metadata" },
     undefined,
-    { organizationId: "org_01", projectId: "project.alpha" },
+    { organizationId: "org_01", projectId: "project.alpha", userId: "user-1", agentId: "agent-1" },
   );
   assert.equal(updated.tenantId, "org_01");
   assert.equal(updated.projectId, "project.alpha");

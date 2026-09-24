@@ -355,10 +355,34 @@ export class TenantEntityService {
     if (principal.projectId) {
       if (entity.kind === "project") return entity.projectId === principal.projectId;
       if (entity.kind === "agent") return entity.projectId === principal.projectId;
-      return snapshot.projectMembers.some((member) => member.organizationId === principal.organizationId && member.projectId === principal.projectId && member.userId === entity.userId);
+      return snapshot.projectMembers.some((member) =>
+        member.organizationId === principal.organizationId &&
+        member.projectId === principal.projectId &&
+        member.userId === entity.userId,
+      );
     }
-    if (principal.userId && entity.kind === "user") return entity.userId === principal.userId;
-    if (principal.agentId && entity.kind === "agent") return entity.agentId === principal.agentId;
+    if (principal.userId) {
+      if (entity.kind === "user") return entity.userId === principal.userId;
+      if (entity.kind === "agent") return entity.userId === principal.userId;
+      return snapshot.projectMembers.some((member) =>
+        member.organizationId === principal.organizationId &&
+        member.projectId === entity.projectId &&
+        member.userId === principal.userId,
+      );
+    }
+    if (principal.agentId) {
+      if (entity.kind === "agent") return entity.agentId === principal.agentId;
+      if (entity.kind === "user") {
+        return snapshot.agents.some((agent) =>
+          agent.organizationId === principal.organizationId &&
+          agent.agentId === principal.agentId && agent.userId === entity.userId,
+        );
+      }
+      return snapshot.agents.some((agent) =>
+        agent.organizationId === principal.organizationId &&
+        agent.agentId === principal.agentId && agent.projectId === entity.projectId,
+      );
+    }
     return true;
   }
 

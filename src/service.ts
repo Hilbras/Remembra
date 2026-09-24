@@ -41,9 +41,10 @@ import {
 } from "./tenant.js";
 import {
   assertAuthorized,
+  evaluateAuthorization,
   type AuthorizationOperation,
 } from "./authorization.js";
-import { createSignedSnapshot, isSignedSnapshot, verifySignedSnapshot } from "./snapshot-integrity.js";
+import { createSignedSnapshot, isSignedSnapshot, verifySignedSnapshot, type SignedSnapshot } from "./snapshot-integrity.js";
 import { JobQueue } from "./job-queue.js";
 import type { TenantDirectory } from "./tenant-directory.js";
 import { applyTenantMigration, preflightTenantMigration, type TenantMigrationPlan } from "./tenant-migration-runner.js";
@@ -214,7 +215,7 @@ export class MemoryService {
   private readonly llmName: string;
   private readonly policy: MemoryPolicy;
   private readonly tokenCounter: TokenCounter;
-  private readonly backend: MemoryBackend;
+  #backend: MemoryBackend;
   private readonly backendName?: "sqlite" | "file";
   private readonly backendFallback: boolean;
   private lastDecayRun = 0;
@@ -222,7 +223,7 @@ export class MemoryService {
   private decayPromise: Promise<unknown> | null = null;
 
   constructor(db: MemoryBackend, deps: ServiceDeps = {}) {
-    this.backend = db;
+    this.#backend = db;
     this.backendName = deps.backend;
     this.backendFallback = deps.backendFallback ?? false;
     const emb = deps.embeddingProvider ?? resolveEmbeddingProvider();
@@ -261,8 +262,8 @@ export class MemoryService {
     this.verifyTenantContext = deps.verifyTenantContext ??
       (deps.tenantDirectory ? (context) => deps.tenantDirectory!.verifyContext(context) : undefined);
     this.snapshotKey = deps.snapshotKey ? Buffer.from(deps.snapshotKey) : undefined;
-    this.requireSignedSnapshots = deps.requireSignedSnapshots ?? this.tenantMode === "strict";
-    if (this.tenantMode === "strict" && this.backend.tenantCapable !== true) {
+    this.requireSignedSnapshots = this.tenantMode === "strict" || deps.requireSignedSnapshots === true;
+    if (this.tenantMode === "strict" && this.#backend.tenantCapable !== true) {
       throw new RemembraError("SERVICE_UNAVAILABLE", "strict tenant mode requires a tenant-capable backend");
     }
     this.jobs = new JobQueue({
@@ -295,7 +296,7 @@ export class MemoryService {
         if (context.signal.aborted) throw new Error("validation cancelled");
         const options = payload.options ?? {};
         const tenant = await this.freshTenantFilter(options, "read");
-        const memories = (await this.backend.all(true, tenant)).filter((memory) => this.canRead(memory, options));
+        const memories = (await this.#backend.all(true, tenant)).filter((memory) => this.canRead(memory, options));
         return { checked: memories.length };
       },
     );
@@ -317,7 +318,7 @@ export class MemoryService {
     if (this.tenantMode === "strict") {
       throw new RemembraError("TENANT_REQUIRED", "raw backend access is disabled in strict tenant mode");
     }
-    return this.backend;
+    return this.#backend;
   }
 
   get embeddingsEnabled(): boolean {
@@ -406,13 +407,13 @@ export class MemoryService {
   ): Promise<{ id: string; embedded: boolean }> {
     if (signal.aborted) throw new Error("embedding cancelled");
     const tenant = await this.freshTenantFilter(options, "write");
-    const memory = await this.backend.get(id, tenant);
+    const memory = await this.#backend.get(id, tenant);
     this.assertCanRead(memory, id, options);
     if (!this.embedFn || memory.embedding?.length) return { id, embedded: false };
     const embedding = await this.maybeEmbed(memory.content, signal, tenant?.organizationId);
     if (signal.aborted) throw new Error("embedding cancelled");
     if (!embedding) return { id, embedded: false };
-    await this.backend.update({ ...memory, embedding }, undefined, tenant);
+    await this.#backend.update({ ...memory, embedding }, undefined, tenant);
     return { id, embedded: true };
   }
 
@@ -421,16 +422,16 @@ export class MemoryService {
     options: AgentReadOptions,
   ): Promise<{ id: string; archived: boolean }> {
     const tenant = await this.freshTenantFilter(options, "write");
-    const memory = await this.backend.get(id, tenant);
+    const memory = await this.#backend.get(id, tenant);
     this.assertCanRead(memory, id, options);
-    const archived = await this.backend.archive(id, tenant);
+    const archived = await this.#backend.archive(id, tenant);
     return { id, archived: Boolean(archived) };
   }
 
   /** Returns false rather than disclosing the existence of a private memory. */
   private canRead(memory: Memory, options: AgentReadOptions = {}): boolean {
     const tenant = this.tenantFilter(options, "read");
-    if (tenant && !memoryBelongsToTenant(memory, tenant)) return false;
+    if (tenant && !evaluateAuthorization(options.tenant, "memory.read", memory).allowed) return false;
     return canReadMemory(memory, options.agent, this.agentMode);
   }
 
@@ -469,7 +470,7 @@ export class MemoryService {
     for (const id of candidate.meta?.compressedFrom ?? []) ids.add(id);
     for (const id of ids) {
       if (allowedIds?.has(id)) continue;
-      const target = await this.backend.get(id, tenant);
+      const target = await this.#backend.get(id, tenant);
       if (!target || !this.canRead(target, options)) {
         throw new RemembraError("NOT_FOUND", "reference target not found in the authorized tenant");
       }
@@ -600,7 +601,15 @@ export class MemoryService {
     }
     parsed = this.canonicalizeAgentInput(parsed, options);
     this.assertAgentWrite(parsed, options);
-    const tenant = this.tenantFilter(options, "write");
+    const tenant = await this.freshTenantFilter(options, "write");
+    if (tenant) {
+      assertAuthorized(options.tenant, "memory.write", {
+        tenantId: tenant.organizationId,
+        ...(tenant.projectId ? { projectId: tenant.projectId } : {}),
+        ...(tenant.userId ? { userId: tenant.userId } : {}),
+        ...(tenant.agentId ? { agentId: tenant.agentId } : {}),
+      });
+    }
     await this.assertTenantReferences(parsed, options, tenant);
     // PII redaction (audit Phase 8, opt-in REMEMBRA_REDACT): before embed,
     // before disk, before export — raw patterns never leave this process.
@@ -635,7 +644,7 @@ export class MemoryService {
     // Provenance/trust travel in the input now (plan §4.3): callers that say
     // nothing store as { sourceType: manual } → trusted; digests pass
     // conversation provenance below and land unverified (§4.9).
-    const memory = await this.backend.store(parsed, embedding, tenant);
+    const memory = await this.#backend.store(parsed, embedding, tenant);
     if (tenant && !memoryBelongsToTenant(memory, tenant)) {
       throw new RemembraError("TENANT_REQUIRED", "tenant backend did not preserve the trusted organization");
     }
@@ -652,7 +661,7 @@ export class MemoryService {
     execution: SearchExecutionOptions = {},
   ) {
     const t0 = performance.now();
-    const tenant = this.tenantFilter(q, "read");
+    const tenant = await this.freshTenantFilter(q, "read");
     let queryVec: number[] | null = null;
     if (q.query && this.embedFn) queryVec = (await this.maybeEmbed(q.query, undefined, tenant?.organizationId)) ?? null;
 
@@ -676,12 +685,12 @@ export class MemoryService {
       !this.agentMode &&
       !q.type &&
       !q.candidates?.length &&
-      this.backend.searchCandidates
+      this.#backend.searchCandidates
     ) {
       try {
         const resultLimit = q.limit ?? 10;
         const maxCandidates = Math.max(16, Math.min(128, resultLimit * 2));
-        const page = await this.backend.searchCandidates({
+        const page = await this.#backend.searchCandidates({
           terms: parsedQuery.terms,
           vector: queryVec,
           scope: q.scope,
@@ -724,7 +733,7 @@ export class MemoryService {
     }
 
     // V4.5: temporal and lifecycle filtering before search.
-    pool ??= (await this.backend.all(q.includeArchived, tenant)).filter(eligible);
+    pool ??= (await this.#backend.all(q.includeArchived, tenant)).filter(eligible);
 
     let { results: ranked, explanations } = searchQ(
       pool,
@@ -778,7 +787,7 @@ export class MemoryService {
     // Refresh decay clocks for memories that surfaced (fire-and-forget).
     if (execution.touch !== false) {
       for (const m of ranked)
-        this.backend.touch(m.id, tenant).catch((err) => {
+        this.#backend.touch(m.id, tenant).catch((err) => {
           logEvent(
             "warn",
             "touch_failed",
@@ -951,9 +960,9 @@ export class MemoryService {
 
     const selected: Memory[] = [];
     const results: BatchOutcome<{ id: string }>[] = [];
-    const tenant = this.tenantFilter(options, "read");
+    const tenant = await this.freshTenantFilter(options, "read", "snapshot.create");
     for (const [index, id] of request.ids.entries()) {
-      const memory = await this.backend.get(id, tenant);
+      const memory = await this.#backend.get(id, tenant);
       if (!memory || !this.canRead(memory, options)) {
         results.push(batchFailure(index, id, new RemembraError("NOT_FOUND", `No memory with id ${id}`)) as BatchFailure);
         continue;
@@ -973,9 +982,14 @@ export class MemoryService {
     if (Buffer.byteLength(compact, "utf8") > MAX_BATCH_BYTES) {
       throw new RemembraError("INVALID_INPUT", `batch export exceeds ${MAX_BATCH_BYTES} bytes`);
     }
+    let output: typeof snapshot | SignedSnapshot = snapshot;
+    if (this.requireSignedSnapshots || this.snapshotKey) {
+      if (!this.snapshotKey) throw new RemembraError("SNAPSHOT_INVALID", "signed batch export requires a configured HMAC key");
+      output = createSignedSnapshot(snapshot, this.snapshotKey);
+    }
     recordBatchMetrics("export", results);
     return {
-      ...snapshot,
+      ...output,
       operation: "export" as const,
       summary: batchSummary(results),
       results,
@@ -995,8 +1009,8 @@ export class MemoryService {
     /** V4.5: include future-dated memories (validFrom > now). */
     includeFuture?: boolean;
   } & AgentReadOptions) {
-    const tenant = this.tenantFilter(q, "read");
-    let memories = await this.backend.all(q.includeArchived ?? false, tenant);
+    const tenant = await this.freshTenantFilter(q, "read");
+    let memories = await this.#backend.all(q.includeArchived ?? false, tenant);
     const now = Date.now();
     // V4.5 temporal and lifecycle filtering + V4.7 agent visibility policy.
     memories = memories.filter((m) => {
@@ -1044,11 +1058,11 @@ export class MemoryService {
   }
 
   async forget(id: string, options: AgentReadOptions = {}) {
-    const tenant = this.tenantFilter(options, "write");
-    const existing = await this.backend.get(id, tenant);
+    const tenant = await this.freshTenantFilter(options, "write");
+    const existing = await this.#backend.get(id, tenant);
     if (this.agentMode || tenant) this.assertCanRead(existing, id, options);
     if (!existing) return { ok: false, text: `No memory with id ${id}.` };
-    const ok = await this.backend.forget(id, tenant);
+    const ok = await this.#backend.forget(id, tenant);
     if (ok && tenant) clearEmbedCachePartition(tenant.organizationId);
     return { ok, text: ok ? `Deleted memory ${id}.` : `No memory with id ${id}.` };
   }
@@ -1068,8 +1082,8 @@ export class MemoryService {
     }
     // Concurrency + history guards (plan §3.5/§4.6) — never spread onto Memory.
     const { expectedVersion, reason, ...fields } = patch;
-    const tenant = this.tenantFilter(options, "write");
-    const existing = await this.backend.get(id, tenant);
+    const tenant = await this.freshTenantFilter(options, "write");
+    const existing = await this.#backend.get(id, tenant);
     this.assertCanRead(existing, id, options);
     const next: Memory = { ...existing, ...fields };
     if (this.agentMode && !canUseScope(next.scope, options.agent)) {
@@ -1082,36 +1096,36 @@ export class MemoryService {
     if (fields.trust !== undefined && fields.trust !== existing.trust) {
       next.lastValidated = new Date().toISOString();
     }
-    const memory = await this.backend.update(next, { expectedVersion, reason }, tenant);
+    const memory = await this.#backend.update(next, { expectedVersion, reason }, tenant);
     return { memory, text: `Updated ${id}.` };
   }
 
   /** Manually archive a memory (v4: memory_archive / POST /memories/:id/archive). */
   async archive(id: string, options: AgentReadOptions = {}): Promise<{ memory: Memory; text: string }> {
-    const tenant = this.tenantFilter(options, "write");
-    const existing = await this.backend.get(id, tenant);
+    const tenant = await this.freshTenantFilter(options, "write");
+    const existing = await this.#backend.get(id, tenant);
     this.assertCanRead(existing, id, options);
-    const memory = await this.backend.archive(id, tenant);
+    const memory = await this.#backend.archive(id, tenant);
     if (!memory) throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
     return { memory, text: `Archived ${id}.` };
   }
 
   /** Bring an archived memory back to active (v4: memory_revive / POST). */
   async revive(id: string, options: AgentReadOptions = {}): Promise<{ memory: Memory; text: string }> {
-    const tenant = this.tenantFilter(options, "write");
-    const existing = await this.backend.get(id, tenant);
+    const tenant = await this.freshTenantFilter(options, "write");
+    const existing = await this.#backend.get(id, tenant);
     this.assertCanRead(existing, id, options);
-    const memory = await this.backend.revive(id, tenant);
+    const memory = await this.#backend.revive(id, tenant);
     if (!memory) throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
     return { memory, text: `Revived ${id}.` };
   }
 
   /** Fetch one memory with its links resolved (audit Phase 8: graph view). */
   async get(id: string, options: AgentReadOptions = {}) {
-    const tenant = this.tenantFilter(options, "read");
-    const memory = await this.backend.get(id, tenant);
+    const tenant = await this.freshTenantFilter(options, "read");
+    const memory = await this.#backend.get(id, tenant);
     this.assertCanRead(memory, id, options);
-    const all = await this.backend.all(true, tenant);
+    const all = await this.#backend.all(true, tenant);
     const visibleIds = new Set(all.filter((candidate) => this.canRead(candidate, options)).map((candidate) => candidate.id));
     const safeMemory = this.sanitizeMemory(memory, options, visibleIds);
     const brief = (m: Memory) => ({
@@ -1172,15 +1186,15 @@ export class MemoryService {
     } catch (err) {
       throw inputError(err, "INVALID_INPUT");
     }
-    const tenant = this.tenantFilter(options, "write");
-    const memory = await this.backend.get(parsed.id, tenant);
+    const tenant = await this.freshTenantFilter(options, "write");
+    const memory = await this.#backend.get(parsed.id, tenant);
     this.assertCanRead(memory, parsed.id, options);
     if (parsed.related.includes(parsed.id)) {
       throw new RemembraError("INVALID_INPUT", "a memory cannot be related to itself");
     }
     const missing: string[] = [];
     for (const rid of parsed.related) {
-      const target = await this.backend.get(rid, tenant);
+      const target = await this.#backend.get(rid, tenant);
       if (!target || !this.canRead(target, options)) missing.push(rid);
     }
     if (missing.length > 0) {
@@ -1213,7 +1227,7 @@ export class MemoryService {
       });
     }
     if (added.length > 0 || removed.length > 0) {
-      await this.backend.update(
+      await this.#backend.update(
         {
           ...memory,
           relations: relations.length > 0 ? relations : undefined,
@@ -1260,10 +1274,10 @@ export class MemoryService {
     } catch (err) {
       throw inputError(err, "INVALID_INPUT");
     }
-    const tenant = this.tenantFilter(options, "read");
-    const memory = await this.backend.get(parsed.id, tenant);
+    const tenant = await this.freshTenantFilter(options, "read");
+    const memory = await this.#backend.get(parsed.id, tenant);
     this.assertCanRead(memory, parsed.id, options);
-    const entries = (await this.backend.history?.(parsed.id, tenant)) ?? [];
+    const entries = (await this.#backend.history?.(parsed.id, tenant)) ?? [];
     const safeMemory = this.sanitizeMemory(memory, options, new Set([memory.id]));
     const kept = entries.slice(0, parsed.limit ?? entries.length);
 
@@ -1352,7 +1366,7 @@ export class MemoryService {
   }> {
     let storage = "ok";
     try {
-      await this.backend.all();
+      await this.#backend.all();
     } catch (err) {
       storage = errorLabel(err);
     }
@@ -1371,7 +1385,7 @@ export class MemoryService {
   /** Parse-cache stats when the backend exposes them (file backend does). */
   storageStats(options: AgentReadOptions = {}): { size: number; capacity: number } | null {
     if (this.tenantMode === "strict" || options.tenant) return null;
-    return this.backend.cacheStats?.() ?? null;
+    return this.#backend.cacheStats?.() ?? null;
   }
 
   /** V4.4: query recent audit events. */
@@ -1379,11 +1393,11 @@ export class MemoryService {
     opts?: { limit?: number; since?: string },
     options: AgentReadOptions = {},
   ): Promise<{ events: Record<string, unknown>[] }> {
-    const tenant = this.tenantFilter(options, "read");
-    const events = this.backend.getAudit ? await this.backend.getAudit(opts, tenant) : [];
+    const tenant = await this.freshTenantFilter(options, "read");
+    const events = this.#backend.getAudit ? await this.#backend.getAudit(opts, tenant) : [];
     if (!this.agentMode && !tenant) return { events };
     const visibleIds = new Set(
-      (await this.backend.all(true, tenant)).filter((m) => this.canRead(m, options)).map((m) => m.id),
+      (await this.#backend.all(true, tenant)).filter((m) => this.canRead(m, options)).map((m) => m.id),
     );
     return {
       events: events.filter((event) => {
@@ -1444,7 +1458,7 @@ export class MemoryService {
     source?: string;
     signal?: AbortSignal;
   } & AgentReadOptions): Promise<DigestResult> {
-    const tenant = this.tenantFilter(opts, "write");
+    const tenant = await this.freshTenantFilter(opts, "write");
     let extracted: ExtractedMemory[];
     try {
       extracted = await this.extractFn(opts.transcript, { signal: opts.signal });
@@ -1453,8 +1467,8 @@ export class MemoryService {
       const msg = err instanceof Error ? err.message : String(err);
       throw new RemembraError("LLM_ERROR", `memory extraction failed: ${msg}`, { cause: err });
     }
-    const active = (await this.backend.all(false, tenant)).filter((m) => this.canRead(m, opts));
-    const archived = (await this.backend.all(true, tenant)).filter((m) => m.archivedAt && this.canRead(m, opts));
+    const active = (await this.#backend.all(false, tenant)).filter((m) => this.canRead(m, opts));
+    const archived = (await this.#backend.all(true, tenant)).filter((m) => m.archivedAt && this.canRead(m, opts));
     const seen = new Set(active.map((m) => dedupKey(m.type, m.content, m.scope)));
 
     const stored: Memory[] = [];
@@ -1481,7 +1495,7 @@ export class MemoryService {
       }
       const archivedDup = archived.find((m) => dedupKey(m.type, m.content, scope) === key);
       if (archivedDup) {
-        const revived = await this.backend.revive(archivedDup.id, tenant);
+        const revived = await this.#backend.revive(archivedDup.id, tenant);
         if (revived) {
           seen.add(key);
           merged++; // counted as a revival/refresh
@@ -1504,7 +1518,7 @@ export class MemoryService {
         (m) => m.type === item.type && m.scope === scope && nearDuplicate(item.content, m.content),
       );
       if (fuzzyArchived) {
-        const revived = await this.backend.revive(fuzzyArchived.id, tenant);
+        const revived = await this.#backend.revive(fuzzyArchived.id, tenant);
         if (revived) {
           seen.add(key);
           merged++;
@@ -1550,7 +1564,7 @@ export class MemoryService {
           // the pre-image snapshot in history() carries it, with this reason.
           const content = cleanMerged.content;
           const embedding = await this.maybeEmbed(cleanMerged.content, opts.signal, tenant?.organizationId);
-          await this.backend.update(
+          await this.#backend.update(
             { ...candidate, content, embedding, source: opts.source ?? candidate.source },
             { reason: "digest merge (superseded by a newer extraction)" },
             tenant,
@@ -1606,23 +1620,23 @@ export class MemoryService {
    * Exposed as the `memory_maintain` tool, POST /maintain, and the CLI.
    */
   async maintain(options: AgentReadOptions = {}): Promise<MaintainResult> {
-    const tenant = this.tenantFilter(options, "write");
+    const tenant = await this.freshTenantFilter(options, "write");
     const result = await this.decayPass(options);
     // Vector backfill: embed active memories stored while embeddings were off.
     if (this.embedFn) {
-      const active = (await this.backend.all(false, tenant)).filter((m) => this.canRead(m, options));
+      const active = (await this.#backend.all(false, tenant)).filter((m) => this.canRead(m, options));
       for (const m of active) {
         if (m.embedding && m.embedding.length > 0) continue;
         const vec = await this.maybeEmbed(m.content, undefined, tenant?.organizationId);
         if (vec) {
-          await this.backend.update({ ...m, embedding: vec }, undefined, tenant);
+          await this.#backend.update({ ...m, embedding: vec }, undefined, tenant);
           result.embedded++;
         }
       }
     }
 
     // V4.5: consolidation analysis on active memories.
-    const active = (await this.backend.all(false, tenant)).filter((m) => this.canRead(m, options));
+    const active = (await this.#backend.all(false, tenant)).filter((m) => this.canRead(m, options));
     const findings = consolidate(active);
     if (findings.exactDuplicates.length > 0 || findings.nearDuplicates.length > 0 || findings.contradictions.length > 0 || findings.fragments.length > 0) {
       logEvent("info", "consolidation", {
@@ -1636,11 +1650,11 @@ export class MemoryService {
         const a = active.find((m) => m.id === c.a);
         const b = active.find((m) => m.id === c.b);
         if (a && !a.meta?.contradicted) {
-          await this.backend.update({ ...a, meta: { ...a.meta, contradicted: true } }, undefined, tenant);
+          await this.#backend.update({ ...a, meta: { ...a.meta, contradicted: true } }, undefined, tenant);
           metrics.inc("remembra_memory_contradicted_total");
         }
         if (b && !b.meta?.contradicted) {
-          await this.backend.update({ ...b, meta: { ...b.meta, contradicted: true } }, undefined, tenant);
+          await this.#backend.update({ ...b, meta: { ...b.meta, contradicted: true } }, undefined, tenant);
           metrics.inc("remembra_memory_contradicted_total");
         }
       }
@@ -1668,10 +1682,10 @@ export class MemoryService {
     }
 
     // Gather candidate memories.
-    const tenant = this.tenantFilter(options, "write");
+    const tenant = await this.freshTenantFilter(options, "write");
     let pool = parsed.ids
-      ? await Promise.all(parsed.ids.map((id) => this.backend.get(id, tenant))).then((r) => r.filter(Boolean) as Memory[])
-      : await this.backend.all(false, tenant);
+      ? await Promise.all(parsed.ids.map((id) => this.#backend.get(id, tenant))).then((r) => r.filter(Boolean) as Memory[])
+      : await this.#backend.all(false, tenant);
     pool = pool.filter((m) => this.canRead(m, options));
     if (parsed.scope) pool = pool.filter((m) => m.scope === parsed.scope || m.scope === "global");
     if (parsed.type) pool = pool.filter((m) => m.type === parsed.type);
@@ -1731,8 +1745,8 @@ export class MemoryService {
     if (options.agent?.agentId !== agentId) {
       throw new RemembraError("NOT_FOUND", `No agent with id ${agentId}`);
     }
-    const tenant = this.tenantFilter(options, "read");
-    const memories = (await this.backend.all(true, tenant))
+    const tenant = await this.freshTenantFilter(options, "read");
+    const memories = (await this.#backend.all(true, tenant))
       .filter((m) => this.canRead(m, options))
       .filter((m) => m.provenance.agentId === agentId);
     const latest = memories[0];
@@ -1760,8 +1774,8 @@ export class MemoryService {
     providers: { embeddings: { failures: number; latency_ms_avg: number }; llm: { failures: number; latency_ms_avg: number; tokens_total: number } };
   }> {
     const now = Date.now();
-    const tenant = this.tenantFilter(options, "read");
-    const all = (await this.backend.all(true, tenant)).filter((m) => this.canRead(m, options));
+    const tenant = await this.freshTenantFilter(options, "read");
+    const all = (await this.#backend.all(true, tenant)).filter((m) => this.canRead(m, options));
     const active = all.filter((m) => !m.archivedAt && !m.meta?.quarantined);
     const archived = all.filter((m) => m.archivedAt);
     const quarantined = all.filter((m) => m.meta?.quarantined);
@@ -1789,7 +1803,7 @@ export class MemoryService {
     // Deleted total from audit log.
     let deletedTotal = 0;
     try {
-      const audits = await this.backend.getAudit?.({ limit: 10000 }, tenant).catch(() => []) ?? [];
+      const audits = await this.#backend.getAudit?.({ limit: 10000 }, tenant).catch(() => []) ?? [];
       const visibleIds = new Set(all.map((m) => m.id));
       deletedTotal = audits.filter((e) => {
         const event = e as Record<string, unknown>;
@@ -1830,8 +1844,8 @@ export class MemoryService {
    * Written by `remembra export <file>` as JSON.
    */
   async exportSnapshot(options: AgentReadOptions = {}) {
-    const tenant = this.tenantFilter(options, "read", "snapshot.create");
-    const visible = (await this.backend.all(true, tenant)).filter((m) => this.canRead(m, options));
+    const tenant = await this.freshTenantFilter(options, "read", "snapshot.create");
+    const visible = (await this.#backend.all(true, tenant)).filter((m) => this.canRead(m, options));
     const visibleIds = new Set(visible.map((m) => m.id));
     const memories = visible.map((m) => this.sanitizeMemory(m, options, visibleIds));
     const snapshot = {
@@ -1853,6 +1867,7 @@ export class MemoryService {
     data: unknown,
     options: AgentReadOptions = {},
   ): Promise<PreparedSnapshotImport> {
+    const tenant = await this.freshTenantFilter(options, "write", "snapshot.restore");
     let snap: ReturnType<typeof SnapshotInput.parse>;
     try {
       if (this.requireSignedSnapshots || this.snapshotKey || isSignedSnapshot(data)) {
@@ -1865,8 +1880,7 @@ export class MemoryService {
       if (err instanceof RemembraError) throw err;
       throw inputError(err, "SNAPSHOT_INVALID");
     }
-    const tenant = this.tenantFilter(options, "write", "snapshot.restore");
-    const allExisting = await this.backend.all(true, tenant);
+    const allExisting = await this.#backend.all(true, tenant);
     const hiddenExistingIds = new Set(
       allExisting.filter((m) => !this.canRead(m, options)).map((m) => m.id),
     );
@@ -1883,17 +1897,8 @@ export class MemoryService {
         if (!raw.tenantId) {
           throw new RemembraError("SNAPSHOT_INVALID", "tenant-scoped restore requires tenant metadata");
         }
-        if (raw.tenantId !== tenant.organizationId) {
-          throw new RemembraError("SNAPSHOT_INVALID", "snapshot contains a foreign tenant record");
-        }
-        if (tenant.projectId && raw.projectId !== tenant.projectId) {
-          throw new RemembraError("SNAPSHOT_INVALID", "snapshot project does not match the trusted tenant context");
-        }
-        if (tenant.userId && raw.userId !== tenant.userId) {
-          throw new RemembraError("SNAPSHOT_INVALID", "snapshot user does not match the trusted tenant context");
-        }
-        if (tenant.agentId && raw.agentId !== tenant.agentId) {
-          throw new RemembraError("SNAPSHOT_INVALID", "snapshot agent does not match the trusted tenant context");
+        if (!memoryBelongsToTenant(raw, tenant)) {
+          throw new RemembraError("SNAPSHOT_INVALID", "snapshot dimensions do not match the trusted tenant context");
         }
       }
       const key = dedupKey(raw.type, raw.content, raw.scope);
@@ -1970,7 +1975,7 @@ export class MemoryService {
     let imported = 0;
     let skipped = prepared.skipped;
     for (const memory of prepared.prepared) {
-      if (await this.backend.importMemory(memory, prepared.tenant)) imported++;
+      if (await this.#backend.importMemory(memory, prepared.tenant)) imported++;
       else skipped++;
     }
     return { imported, skipped };
@@ -2006,10 +2011,10 @@ export class MemoryService {
         throw new RemembraError("SNAPSHOT_INVALID", "snapshot migration target does not match the trusted tenant context");
       }
     }
-    preflightTenantMigration(plan, this.backend, key);
+    preflightTenantMigration(plan, this.#backend, key, tenant);
     const total = plan.records.length;
     if (options.dryRun) return { total, planned: total, imported: 0, skipped: 0, dryRun: true };
-    const result = await applyTenantMigration(plan, this.backend, key);
+    const result = await applyTenantMigration(plan, this.#backend, key, { destinationFilter: tenant });
     return {
       total,
       planned: total,
@@ -2021,13 +2026,13 @@ export class MemoryService {
 
   /** Decay lifecycle: unused actives → archived → auto-deleted past TTL. */
   private async decayPass(options: AgentReadOptions = {}): Promise<MaintainResult> {
-    const tenant = this.tenantFilter(options, "write");
+    const tenant = await this.freshTenantFilter(options, "write");
     const now = Date.now();
     const archiveCutoff = now - this.archiveAfterDays * 86_400_000;
     const ttlCutoff = now - this.archiveTtlDays * 86_400_000;
     const result: MaintainResult = { archived: [], deleted: [], embedded: 0 };
 
-    const active = (await this.backend.all(false, tenant)).filter((m) => this.canRead(m, options));
+    const active = (await this.#backend.all(false, tenant)).filter((m) => this.canRead(m, options));
     for (const m of active) {
       // Standing instructions never decay (role + instruction, plan §4.9).
       if (m.type === "role" || m.type === "instruction") continue;
@@ -2037,12 +2042,12 @@ export class MemoryService {
       if (m.retention === "pinned" || m.retention === "neverExpire") continue;
       const lastActive = Date.parse(m.lastSeen ?? m.updatedAt);
       if (Number.isFinite(lastActive) && lastActive < archiveCutoff) {
-        await this.backend.archive(m.id, tenant);
+        await this.#backend.archive(m.id, tenant);
         result.archived.push(m.id);
       }
     }
 
-    const archived = (await this.backend.all(true, tenant)).filter((m) => m.archivedAt && this.canRead(m, options));
+    const archived = (await this.#backend.all(true, tenant)).filter((m) => m.archivedAt && this.canRead(m, options));
     for (const m of archived) {
       // §4.8: critical memories must not disappear — persistent is
       // archived-but-kept; pinned / neverExpire are never touched.
@@ -2055,7 +2060,7 @@ export class MemoryService {
       }
       const archivedAt = Date.parse(m.archivedAt!);
       if (Number.isFinite(archivedAt) && archivedAt < ttlCutoff) {
-        await this.backend.forget(m.id, tenant);
+        await this.#backend.forget(m.id, tenant);
         result.deleted.push(m.id);
       }
     }

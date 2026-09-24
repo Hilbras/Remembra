@@ -108,7 +108,7 @@ export function publicErrorMessage(error: unknown): string {
 export function formatToolError(err: unknown): string {
   if (isRemembraError(err)) return `[${err.code}] ${publicErrorMessage(err)}`;
   if (isZodLike(err)) return `[INVALID_INPUT] ${zodSummary(err)}`;
-  return `[INTERNAL] ${publicErrorMessage(err)}`;
+  return `[INTERNAL] ${err instanceof Error ? err.message : String(err)}`;
 }
 
 /** Stable low-cardinality label for metrics (`remembra_errors_total{code}`). */

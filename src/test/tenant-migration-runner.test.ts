@@ -68,7 +68,11 @@ test("tenant migration runner signs, verifies, maps, and idempotently applies re
   const destination = new MemoryStore(root);
   const first = await applyTenantMigration(plan, destination, key);
   assert.deepEqual(first, { imported: 2, skipped: 0 });
-  const loaded = await destination.get("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", { organizationId: "org-a", projectId: "project-a" });
+  const loaded = await destination.get("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", {
+    organizationId: "org-a",
+    projectId: "project-a",
+    organizationWide: true,
+  });
   assert.equal(loaded?.tenantId, "org-a");
   assert.equal(loaded?.projectId, "project-a");
   assert.equal(loaded?.userId, "user-a");

@@ -147,7 +147,7 @@ export function tenantFilterFromContext(context: TenantContext): TenantFilter {
     ...(principal.projectId ? { projectId: principal.projectId } : {}),
     ...(principal.userId ? { userId: principal.userId } : {}),
     ...(principal.agentId ? { agentId: principal.agentId } : {}),
-    organizationWide: dimensions === 0 || principal.capabilities?.includes("tenant:admin") === true,
+    organizationWide: dimensions === 0,
   });
 }
 
@@ -166,7 +166,7 @@ export function memoryBelongsToTenant(
   if (filter.projectId && memory.projectId !== filter.projectId) return false;
   if (filter.userId && memory.userId !== filter.userId) return false;
   if (filter.agentId && memory.agentId !== filter.agentId) return false;
-  if (filter.organizationWide === false) {
+  if (filter.organizationWide === false || filter.organizationWide === undefined) {
     if (!filter.projectId && memory.projectId != null) return false;
     if (!filter.userId && memory.userId != null) return false;
     if (!filter.agentId && memory.agentId != null) return false;

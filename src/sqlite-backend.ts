@@ -116,11 +116,13 @@ function candidateTenantParams(tenant?: TenantFilter): Array<string | number> {
   const params: Array<string | number> = [hasTenant, hasTenant, tenant?.organizationId ?? ""];
   for (const key of ["projectId", "userId", "agentId"] as const) {
     const value = tenant?.[key];
-    const mode = !tenant || tenant.organizationWide === true || !value
-      ? tenant?.organizationWide === false && !value
-        ? 1
-        : 0
-      : 2;
+    const mode = !tenant
+      ? 0
+      : tenant.organizationWide === true
+        ? 0
+        : value
+          ? 2
+          : 1;
     params.push(mode, mode, mode, value ?? "");
   }
   return params;
@@ -131,7 +133,7 @@ function tenantWhere(alias: string, tenant?: TenantFilter): { sql: string; param
   if (!tenant) return { sql: `${prefix}tenant_id IS NULL`, params: [] };
   const params = [tenant.organizationId];
   let sql = `${prefix}tenant_id = ?`;
-  const exactDimensions = tenant.organizationWide === false;
+  const exactDimensions = tenant.organizationWide !== true;
   for (const [column, value] of [
     ["project_id", tenant.projectId],
     ["user_id", tenant.userId],

@@ -8,7 +8,7 @@ import {
   type TenantMigrationManifest,
 } from "./tenant-migration.js";
 import type { Memory, MemoryAccess, MemoryOwner } from "./types.js";
-import type { TenantFilter } from "./tenant.js";
+import { memoryBelongsToTenant, type TenantFilter } from "./tenant.js";
 
 export interface TenantMigrationEntityMappings {
   users?: Array<{ source: string; destination: string }>;
@@ -184,6 +184,8 @@ export interface TenantMigrationApplyOptions {
   onProgress?: (progress: TenantMigrationProgress) => void | Promise<void>;
   /** Number of already-verified records to skip (used by durable retries). */
   startAt?: number;
+  /** Trusted destination filter; every mapped record must fit it. */
+  destinationFilter?: TenantFilter;
 }
 
 /** Verify the signature, source checksums, mappings, and destination capability. */
@@ -191,6 +193,7 @@ export function preflightTenantMigration(
   plan: TenantMigrationPlan,
   destination: MemoryBackend,
   key: Buffer | Uint8Array,
+  destinationFilter?: TenantFilter,
 ): TenantMigrationManifest {
   const manifest = verifyTenantMigrationManifest(plan.manifest, key);
   if (destination.tenantCapable !== true) {
@@ -210,6 +213,9 @@ export function preflightTenantMigration(
     if (record.destination.tenantId !== manifestRecord.organizationId) {
       invalid(`destination organization mismatch for ${record.source.id}`);
     }
+    if (destinationFilter && !memoryBelongsToTenant(record.destination, destinationFilter)) {
+      invalid(`destination dimensions are outside the trusted tenant scope for ${record.source.id}`);
+    }
   }
   return manifest;
 }
@@ -221,7 +227,7 @@ export async function applyTenantMigration(
   key: Buffer | Uint8Array,
   options: TenantMigrationApplyOptions = {},
 ): Promise<TenantMigrationApplyResult> {
-  const manifest = preflightTenantMigration(plan, destination, key);
+  const manifest = preflightTenantMigration(plan, destination, key, options.destinationFilter);
   const requestedStart = Number(options.startAt ?? 0);
   if (!Number.isInteger(requestedStart) || requestedStart < 0) {
     invalid("startAt must be a non-negative integer");
@@ -231,7 +237,8 @@ export async function applyTenantMigration(
   let skipped = 0;
   for (const [index, record] of plan.records.entries()) {
     if (index < startAt) continue;
-    if (await destination.importMemory(record.destination, filterFor(record.destination))) imported++;
+    const destinationFilter = options.destinationFilter ?? filterFor(record.destination);
+    if (await destination.importMemory(record.destination, destinationFilter)) imported++;
     else skipped++;
     await options.onProgress?.({
       completed: index + 1,
