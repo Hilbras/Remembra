@@ -45,6 +45,7 @@ import {
   type AuthorizationOperation,
 } from "./authorization.js";
 import { createSignedSnapshot, isSignedSnapshot, verifySignedSnapshot, type SignedSnapshot } from "./snapshot-integrity.js";
+import { validateSnapshotSemantics } from "./snapshot-validation.js";
 import { JobQueue } from "./job-queue.js";
 import { transitionRecoveryState, type RecoveryState } from "./recovery-state.js";
 import type { TenantDirectory } from "./tenant-directory.js";
@@ -1923,6 +1924,7 @@ export class MemoryService {
       if (err instanceof RemembraError) throw err;
       throw inputError(err, "SNAPSHOT_INVALID");
     }
+    validateSnapshotSemantics(snap, { strictTenant: Boolean(tenant), maxBytes: 100 * 1024 * 1024 });
     const allExisting = await this.#backend.all(true, tenant);
     const hiddenExistingIds = new Set(
       allExisting.filter((m) => !this.canRead(m, options)).map((m) => m.id),
