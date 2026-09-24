@@ -48,6 +48,8 @@ export type McpToolName = (typeof MCP_TOOL_NAMES)[number];
 
 /** Construct an MCP server with the complete stable tool manifest. */
 export function createMcpServer(service: MemoryService, requestOptions: AgentReadOptions = {}): McpServer {
+  service.assertTenantCapability(requestOptions, "read");
+  service.assertTenantCapability(requestOptions, "write");
   const server = new McpServer({ name: "remembra", version: VERSION });
   const scoped = requestOptions;
 

@@ -41,8 +41,10 @@ V5 work is additive until the tenant/schema migration contract is approved.
   fail-closed service authorization, tenant-aware CRUD/search/context/history/
   relations/import/export/maintenance paths, trusted HTTP resolution, strict
   MCP server binding, and SDK rejection of tenant-bearing body/header fields.
-  Raw backend access is disabled in strict mode. Remaining work is durable
-  job reauthorization, CLI/operator binding, and derived-cache partitioning.
+  Raw backend access is disabled in strict mode. Queued handlers support
+  host membership re-checks, and embedding cache keys accept tenant-safe
+  partitions. Remaining work is CLI/operator binding and broader derived-cache
+  invalidation.
 
 ---
 

@@ -9,7 +9,7 @@ import {
   type ContextResult,
   type TokenCounter,
 } from "./context.js";
-import { resolveEmbeddingProvider, embedText, embedTexts, EmbeddingProvider, EmbeddingAdapter, cosine } from "./embeddings.js";
+import { resolveEmbeddingProvider, embedText, embedTexts, EmbeddingProvider, EmbeddingAdapter, cosine, type EmbedCallOptions } from "./embeddings.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { VERSION } from "./version.js";
@@ -36,6 +36,7 @@ import {
   memoryBelongsToTenant,
   tenantFilterFromContext,
   type TenantContext,
+  type TenantCapability,
   type TenantFilter,
   type TenantMode,
 } from "./tenant.js";
@@ -76,7 +77,7 @@ export interface ServiceDeps {
   /** Validated V5 policy; loaded once from trusted configuration when omitted. */
   policy?: MemoryPolicy;
   /** Injection points for tests. */
-  embedFn?: (text: string, opts?: { signal?: AbortSignal }) => Promise<number[]>;
+  embedFn?: (text: string, opts?: EmbedCallOptions) => Promise<number[]>;
   extractFn?: (transcript: string, opts?: { signal?: AbortSignal }) => Promise<ExtractedMemory[]>;
   mergeFn?: (
     newContent: string,
@@ -97,6 +98,8 @@ export interface ServiceDeps {
   agentMode?: boolean;
   /** V5 tenant enforcement mode. Strict requires an opaque context per call. */
   tenantMode?: TenantMode;
+  /** Optional host membership recheck for queued/background work. */
+  verifyTenantContext?: (context: TenantContext) => boolean | Promise<boolean>;
 }
 
 export interface AgentReadOptions {
@@ -150,7 +153,7 @@ function recordBatchMetrics(operation: string, results: readonly BatchOutcome[])
  * call into this module, so behavior is guaranteed to match.
  */
 export class MemoryService {
-  private readonly embedFn?: (text: string, opts?: { signal?: AbortSignal }) => Promise<number[]>;
+  private readonly embedFn?: (text: string, opts?: EmbedCallOptions) => Promise<number[]>;
   private readonly extractFn: (transcript: string, opts?: { signal?: AbortSignal }) => Promise<ExtractedMemory[]>;
   private readonly mergeFn: (
     newContent: string,
@@ -163,6 +166,7 @@ export class MemoryService {
   private readonly redactOn: boolean;
   private readonly agentMode: boolean;
   private readonly tenantMode: TenantMode;
+  private readonly verifyTenantContext?: ServiceDeps["verifyTenantContext"];
   private readonly jobs: JobQueue;
   /** V4.4: prompt injection detector (pattern-based). */
   private readonly injectionDetector = createInjectionDetector();
@@ -211,6 +215,7 @@ export class MemoryService {
     this.redactOn = deps.redact ?? redactionEnabled();
     this.agentMode = deps.agentMode ?? process.env.REMEMBRA_AGENT_MODE === "1";
     this.tenantMode = deps.tenantMode ?? "legacy";
+    this.verifyTenantContext = deps.verifyTenantContext;
     if (this.tenantMode === "strict" && this.backend.tenantCapable !== true) {
       throw new RemembraError("SERVICE_UNAVAILABLE", "strict tenant mode requires a tenant-capable backend");
     }
@@ -220,7 +225,10 @@ export class MemoryService {
       maxAttempts: envNumber("REMEMBRA_JOB_MAX_ATTEMPTS", 3),
       retryDelayMs: envNumber("REMEMBRA_JOB_RETRY_DELAY_MS", 0),
     });
-    this.jobs.register("maintenance", async (options: AgentReadOptions) => this.maintain(options));
+    this.jobs.register("maintenance", async (options: AgentReadOptions) => {
+      await this.freshTenantFilter(options, "write");
+      return this.maintain(options);
+    });
     this.jobs.register(
       "embed-memory",
       async (payload: { id: string; options?: AgentReadOptions }, context) =>
@@ -230,7 +238,9 @@ export class MemoryService {
       "consolidate-memory",
       async (payload: { options?: AgentReadOptions }, context) => {
         if (context.signal.aborted) throw new Error("consolidation cancelled");
-        return this.maintain(payload.options ?? {});
+        const options = payload.options ?? {};
+        await this.freshTenantFilter(options, "write");
+        return this.maintain(options);
       },
     );
     this.jobs.register(
@@ -238,7 +248,7 @@ export class MemoryService {
       async (payload: { options?: AgentReadOptions }, context) => {
         if (context.signal.aborted) throw new Error("validation cancelled");
         const options = payload.options ?? {};
-        const tenant = this.tenantFilter(options, "read");
+        const tenant = await this.freshTenantFilter(options, "read");
         const memories = (await this.backend.all(true, tenant)).filter((memory) => this.canRead(memory, options));
         return { checked: memories.length };
       },
@@ -304,18 +314,33 @@ export class MemoryService {
     await this.jobs.shutdown();
   }
 
+  /** Transport hook for administrative/non-data routes such as metrics. */
+  assertTenantCapability(options: AgentReadOptions, capability: "read" | "write" | "admin"): void {
+    this.tenantFilter(options, capability);
+  }
+
   private tenantFilter(
     options: AgentReadOptions,
-    capability: "read" | "write" = "read",
+    capability: "read" | "write" | "admin" = "read",
   ): TenantFilter | undefined {
     if (this.tenantMode === "strict") assertTenantContext(options.tenant);
     if (!options.tenant) return undefined;
     assertTenantContext(options.tenant);
     const capabilities = options.tenant.principal.capabilities ?? [];
-    if (!capabilities.includes(`tenant:${capability}`) && !capabilities.includes("tenant:admin")) {
+    const required: TenantCapability = capability === "admin" ? "tenant:admin" : `tenant:${capability}`;
+    if (!capabilities.includes(required) && !(capability !== "admin" && capabilities.includes("tenant:admin"))) {
       throw new RemembraError("TENANT_REQUIRED", `tenant principal lacks ${capability} capability`);
     }
     return tenantFilterFromContext(options.tenant);
+  }
+
+  private async freshTenantFilter(options: AgentReadOptions, capability: "read" | "write" = "read") {
+    const filter = this.tenantFilter(options, capability);
+    if (filter && this.verifyTenantContext) {
+      const valid = await this.verifyTenantContext(options.tenant!);
+      if (!valid) throw new RemembraError("TENANT_REQUIRED", "tenant membership is no longer valid");
+    }
+    return filter;
   }
 
   private async embedMemoryJob(
@@ -324,11 +349,11 @@ export class MemoryService {
     signal: AbortSignal,
   ): Promise<{ id: string; embedded: boolean }> {
     if (signal.aborted) throw new Error("embedding cancelled");
-    const tenant = this.tenantFilter(options, "write");
+    const tenant = await this.freshTenantFilter(options, "write");
     const memory = await this.backend.get(id, tenant);
     this.assertCanRead(memory, id, options);
     if (!this.embedFn || memory.embedding?.length) return { id, embedded: false };
-    const embedding = await this.maybeEmbed(memory.content, signal);
+    const embedding = await this.maybeEmbed(memory.content, signal, tenant?.organizationId);
     if (signal.aborted) throw new Error("embedding cancelled");
     if (!embedding) return { id, embedded: false };
     await this.backend.update({ ...memory, embedding }, undefined, tenant);
@@ -339,7 +364,7 @@ export class MemoryService {
     id: string,
     options: AgentReadOptions,
   ): Promise<{ id: string; archived: boolean }> {
-    const tenant = this.tenantFilter(options, "write");
+    const tenant = await this.freshTenantFilter(options, "write");
     const memory = await this.backend.get(id, tenant);
     this.assertCanRead(memory, id, options);
     const archived = await this.backend.archive(id, tenant);
@@ -452,10 +477,10 @@ export class MemoryService {
     }
   }
 
-  private async maybeEmbed(text: string, signal?: AbortSignal): Promise<number[] | undefined> {
+  private async maybeEmbed(text: string, signal?: AbortSignal, cachePartition?: string): Promise<number[] | undefined> {
     if (!this.embedFn) return undefined;
     try {
-      return await this.embedFn(text, { signal });
+      return await this.embedFn(text, { signal, ...(cachePartition ? { cachePartition } : {}) });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logEvent("warn", "embedding_failed", { error: msg.slice(0, 200) }, `Remembra: embedding failed (${msg.slice(0, 200)}); continuing without`);
@@ -506,7 +531,7 @@ export class MemoryService {
 
     const embedding =
       embeddingOverride === undefined
-        ? await this.maybeEmbed(parsed.content)
+        ? await this.maybeEmbed(parsed.content, undefined, tenant?.organizationId)
         : embeddingOverride ?? undefined;
     // Provenance/trust travel in the input now (plan §4.3): callers that say
     // nothing store as { sourceType: manual } → trusted; digests pass
@@ -530,7 +555,7 @@ export class MemoryService {
     const t0 = performance.now();
     const tenant = this.tenantFilter(q, "read");
     let queryVec: number[] | null = null;
-    if (q.query && this.embedFn) queryVec = (await this.maybeEmbed(q.query)) ?? null;
+    if (q.query && this.embedFn) queryVec = (await this.maybeEmbed(q.query, undefined, tenant?.organizationId)) ?? null;
 
     // V4.8: let capable backends generate a bounded keyword candidate set.
     // Agent mode deliberately stays on the full path until a backend can
@@ -928,7 +953,7 @@ export class MemoryService {
       throw new RemembraError("INVALID_INPUT", "memory scope is not available to the verified agent context");
     }
     if (fields.content !== undefined && fields.content !== existing.content) {
-      next.embedding = await this.maybeEmbed(fields.content); // fail-open → keyword fallback
+      next.embedding = await this.maybeEmbed(fields.content, undefined, tenant?.organizationId); // fail-open → keyword fallback
     }
     // A trust change is a (re)validation event (plan §4.2 lastValidated).
     if (fields.trust !== undefined && fields.trust !== existing.trust) {
@@ -1358,7 +1383,7 @@ export class MemoryService {
       }
 
       // Evolved fact → LLM decides: store fresh, skip, or merge.
-      const itemVec = (await this.maybeEmbed(item.content, opts.signal)) ?? null;
+      const itemVec = (await this.maybeEmbed(item.content, opts.signal, tenant?.organizationId)) ?? null;
       const candidate = this.findCandidate(item, scope, [...active, ...archived], itemVec);
       if (candidate) {
         // Fail-open: a merge LLM failure must never lose the new fact —
@@ -1394,7 +1419,7 @@ export class MemoryService {
           // Plan §4.6: superseded text is NEVER inlined into current content —
           // the pre-image snapshot in history() carries it, with this reason.
           const content = cleanMerged.content;
-          const embedding = await this.maybeEmbed(cleanMerged.content, opts.signal);
+          const embedding = await this.maybeEmbed(cleanMerged.content, opts.signal, tenant?.organizationId);
           await this.backend.update(
             { ...candidate, content, embedding, source: opts.source ?? candidate.source },
             { reason: "digest merge (superseded by a newer extraction)" },
@@ -1458,7 +1483,7 @@ export class MemoryService {
       const active = (await this.backend.all(false, tenant)).filter((m) => this.canRead(m, options));
       for (const m of active) {
         if (m.embedding && m.embedding.length > 0) continue;
-        const vec = await this.maybeEmbed(m.content);
+        const vec = await this.maybeEmbed(m.content, undefined, tenant?.organizationId);
         if (vec) {
           await this.backend.update({ ...m, embedding: vec }, undefined, tenant);
           result.embedded++;

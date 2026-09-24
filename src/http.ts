@@ -281,6 +281,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // GET /metrics — Prometheus text format. After the auth check on
       // purpose: keyed (incl. public) deployments must not leak counters.
       if (req.method === "GET" && path === "/metrics") {
+        service.assertTenantCapability(agentOptions, "admin");
         applySecureHeaders(res);
         applyCorsHeaders(res);
         res.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" });

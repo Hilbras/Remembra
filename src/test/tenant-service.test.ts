@@ -74,6 +74,42 @@ test("strict service requires opaque context and isolates core memory operations
   await fs.rm(root, { recursive: true, force: true });
 });
 
+test("queued tenant work rechecks membership before provider/write side effects", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-tenant-job-"));
+  let valid = true;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const tenant = context("org-a", "p1");
+  let embedCalls = 0;
+  const service = new MemoryService(new MemoryStore(root), {
+    tenantMode: "strict",
+    embeddingProvider: "none",
+    embedFn: async () => {
+      embedCalls++;
+      return [0.1, 0.2];
+    },
+    verifyTenantContext: async () => {
+      await gate;
+      return valid;
+    },
+  });
+  const stored = await service.store({ type: "fact", content: "queued tenant memory", scope: "project/p1" }, { tenant });
+  const callsBeforeJob = embedCalls;
+  const job = service.enqueueEmbedding(stored.id, { tenant });
+  await Promise.resolve();
+  valid = false;
+  release();
+  const result = await job.done;
+  assert.equal(result.state, "failed");
+  assert.ok(result.error instanceof RemembraError);
+  assert.equal((result.error as RemembraError).code, "TENANT_REQUIRED");
+  const unchanged = await service.get(stored.id, { tenant });
+  assert.equal(embedCalls, callsBeforeJob);
+  assert.deepEqual(unchanged.memory.embedding, [0.1, 0.2]);
+  await service.shutdownBackgroundJobs();
+  await fs.rm(root, { recursive: true, force: true });
+});
+
 test("strict SQLite search passes tenant predicates through the service", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-tenant-service-sqlite-"));
   const service = new MemoryService(new SqliteBackend({ root }), { tenantMode: "strict", embeddingProvider: "none" });

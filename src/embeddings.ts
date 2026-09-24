@@ -28,6 +28,8 @@ export interface EmbedCallOptions {
   signal?: AbortSignal;
   /** Optional injected/local adapter; takes precedence over the legacy provider name. */
   adapter?: EmbeddingAdapter;
+  /** Tenant-safe cache partition; never put raw content or credentials here. */
+  cachePartition?: string;
 }
 
 export interface BatchEmbedOptions extends EmbedCallOptions {
@@ -164,7 +166,7 @@ export async function embedCached(
     provider === "openai"
       ? process.env.REMEMBRA_EMBEDDING_MODEL ?? "text-embedding-3-small"
       : process.env.REMEMBRA_EMBEDDING_MODEL ?? "nomic-embed-text";
-  const key = `${model}:${hashStr(text)}`;
+  const key = `${opts?.cachePartition ?? "global"}:${model}:${hashStr(text)}`;
   const now = Date.now();
   const hit = embedCache.get(key);
   if (hit && now - hit.ts < EMBED_CACHE_TTL_MS) return hit.vec;

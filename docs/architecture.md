@@ -145,8 +145,9 @@ the canonical HMAC-signed migration manifest. The file and SQLite backends now
 accept optional tenant filters, hide tenant rows from unscoped legacy reads,
 and apply tenant predicates to point/candidate/history/audit paths. The strict
 service path now requires opaque contexts, and HTTP/MCP transports bind them
-through trusted host resolvers. Durable job reauthorization, operator CLI
-binding, and derived-cache partitioning remain staged in
+through trusted host resolvers. Queued handlers can re-check host membership,
+and embedding calls accept tenant-safe cache partitions. Operator CLI binding
+and broader derived-cache invalidation remain staged in
 [v5-tenant-spec.md](v5-tenant-spec.md).
 
 ## Schema versioning
