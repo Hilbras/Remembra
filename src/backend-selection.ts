@@ -45,7 +45,13 @@ export async function selectInitialBackend(
   const resolvedRoot = await ensureStorageRoot(root);
   try {
     const store = new SqliteBackend({ root: resolvedRoot });
-    return { store, backend: "sqlite", fallback: false };
+    try {
+      await store.ready();
+      return { store, backend: "sqlite", fallback: false };
+    } catch (error) {
+      store.close();
+      throw error;
+    }
   } catch (error) {
     if (env.REMEMBRA_ALLOW_FILE_FALLBACK !== "1") {
       throw new Error(`SQLite backend unavailable (${safeErrorCode(error)})`, { cause: error });

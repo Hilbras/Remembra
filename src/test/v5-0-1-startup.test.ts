@@ -53,3 +53,26 @@ test("SEC-STORAGE-001: file fallback requires explicit opt-in and is observable"
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("SEC-STORAGE-001: backend selection waits for legacy migration readiness", async () => {
+  const root = await tempRoot("remembra-v501-migration-ready-");
+  await fs.mkdir(path.join(root, "global"), { recursive: true });
+  await fs.writeFile(path.join(root, "global", "abcdef12.md"), [
+    "---",
+    "id: abcdef12",
+    "type: fact",
+    "scope: global",
+    "created: 2026-01-01T00:00:00.000Z",
+    "updated: 2026-01-01T00:00:00.000Z",
+    "---",
+    "legacy memory",
+    "",
+  ].join("\n"));
+  const selection = await selectInitialBackend(root, {});
+  try {
+    assert.equal((await selection.store.all()).length, 1);
+  } finally {
+    if ("close" in selection.store) selection.store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

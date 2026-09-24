@@ -1148,6 +1148,11 @@ export class SqliteBackend implements MemoryBackend {
     }
   }
 
+  /** Wait until any automatic legacy migration has completed. */
+  async ready(): Promise<void> {
+    await this.startMigration();
+  }
+
   /** Public entry point for manual migration: `remembra migrate`. */
   async migrate(): Promise<{ imported: number; skipped: number }> {
     const root = path.dirname(this.db.name);
