@@ -7,7 +7,8 @@ import { MemoryService } from "../service.js";
 import { MemoryStore } from "../store.js";
 import { createTenantContext } from "../tenant.js";
 import { createSignedSnapshot } from "../snapshot-integrity.js";
-import { SNAPSHOT_FORMAT } from "../types.js";
+import { planTenantMigration } from "../tenant-migration-runner.js";
+import { SNAPSHOT_FORMAT, StoreInput } from "../types.js";
 import { RemembraError } from "../errors.js";
 
 const key = Buffer.from("v501 snapshot key");
@@ -57,5 +58,40 @@ test("SEC-SNAPSHOT-001: strict restore rejects a signed tenantless snapshot befo
   } finally {
     await service.shutdownBackgroundJobs();
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SEC-SNAPSHOT-001: explicit signed migration applies only through a target-bound plan", async () => {
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-migration-source-"));
+  const sourceStore = new MemoryStore(sourceRoot);
+  const source = await sourceStore.store(StoreInput.parse({ type: "fact", content: "migrate me" }));
+  const snapshot = createSignedSnapshot({
+    format: SNAPSHOT_FORMAT,
+    version: 3,
+    exportedAt: new Date().toISOString(),
+    memories: [source],
+  }, key);
+  const plan = planTenantMigration({
+    source: [source],
+    sourceSchemaVersion: 3,
+    organizationMappings: [{ sourceNamespace: "legacy-root", destination: "org-a" }],
+  }, key);
+  const targetRoot = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-migration-target-"));
+  const service = new MemoryService(new MemoryStore(targetRoot), {
+    tenantMode: "strict",
+    embeddingProvider: "none",
+    snapshotKey: key,
+  });
+  try {
+    const dryRun = await service.migrateSnapshot(snapshot, plan, key, { tenant, dryRun: true });
+    assert.deepEqual(dryRun, { total: 1, planned: 1, imported: 0, skipped: 0, dryRun: true });
+    assert.equal((await service.search({ query: "migrate", tenant })).results.length, 0);
+    const applied = await service.migrateSnapshot(snapshot, plan, key, { tenant });
+    assert.equal(applied.imported, 1);
+    assert.equal((await service.search({ query: "migrate", tenant })).results.length, 1);
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(sourceRoot, { recursive: true, force: true });
+    await fs.rm(targetRoot, { recursive: true, force: true });
   }
 });

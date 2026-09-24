@@ -43,6 +43,7 @@ import {
 import { createSignedSnapshot, isSignedSnapshot, verifySignedSnapshot } from "./snapshot-integrity.js";
 import { JobQueue } from "./job-queue.js";
 import type { TenantDirectory } from "./tenant-directory.js";
+import { applyTenantMigration, preflightTenantMigration, type TenantMigrationPlan } from "./tenant-migration-runner.js";
 import type { JobHandle } from "./job-queue.js";
 
 export interface DigestResult {
@@ -57,6 +58,14 @@ export interface SnapshotPreview {
   total: number;
   imported: number;
   skipped: number;
+}
+
+export interface SnapshotMigrationResult {
+  total: number;
+  planned: number;
+  imported: number;
+  skipped: number;
+  dryRun: boolean;
 }
 
 interface PreparedSnapshotImport {
@@ -1956,6 +1965,49 @@ export class MemoryService {
       else skipped++;
     }
     return { imported, skipped };
+  }
+
+  /**
+   * Apply a signed, explicit V5 migration plan to tenantless snapshot data.
+   * Ordinary restore never reaches this path; callers must provide the plan,
+   * key, and trusted destination context explicitly.
+   */
+  async migrateSnapshot(
+    data: unknown,
+    plan: TenantMigrationPlan,
+    key: Buffer | Uint8Array,
+    options: AgentReadOptions & { dryRun?: boolean } = {},
+  ): Promise<SnapshotMigrationResult> {
+    const tenant = await this.freshTenantFilter(options, "write");
+    if (!tenant) throw new RemembraError("TENANT_REQUIRED", "snapshot migration requires a trusted tenant context");
+    const snapshot = verifySignedSnapshot(data, key);
+    const sourceById = new Map(snapshot.memories.map((memory) => [memory.id, memory]));
+    if (sourceById.size !== snapshot.memories.length) {
+      throw new RemembraError("SNAPSHOT_INVALID", "snapshot migration contains duplicate source ids");
+    }
+    if (sourceById.size !== plan.records.length) {
+      throw new RemembraError("SNAPSHOT_INVALID", "snapshot migration source set does not match the signed plan");
+    }
+    for (const record of plan.records) {
+      const source = sourceById.get(record.source.id);
+      if (!source || source.content !== record.source.content || source.type !== record.source.type || source.scope !== record.source.scope) {
+        throw new RemembraError("SNAPSHOT_INVALID", `snapshot migration source mismatch for ${record.source.id}`);
+      }
+      if (record.destination.tenantId !== tenant.organizationId) {
+        throw new RemembraError("SNAPSHOT_INVALID", "snapshot migration target does not match the trusted tenant context");
+      }
+    }
+    preflightTenantMigration(plan, this.backend, key);
+    const total = plan.records.length;
+    if (options.dryRun) return { total, planned: total, imported: 0, skipped: 0, dryRun: true };
+    const result = await applyTenantMigration(plan, this.backend, key);
+    return {
+      total,
+      planned: total,
+      imported: result.imported,
+      skipped: result.skipped,
+      dryRun: false,
+    };
   }
 
   /** Decay lifecycle: unused actives → archived → auto-deleted past TTL. */
