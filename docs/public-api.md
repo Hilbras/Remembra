@@ -150,6 +150,8 @@ before writes, resumes only after checking prior records, and records failures.
 `publishTenantMigration` is an explicit operator-confirmed marker; callers are
 responsible for any backend-specific atomic swap and rollback. The state file
 contains no snapshot key and is not a substitute for the signed manifest.
+`MemoryService.previewSnapshot` and `remembra import <file> --dry-run` perform
+the complete snapshot/tenant/reference preflight without writing.
 
 ### Batches
 

@@ -79,6 +79,31 @@ test("strict service requires opaque context and isolates core memory operations
   const snapshot = await service.exportSnapshot({ tenant: tenantA });
   assert.equal(snapshot.version, 4);
   assert.equal(snapshot.memories.length, 1);
+  assert.deepEqual(await service.previewSnapshot(snapshot, { tenant: tenantA }), {
+    total: 1,
+    imported: 0,
+    skipped: 1,
+  });
+  const freshSnapshot = createSignedSnapshot({
+    format: snapshot.format,
+    version: snapshot.version,
+    exportedAt: snapshot.exportedAt,
+    memories: [{
+      ...snapshot.memories[0],
+      id: "42345678-1234-4234-8234-123456789abc",
+      content: "fresh tenant preview",
+    }],
+  }, Buffer.from("test snapshot key"));
+  assert.deepEqual(await service.previewSnapshot(freshSnapshot, { tenant: tenantA }), {
+    total: 1,
+    imported: 1,
+    skipped: 0,
+  });
+  assert.equal((await service.search({ query: "fact", tenant: tenantA })).results.length, 1);
+  await assert.rejects(
+    () => service.previewSnapshot(snapshot, { tenant: tenantB }),
+    (error: unknown) => error instanceof RemembraError && error.code === "SNAPSHOT_INVALID",
+  );
   await assert.rejects(
     () => service.importSnapshot(snapshot, { tenant: tenantB }),
     (error: unknown) => error instanceof RemembraError && error.code === "SNAPSHOT_INVALID",

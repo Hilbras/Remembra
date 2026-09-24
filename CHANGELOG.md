@@ -50,7 +50,8 @@ V5 work is additive until the tenant/schema migration contract is approved.
   backend-specific atomic swap/rollback remains deployment work.
 - **Atomic recovery files** write signed snapshots through fsync + rename,
   reject symlink/oversized/tampered inputs, and are used by keyed CLI
-  export/import.
+  export/import. Snapshot restore also has a no-write `previewSnapshot` and
+  `import --dry-run` preflight path.
 - **Strict HTTP ingress hardening** rejects tenant-bearing headers, query
   parameters, and request fields (while allowing signed snapshot records) so
   public callers cannot select an organization.

@@ -68,9 +68,10 @@ if (argv[0] === "export") {
   // then skips existing ids/duplicates (idempotent re-import).
   const input = argv[1];
   if (!input) {
-    console.error("Usage: remembra import <file.json>");
+    console.error("Usage: remembra import <file.json> [--dry-run]");
     process.exit(1);
   }
+  const dryRun = argv.includes("--dry-run");
   let data: unknown;
   try {
     data = operatorSnapshotKey
@@ -81,8 +82,13 @@ if (argv[0] === "export") {
     process.exit(1);
   }
   try {
-    const result = await service.importSnapshot(data, operatorOptions);
-    console.log(`Import: ${result.imported} imported, ${result.skipped} skipped`);
+    if (dryRun) {
+      const preview = await service.previewSnapshot(data, operatorOptions);
+      console.log(`Import dry-run: ${preview.imported} would import, ${preview.skipped} would skip (${preview.total} total)`);
+    } else {
+      const result = await service.importSnapshot(data, operatorOptions);
+      console.log(`Import: ${result.imported} imported, ${result.skipped} skipped`);
+    }
     process.exit(0);
   } catch (err) {
     console.error(`Import rejected (nothing written): ${err instanceof Error ? err.message : err}`);

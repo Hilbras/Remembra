@@ -53,6 +53,18 @@ export interface DigestResult {
   ids: string[];
 }
 
+export interface SnapshotPreview {
+  total: number;
+  imported: number;
+  skipped: number;
+}
+
+interface PreparedSnapshotImport {
+  prepared: Memory[];
+  skipped: number;
+  tenant: TenantFilter | undefined;
+}
+
 export interface MaintainResult {
   archived: string[];
   deleted: string[];
@@ -1811,7 +1823,10 @@ export class MemoryService {
    * snapshot can never half-import. Existing ids and exact duplicates are
    * skipped, making re-import idempotent.
    */
-  async importSnapshot(data: unknown, options: AgentReadOptions = {}): Promise<{ imported: number; skipped: number }> {
+  private async prepareSnapshotImport(
+    data: unknown,
+    options: AgentReadOptions = {},
+  ): Promise<PreparedSnapshotImport> {
     let snap: ReturnType<typeof SnapshotInput.parse>;
     try {
       if (this.requireSignedSnapshots || this.snapshotKey || isSignedSnapshot(data)) {
@@ -1893,12 +1908,28 @@ export class MemoryService {
       if (relations?.length !== m.relations?.length) m.relations = relations?.length ? relations : undefined;
     }
 
+    return { prepared, skipped, tenant };
+  }
+
+  /** Validate a snapshot and report restore counts without writing anything. */
+  async previewSnapshot(data: unknown, options: AgentReadOptions = {}): Promise<SnapshotPreview> {
+    const prepared = await this.prepareSnapshotImport(data, options);
+    return {
+      total: prepared.prepared.length + prepared.skipped,
+      imported: prepared.prepared.length,
+      skipped: prepared.skipped,
+    };
+  }
+
+  /** Restore a fully preflighted snapshot; existing/duplicate IDs are skipped. */
+  async importSnapshot(data: unknown, options: AgentReadOptions = {}): Promise<{ imported: number; skipped: number }> {
+    const prepared = await this.prepareSnapshotImport(data, options);
     let imported = 0;
-    for (const m of prepared) {
-      if (await this.backend.importMemory(m, tenant)) imported++;
-      else skipped++;
+    for (const memory of prepared.prepared) {
+      if (await this.backend.importMemory(memory, prepared.tenant)) imported++;
+      else prepared.skipped++;
     }
-    return { imported, skipped };
+    return { imported, skipped: prepared.skipped };
   }
 
   /** Decay lifecycle: unused actives → archived → auto-deleted past TTL. */
