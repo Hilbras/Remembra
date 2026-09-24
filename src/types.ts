@@ -196,6 +196,16 @@ export function isSafeScope(scope: string): boolean {
 export const MEMORY_ID_RE =
   /^([a-f0-9]{8,32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
+/** Safe single path component for file-backed history and other derived paths. */
+export function isSafeMemoryId(value: string): boolean {
+  return value.length > 0 &&
+    value.length <= 255 &&
+    value !== "." &&
+    value !== ".." &&
+    !/[\\/\u0000-\u001f\u007f<>:"|?*]/.test(value) &&
+    !/[. ]$/.test(value);
+}
+
 // ---------------------------------------------------------------------------
 // Shared input schemas (audit #13: one source of truth).
 // The raw `*Shape` objects feed MCP tool inputSchemas (ZodRawShape);
@@ -500,7 +510,7 @@ export const RelateInput = z.object(relateInputShape);
 export type RelateInput = z.infer<typeof RelateInput>;
 
 export const historyInputShape = {
-  id: z.string().describe("Memory id to show version history for"),
+  id: z.string().refine(isSafeMemoryId, "invalid memory id").describe("Memory id to show version history for"),
   limit: z.number().int().min(1).max(100).optional().describe("Max past versions to return (newest first)"),
 };
 export const HistoryInput = z.object(historyInputShape);

@@ -19,6 +19,7 @@ import {
   MemoryAccess,
   TrustLevel,
   defaultTrust,
+  isSafeMemoryId,
 } from "./types.js";
 import type { MemoryBackend, HistoryEntry } from "./backend.js";
 import { RemembraError } from "./errors.js";
@@ -37,6 +38,57 @@ export interface StoreLockOptions {
   cacheSize?: number;
   /** Test hook: memory-id factory (default: UUIDv7 — plan §3.6). */
   idGen?: () => string;
+}
+
+function assertSafeHistoryId(id: string): void {
+  if (!isSafeMemoryId(id)) {
+    throw new RemembraError("INVALID_INPUT", "memory id is not safe for a history path");
+  }
+}
+
+function assertContained(root: string, target: string): void {
+  const resolvedRoot = path.resolve(root);
+  const resolvedTarget = path.resolve(target);
+  const relative = path.relative(resolvedRoot, resolvedTarget);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new RemembraError("INVALID_INPUT", "history path escapes storage root");
+  }
+}
+
+async function ensureSafeDirectory(dir: string, label: string): Promise<boolean> {
+  try {
+    const stat = await fs.lstat(dir);
+    if (stat.isSymbolicLink()) throw new RemembraError("INVALID_INPUT", `${label} must not be a symlink`);
+    if (!stat.isDirectory()) throw new RemembraError("INVALID_INPUT", `${label} must be a directory`);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await fs.mkdir(dir, { recursive: true });
+    const stat = await fs.lstat(dir);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new RemembraError("INVALID_INPUT", `${label} is not a safe directory`);
+    }
+    return false;
+  }
+}
+
+async function isExistingSafeDirectory(dir: string, label: string): Promise<boolean> {
+  try {
+    const stat = await fs.lstat(dir);
+    if (stat.isSymbolicLink()) throw new RemembraError("INVALID_INPUT", `${label} must not be a symlink`);
+    if (!stat.isDirectory()) throw new RemembraError("INVALID_INPUT", `${label} must be a directory`);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function assertRegularFile(file: string, label: string): Promise<void> {
+  const stat = await fs.lstat(file);
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new RemembraError("INVALID_INPUT", `${label} must be a regular non-symlink file`);
+  }
 }
 
 /**
@@ -247,17 +299,37 @@ export class MemoryStore implements MemoryBackend {
    */
   async history(id: string, tenant?: TenantFilter): Promise<HistoryEntry[]> {
     await this.ensureRecovered();
-    const dir = path.join(tenant ? this.tenantRoot(tenant) : this.root, ".history", id);
+    assertSafeHistoryId(id);
+    const base = tenant ? this.tenantRoot(tenant) : this.root;
+    if (!(await isExistingSafeDirectory(base, "storage root"))) return [];
+    const historyRoot = path.join(base, ".history");
+    assertContained(base, historyRoot);
+    if (!(await isExistingSafeDirectory(historyRoot, "history root"))) return [];
+    const dir = path.join(historyRoot, id);
+    assertContained(base, dir);
+    if (!(await isExistingSafeDirectory(dir, "memory history directory"))) return [];
     let names: string[];
     try {
       names = (await fs.readdir(dir)).filter((n) => n.endsWith(".md")).sort().reverse();
-    } catch {
-      return []; // no history yet
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
     }
     const out: HistoryEntry[] = [];
-    const reasons = await readReasons(path.join(dir, "reasons.json"));
+    const reasonsFile = path.join(dir, "reasons.json");
+    const hasReasons = await isExistingSafeDirectory(dir, "memory history directory");
+    if (hasReasons) {
+      try {
+        await assertRegularFile(reasonsFile, "history reasons file");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    const reasons = await readReasons(reasonsFile);
     for (const name of names) {
       const file = path.join(dir, name);
+      assertContained(dir, file);
+      await assertRegularFile(file, "history snapshot");
       const m = await parse(file); // decrypts transparently; throws ENCRYPTED_NO_KEY loudly
       if (!m) continue;
       const epoch = Number(name.split("-")[0]);
@@ -320,9 +392,19 @@ export class MemoryStore implements MemoryBackend {
     const limit = Number(process.env.REMEMBRA_HISTORY_LIMIT ?? 20);
     if (limit <= 0) return; // history disabled
     const id = path.basename(file, ".md");
-    const dir = path.join(tenant ? this.tenantRoot(tenant) : this.root, ".history", id);
-    await fs.mkdir(dir, { recursive: true });
+    assertSafeHistoryId(id);
+    const base = tenant ? this.tenantRoot(tenant) : this.root;
+    await ensureSafeDirectory(base, "storage root");
+    const historyRoot = path.join(base, ".history");
+    assertContained(base, historyRoot);
+    await ensureSafeDirectory(historyRoot, "history root");
+    const dir = path.join(historyRoot, id);
+    assertContained(base, dir);
+    await ensureSafeDirectory(dir, "memory history directory");
     const existing = (await fs.readdir(dir)).filter((n) => n.endsWith(".md"));
+    for (const name of existing) {
+      await assertRegularFile(path.join(dir, name), "history snapshot");
+    }
     let maxSeq = -1;
     for (const n of existing) {
       const m = n.match(/-(\d+)\.md$/);
@@ -338,6 +420,11 @@ export class MemoryStore implements MemoryBackend {
     // snapshot itself stays a byte-for-byte pre-image.
     if (reason) {
       const reasonsFile = path.join(dir, "reasons.json");
+      try {
+        await assertRegularFile(reasonsFile, "history reasons file");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
       const reasons = await readReasons(reasonsFile);
       reasons[path.basename(target)] = { reason, supersededAt: new Date().toISOString() };
       const json = JSON.stringify(reasons);
