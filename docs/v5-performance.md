@@ -45,3 +45,14 @@ runtime and therefore keyword candidate fallback enabled. Results from
 
 FTS5-enabled environments must publish a separate result set; the fallback
 baseline is not presented as an FTS performance claim.
+
+A fresh strict-tenant gate run after the recovery/retrieval changes recorded:
+
+| Corpus | Seed ms | Search p50 ms | Search p95 ms | Heap MB |
+|---|---:|---:|---:|---:|
+| 10,000 | 914.19 | 31.86 | 33.61 | 12.26 |
+| 100,000 | 8,415.93 | 381.43 | 425.95 | 12.27 |
+
+Both remain below the documented p95, heap, and seed ceilings. The scale
+harness also completed its 10K/50K bounded-candidate runs; its FTS5-unavailable
+fallback results are reported separately by `npm run bench:scale`.

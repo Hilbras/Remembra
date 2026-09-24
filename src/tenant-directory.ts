@@ -117,6 +117,18 @@ function assertEntityId(value: string, label: string): void {
   if (!isValidTenantId(value)) throw new RemembraError("INVALID_INPUT", `invalid ${label}`);
 }
 
+function assertDisplayName(value: string | undefined): void {
+  if (value !== undefined && (value.length < 1 || value.length > 256)) {
+    throw new RemembraError("INVALID_INPUT", "invalid display name");
+  }
+}
+
+function assertMembershipRole(role: TenantMembershipRole): void {
+  if (role !== "member" && role !== "manager" && role !== "admin") {
+    throw new RemembraError("INVALID_INPUT", "invalid membership role");
+  }
+}
+
 function key(organizationId: string, id: string): string {
   return `${organizationId}\u0000${id}`;
 }
@@ -215,6 +227,7 @@ export class InMemoryTenantDirectory implements TenantDirectory {
   upsertUser(user: TenantDirectoryUser): void {
     assertEntityId(user.organizationId, "organization id");
     assertEntityId(user.userId, "user id");
+    assertDisplayName(user.displayName);
     this.requireOrganization(user.organizationId);
     this.users.set(key(user.organizationId, user.userId), { ...user });
     this.bump(user.organizationId);
@@ -238,6 +251,7 @@ export class InMemoryTenantDirectory implements TenantDirectory {
   upsertProject(project: TenantDirectoryProject): void {
     assertEntityId(project.organizationId, "organization id");
     assertEntityId(project.projectId, "project id");
+    assertDisplayName(project.displayName);
     this.requireOrganization(project.organizationId);
     this.projects.set(key(project.organizationId, project.projectId), { ...project });
     this.bump(project.organizationId);
@@ -267,6 +281,7 @@ export class InMemoryTenantDirectory implements TenantDirectory {
     assertEntityId(agent.agentId, "agent id");
     if (agent.userId) assertEntityId(agent.userId, "user id");
     if (agent.projectId) assertEntityId(agent.projectId, "project id");
+    assertDisplayName(agent.displayName);
     this.requireOrganization(agent.organizationId);
     if (agent.userId && !this.users.has(key(agent.organizationId, agent.userId))) {
       throw new RemembraError("NOT_FOUND", `user ${agent.userId} not found in organization`);
@@ -302,6 +317,7 @@ export class InMemoryTenantDirectory implements TenantDirectory {
     role: TenantMembershipRole = "member",
   ): void {
     this.requireOrganization(organizationId);
+    assertMembershipRole(role);
     if (!this.projects.has(key(organizationId, projectId))) throw new RemembraError("NOT_FOUND", `project ${projectId} not found`);
     if (!this.users.has(key(organizationId, userId))) throw new RemembraError("NOT_FOUND", `user ${userId} not found`);
     this.projectMembers.set(membershipKey(organizationId, projectId, userId), {
