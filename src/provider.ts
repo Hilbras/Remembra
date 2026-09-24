@@ -52,14 +52,21 @@ function retryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
 
-export interface ProviderFetchOptions {
+export interface ProviderContext {
+  /** Optional caller cancellation, propagated through every retry attempt. */
+  signal?: AbortSignal;
+  /** Injectable transport for adapters and deterministic tests. */
+  fetchImpl?: typeof fetch;
+  /** Optional policy override; defaults to the environment policy. */
+  policy?: ProviderPolicy;
+}
+
+export interface ProviderFetchOptions extends ProviderContext {
   /** Low-cardinality label for events/errors: "llm" | "embeddings". */
   label: string;
   headers?: Record<string, string>;
   /** JSON body (serialized once). */
   body?: unknown;
-  /** Caller cancellation — aborts the in-flight attempt and stops retrying. */
-  signal?: AbortSignal;
 }
 
 /**
@@ -69,8 +76,11 @@ export interface ProviderFetchOptions {
  *   LLM_ERROR         — non-retryable status, retries exhausted, cancelled,
  *                       or a malformed (non-JSON) response body
  */
-export async function providerFetch(url: string, opts: ProviderFetchOptions): Promise<any> {
-  const p = providerPolicy();
+export async function providerFetch<T = unknown>(
+  url: string,
+  opts: ProviderFetchOptions,
+): Promise<T> {
+  const p = opts.policy ?? providerPolicy();
   const deadline = Date.now() + p.budgetMs;
   const attempts = Math.max(1, p.retries + 1);
   const { label } = opts;
@@ -109,7 +119,7 @@ export async function providerFetch(url: string, opts: ProviderFetchOptions): Pr
     opts.signal?.addEventListener("abort", onAbort, { once: true });
 
     try {
-      const res = await fetch(url, {
+      const res = await (opts.fetchImpl ?? fetch)(url, {
         method: "POST",
         headers: { "content-type": "application/json", ...opts.headers },
         ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
@@ -135,7 +145,7 @@ export async function providerFetch(url: string, opts: ProviderFetchOptions): Pr
 
       const text = await res.text();
       try {
-        return JSON.parse(text);
+        return JSON.parse(text) as T;
       } catch {
         logEvent(
           "error",

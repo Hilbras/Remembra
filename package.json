@@ -1,6 +1,6 @@
 {
   "name": "@hilbras/remembra",
-  "version": "4.8.0",
+  "version": "4.9.0",
   "description": "External memory for AI assistants — remember facts, decisions, roles and history across sessions. MCP server for OpenCode, Claude Code, Cline, Kimi Code and more.",
   "type": "module",
   "bin": {
@@ -19,6 +19,11 @@
       "import": "./dist/sdk.js",
       "default": "./dist/sdk.js"
     },
+    "./providers": {
+      "types": "./dist/provider-adapters.d.ts",
+      "import": "./dist/provider-adapters.js",
+      "default": "./dist/provider-adapters.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -35,7 +40,8 @@
     "start": "node dist/index.js",
     "bench:scale": "npm run build && node scripts/bench-scale.mjs",
     "test": "node --test \"dist/test/*.test.js\"",
-    "prepublishOnly": "npm run build && npm test"
+    "docs:check": "node scripts/check-docs.mjs",
+    "prepublishOnly": "npm run build && npm test && npm run docs:check"
   },
   "repository": {
     "type": "git",
@@ -62,10 +68,13 @@
   "author": "Hilbras",
   "license": "MIT",
   "engines": {
-    "node": ">=18"
+    "node": ">=18.14.1"
   },
   "publishConfig": {
     "access": "public"
+  },
+  "overrides": {
+    "@hono/node-server": "1.19.17"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

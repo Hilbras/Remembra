@@ -55,6 +55,78 @@ test("v1 API namespace preserves auth, headers, and legacy handler behavior", as
   });
   assert.equal(missing.status, 404);
   assert.equal(missing.headers.get("x-remembra-api-version"), "v1");
+
+  const invalid = await fetch(`${base}/api/v1/memories/batch`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": "test-key" },
+    body: JSON.stringify({ operation: "delete", ids: [] }),
+  });
+  assert.equal(invalid.status, 400);
+  const invalidBody = {
+    error: "ids: Array must contain at least 1 element(s)",
+    code: "INVALID_INPUT",
+  };
+  assert.deepEqual(await invalid.json(), invalidBody);
+  const legacyInvalid = await fetch(`${base}/memories/batch`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": "test-key" },
+    body: JSON.stringify({ operation: "delete", ids: [] }),
+  });
+  assert.equal(legacyInvalid.status, 400);
+  assert.equal(legacyInvalid.headers.get("x-remembra-api-version"), null);
+  assert.deepEqual(await legacyInvalid.json(), invalidBody);
+});
+
+test("v1 version header is present on concurrency-limit responses", async () => {
+  const previous = process.env.REMEMBRA_MAX_CONCURRENT;
+  process.env.REMEMBRA_MAX_CONCURRENT = "0";
+  const overloadDir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-overload-"));
+  const overloadServer = createHttpServer(new MemoryService(new MemoryStore(overloadDir)), {
+    port: 0,
+    apiKey: "test-key",
+  });
+  try {
+    await new Promise<void>((resolve) => overloadServer.once("listening", () => resolve()));
+    const overloadBase = `http://127.0.0.1:${(overloadServer.address() as { port: number }).port}`;
+    const response = await fetch(`${overloadBase}/api/v1/memories`, {
+      headers: { "x-api-key": "test-key" },
+    });
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("x-remembra-api-version"), "v1");
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      overloadServer.close((error) => (error ? reject(error) : resolve())),
+    );
+    if (previous === undefined) delete process.env.REMEMBRA_MAX_CONCURRENT;
+    else process.env.REMEMBRA_MAX_CONCURRENT = previous;
+  }
+});
+
+test("v1 CORS preflight exposes the version header", async () => {
+  const previous = process.env.REMEMBRA_CORS_ORIGIN;
+  process.env.REMEMBRA_CORS_ORIGIN = "https://client.example";
+  const corsDir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-cors-"));
+  const corsServer = createHttpServer(new MemoryService(new MemoryStore(corsDir)), {
+    port: 0,
+    apiKey: "test-key",
+  });
+  try {
+    await new Promise<void>((resolve) => corsServer.once("listening", () => resolve()));
+    const corsBase = `http://127.0.0.1:${(corsServer.address() as { port: number }).port}`;
+    const response = await fetch(`${corsBase}/api/v1/memories`, {
+      method: "OPTIONS",
+      headers: { origin: "https://client.example" },
+    });
+    assert.equal(response.status, 204);
+    assert.equal(response.headers.get("access-control-allow-origin"), "https://client.example");
+    assert.match(response.headers.get("access-control-expose-headers") ?? "", /X-Remembra-API-Version/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      corsServer.close((error) => (error ? reject(error) : resolve())),
+    );
+    if (previous === undefined) delete process.env.REMEMBRA_CORS_ORIGIN;
+    else process.env.REMEMBRA_CORS_ORIGIN = previous;
+  }
 });
 
 test("store → search → delete round-trip", async () => {

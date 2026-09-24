@@ -2,7 +2,7 @@ import type { MemoryBackend } from "./backend.js";
 import { extractQuery, searchQ } from "./retrieval.js";
 import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, Provenance, defaultTrust, CompressInput, BatchRequest, MAX_BATCH_BYTES, BatchOutcome, BatchSummary, BatchFailure } from "./types.js";
 import { RemembraError, inputError, errorLabel } from "./errors.js";
-import { resolveEmbeddingProvider, embedText, embedTexts, EmbeddingProvider, cosine } from "./embeddings.js";
+import { resolveEmbeddingProvider, embedText, embedTexts, EmbeddingProvider, EmbeddingAdapter, cosine } from "./embeddings.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { VERSION } from "./version.js";
@@ -15,6 +15,7 @@ import {
   extractMemories,
   resolveMerge,
   LlmProvider,
+  LlmAdapter,
   ExtractedMemory,
 } from "./llm.js";
 import { createInjectionDetector, InjectionResult } from "./injection-detector.js";
@@ -47,9 +48,13 @@ export interface MaintainResult {
   };
 }
 
-interface ServiceDeps {
+export interface ServiceDeps {
   embeddingProvider?: EmbeddingProvider;
+  /** Optional vendor-neutral embedding adapter; takes precedence over the legacy name. */
+  embeddingAdapter?: EmbeddingAdapter;
   llmProvider?: LlmProvider;
+  /** Optional vendor-neutral LLM adapter; takes precedence over the legacy name. */
+  llmAdapter?: LlmAdapter;
   /** Injection points for tests. */
   embedFn?: (text: string, opts?: { signal?: AbortSignal }) => Promise<number[]>;
   extractFn?: (transcript: string, opts?: { signal?: AbortSignal }) => Promise<ExtractedMemory[]>;
@@ -133,25 +138,34 @@ export class MemoryService {
   /** V4.4: sensitive data policy detector. */
   private readonly sensitiveDetector = createSensitiveDetector();
   /** Resolved extraction LLM — recorded as provenance.provider on digests (§4.3). */
-  private readonly llmName: LlmProvider;
+  private readonly llmName: string;
   private lastDecayRun = 0;
   private decayRunning = false;
 
   constructor(readonly db: MemoryBackend, deps: ServiceDeps = {}) {
     const emb = deps.embeddingProvider ?? resolveEmbeddingProvider();
     const llm = deps.llmProvider ?? resolveLlmProvider();
-    this.llmName = llm;
+    const embeddingAdapter = deps.embeddingAdapter;
+    const llmAdapter = deps.llmAdapter;
+    this.llmName = llmAdapter?.id ?? llm;
 
     this.embedFn =
       deps.embedFn ??
-      (emb === "none"
+      (emb === "none" && !embeddingAdapter
         ? undefined
-        : async (text: string, o?: { signal?: AbortSignal }) => embedText(text, emb, { signal: o?.signal }));
+        : async (text: string, o?: { signal?: AbortSignal }) =>
+            embeddingAdapter
+              ? embeddingAdapter.embed(text, { signal: o?.signal })
+              : embedText(text, emb, { signal: o?.signal }));
 
     this.extractFn =
-      deps.extractFn ?? (async (t: string, o?: { signal?: AbortSignal }) => extractMemories(t, llm, { signal: o?.signal }));
+      deps.extractFn ??
+      (async (t: string, o?: { signal?: AbortSignal }) =>
+        extractMemories(t, llm, { signal: o?.signal, adapter: llmAdapter }));
     this.mergeFn =
-      deps.mergeFn ?? ((n, e, o?: { signal?: AbortSignal }) => resolveMerge(n, e, llm, { signal: o?.signal }));
+      deps.mergeFn ??
+      ((n, e, o?: { signal?: AbortSignal }) =>
+        resolveMerge(n, e, llm, { signal: o?.signal, adapter: llmAdapter }));
 
     this.decayIntervalMs = deps.decayIntervalMs ?? 3_600_000; // 1h
     this.archiveAfterDays = deps.archiveAfterDays ?? Number(process.env.REMEMBRA_ARCHIVE_AFTER_DAYS ?? 90);

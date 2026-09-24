@@ -1,8 +1,12 @@
 import type {
+  BatchOutcome,
   BatchRequest,
+  BatchSummary,
   DigestInput,
   Memory,
   MemoryType,
+  RelationKind,
+  RetrievalExplanation,
   StoreInput,
   UpdateInput,
 } from "./types.js";
@@ -23,8 +27,17 @@ export interface RemembraOptions {
   headers?: Record<string, string>;
 }
 
+export interface SdkProvenance {
+  sourceType?: "manual" | "conversation" | "import" | "system";
+  sessionId?: string;
+  messageId?: string;
+  provider?: string;
+}
+
 export type SdkStoreInput = Pick<StoreInput, "type" | "content"> &
-  Partial<Omit<StoreInput, "type" | "content">>;
+  Partial<Omit<StoreInput, "type" | "content" | "provenance" | "owner" | "access">> & {
+    provenance?: SdkProvenance;
+  };
 
 export interface RequestOptions {
   signal?: AbortSignal;
@@ -60,7 +73,7 @@ export interface HistoryOptions {
 
 export interface RelationOptions {
   action?: "add" | "remove";
-  kind?: string;
+  kind?: RelationKind;
 }
 
 export interface RemembraApiErrorBody {
@@ -94,7 +107,7 @@ export interface StoreResponse {
 export interface SearchResponse {
   text: string;
   results: Memory[];
-  explanations?: unknown[];
+  explanations?: RetrievalExplanation[];
 }
 
 export interface ListResponse {
@@ -105,10 +118,19 @@ export interface ListResponse {
   limit?: number;
 }
 
+export interface RelatedMemory {
+  id: string;
+  kind: RelationKind;
+  type?: MemoryType;
+  scope?: string;
+  content?: string;
+  missing?: true;
+}
+
 export interface GetResponse {
   memory: Memory;
-  related: unknown[];
-  backlinks: unknown[];
+  related: RelatedMemory[];
+  backlinks: RelatedMemory[];
   text: string;
 }
 
@@ -136,6 +158,48 @@ export interface MaintainResponse {
   embedded: number;
   [key: string]: unknown;
 }
+
+export interface LifecycleResponse {
+  memory: Memory;
+  text: string;
+}
+
+export interface RelationResponse {
+  id: string;
+  related: string[];
+  added: string[];
+  removed: string[];
+  text: string;
+}
+
+export interface HistoryVersion {
+  current?: true;
+  file?: string;
+  at?: string;
+  snapshotAt?: string;
+  reason?: string;
+  supersededAt?: string;
+  content: string;
+  diff: string;
+}
+
+export interface HistoryResponse {
+  id: string;
+  versions: HistoryVersion[];
+  text: string;
+}
+
+export type BatchResponse =
+  | { operation: "store" | "update" | "delete"; summary: BatchSummary; results: BatchOutcome[] }
+  | {
+      operation: "export";
+      format: string;
+      version: number;
+      exportedAt: string;
+      memories: Memory[];
+      summary: BatchSummary;
+      results: BatchOutcome[];
+    };
 
 /**
  * Side-effect-free TypeScript client for the versioned Remembra HTTP API.
@@ -200,11 +264,11 @@ export class Remembra {
     return this.request("DELETE", `/memories/${encodeURIComponent(id)}`, undefined, options);
   }
 
-  archive(id: string, options?: RequestOptions): Promise<{ text: string }> {
+  archive(id: string, options?: RequestOptions): Promise<LifecycleResponse> {
     return this.request("POST", `/memories/${encodeURIComponent(id)}/archive`, {}, options);
   }
 
-  revive(id: string, options?: RequestOptions): Promise<{ text: string }> {
+  revive(id: string, options?: RequestOptions): Promise<LifecycleResponse> {
     return this.request("POST", `/memories/${encodeURIComponent(id)}/revive`, {}, options);
   }
 
@@ -220,7 +284,7 @@ export class Remembra {
     id: string,
     params: HistoryOptions = {},
     options?: RequestOptions,
-  ): Promise<{ id: string; versions: unknown[]; text: string }> {
+  ): Promise<HistoryResponse> {
     return this.request("GET", `/memories/${encodeURIComponent(id)}/history`, undefined, {
       ...options,
       query: params as Record<string, unknown>,
@@ -232,14 +296,14 @@ export class Remembra {
     related: string[],
     params: RelationOptions = {},
     options?: RequestOptions,
-  ): Promise<{ id: string; related: string[]; text: string }> {
+  ): Promise<RelationResponse> {
     return this.request("POST", `/memories/${encodeURIComponent(id)}/relate`, {
       related,
       ...params,
     }, options);
   }
 
-  batch(input: BatchRequest, options?: RequestOptions): Promise<unknown> {
+  batch(input: BatchRequest, options?: RequestOptions): Promise<BatchResponse> {
     return this.request("POST", "/memories/batch", input, options);
   }
 
@@ -264,6 +328,7 @@ export class Remembra {
     for (const [key, value] of Object.entries(options.headers ?? {})) headers.set(key, value);
     if (body !== undefined) headers.set("content-type", "application/json");
 
+    assertNoUntrustedIdentity(body);
     const response = await this.fetchImpl(url, {
       method,
       headers,
@@ -287,4 +352,34 @@ export class Remembra {
     }
     return parsed as T;
   }
+}
+
+const IDENTITY_KEYS = new Set([
+  "agent",
+  "agentId",
+  "agentType",
+  "agentVersion",
+  "owner",
+  "access",
+]);
+
+function assertNoUntrustedIdentity(
+  value: unknown,
+  path = "input",
+  seen = new WeakSet<object>(),
+): void {
+  if (value === null || typeof value !== "object") return;
+  if (seen.has(value)) throw new TypeError(`${path} must be JSON-serializable`);
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoUntrustedIdentity(item, `${path}[${index}]`, seen));
+  } else {
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (IDENTITY_KEYS.has(key)) {
+        throw new TypeError(`${path}.${key} is server-managed and cannot be sent by the SDK`);
+      }
+      assertNoUntrustedIdentity(child, `${path}.${key}`, seen);
+    }
+  }
+  seen.delete(value);
 }

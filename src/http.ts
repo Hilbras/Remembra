@@ -150,11 +150,27 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
     if (allowHeaders) {
       res.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
       res.setHeader("access-control-allow-headers", "Content-Type, Authorization, x-api-key");
+      res.setHeader("access-control-expose-headers", "X-Remembra-API-Version, Retry-After");
       res.setHeader("access-control-max-age", "86400");
     }
   }
 
   const server = http.createServer(async (req, res) => {
+    // Parse before the overload fast path so versioned responses get their
+    // contract header even when rejected immediately. Defer malformed-URL
+    // handling to the normal request try/catch below.
+    let requestUrl: URL | undefined;
+    let rawPath = "/";
+    let isApiV1 = false;
+    try {
+      requestUrl = new URL(req.url ?? "/", "http://localhost");
+      rawPath = requestUrl.pathname.replace(/\/+$/, "") || "/";
+      isApiV1 = rawPath === API_V1_PREFIX || rawPath.startsWith(`${API_V1_PREFIX}/`);
+    } catch {
+      // The normal handler will turn malformed URLs into a controlled error.
+    }
+    if (isApiV1) res.setHeader("X-Remembra-API-Version", "v1");
+
     // V4.4: concurrency accounting.
     if (concurrent >= maxConcurrent) {
       applySecureHeaders(res);
@@ -164,11 +180,8 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
     concurrent++;
 
     try {
-      const url = new URL(req.url ?? "/", "http://localhost");
-      const rawPath = url.pathname.replace(/\/+$/, "") || "/";
-      const isApiV1 = rawPath === API_V1_PREFIX || rawPath.startsWith(`${API_V1_PREFIX}/`);
+      const url = requestUrl ?? new URL(req.url ?? "/", "http://localhost");
       const path = isApiV1 ? rawPath.slice(API_V1_PREFIX.length) || "/" : rawPath;
-      if (isApiV1) res.setHeader("x-remembra-api-version", "v1");
 
       // Request instrumentation (audit Phase 7) — low-cardinality route label,
       // counted on finish so the real status code is visible.
