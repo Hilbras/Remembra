@@ -46,6 +46,32 @@ test("SDK uses the v1 namespace, API key, typed paths, and query encoding", asyn
   assert.equal(calls[2].url, "https://memory.example.test/api/v1/memories?offset=20&limit=10");
 });
 
+test("SDK exposes typed snapshot create and restore methods", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const snapshot = {
+    format: "remembra-export",
+    version: 3,
+    exportedAt: "2026-01-01T00:00:00.000Z",
+    memories: [],
+  };
+  const client = new Remembra({
+    endpoint: "https://memory.example.test",
+    apiKey: "secret",
+    fetch: async (input, init) => {
+      calls.push({ url: String(input), init });
+      if (new URL(String(input)).pathname.endsWith("/import")) return jsonResponse({ imported: 1, skipped: 0 });
+      return jsonResponse(snapshot);
+    },
+  });
+  const exported = await client.createSnapshot();
+  const restored = await client.restoreSnapshot(exported);
+  assert.deepEqual(exported, snapshot);
+  assert.deepEqual(restored, { imported: 1, skipped: 0 });
+  assert.equal(calls[0].url, "https://memory.example.test/api/v1/snapshot");
+  assert.equal(calls[1].url, "https://memory.example.test/api/v1/import");
+  assert.deepEqual(JSON.parse(String(calls[1].init?.body)), snapshot);
+});
+
 test("SDK exposes the shared v1 capabilities contract", async () => {
   const calls: string[] = [];
   const client = new Remembra({
@@ -183,6 +209,11 @@ test("SDK completes an authenticated store/search/get/forget round trip", async 
     const context = await client.context({ query: "round trip", maxTokens: 200 });
     assert.ok(context.tokenCount <= 200);
     assert.match(context.context, /SDK HTTP round trip/);
+    const snapshot = await client.createSnapshot();
+    assert.ok(snapshot.memories.some((memory) => memory.id === stored.id));
+    const restored = await client.restoreSnapshot(snapshot);
+    assert.equal(restored.imported, 0);
+    assert.equal(restored.skipped, snapshot.memories.length);
     const deleted = await client.forget(stored.id);
     assert.equal(deleted.ok, true);
   } finally {

@@ -15,7 +15,9 @@ import type {
   RetrievalExplanation,
   StoreInput,
   UpdateInput,
+  SnapshotInput,
 } from "./types.js";
+import type { SnapshotIntegrity } from "./snapshot-integrity.js";
 
 export type FetchLike = (
   input: string | URL,
@@ -157,6 +159,16 @@ export interface ListResponse {
   limit?: number;
 }
 
+export type SnapshotDocument = SnapshotInput;
+export type { SnapshotIntegrity } from "./snapshot-integrity.js";
+
+export type SignedSnapshotDocument = SnapshotDocument & { integrity: SnapshotIntegrity };
+
+export interface SnapshotImportResponse {
+  imported: number;
+  skipped: number;
+}
+
 export interface RelatedMemory {
   id: string;
   kind: RelationKind;
@@ -271,6 +283,20 @@ export class Remembra {
 
   capabilities(options?: RequestOptions): Promise<ApiCapabilitiesResponse> {
     return this.request("GET", "/capabilities", undefined, options);
+  }
+
+  createSnapshot(options?: RequestOptions): Promise<SnapshotDocument | SignedSnapshotDocument> {
+    return this.request("GET", "/snapshot", undefined, options);
+  }
+
+  restoreSnapshot(
+    snapshot: SnapshotDocument | SignedSnapshotDocument,
+    options?: RequestOptions,
+  ): Promise<SnapshotImportResponse> {
+    return this.request("POST", "/import", snapshot, {
+      ...options,
+      allowSnapshotEnvelope: true,
+    });
   }
 
   store(input: SdkStoreInput, options?: RequestOptions): Promise<StoreResponse> {
@@ -435,7 +461,11 @@ export class Remembra {
     method: string,
     path: string,
     body?: unknown,
-    options: RequestOptions & { query?: Record<string, unknown> } = {},
+    options: RequestOptions & {
+      query?: Record<string, unknown>;
+      /** Internal escape hatch for the server-validated snapshot envelope. */
+      allowSnapshotEnvelope?: boolean;
+    } = {},
   ): Promise<T> {
     const url = new URL(`${this.baseEndpoint}${API_PREFIX}${path}`);
     for (const [key, value] of Object.entries(options.query ?? {})) {
@@ -452,7 +482,7 @@ export class Remembra {
     if (this.apiKey) headers.set("x-api-key", this.apiKey);
     if (body !== undefined) headers.set("content-type", "application/json");
 
-    assertNoUntrustedIdentity(body);
+    assertNoUntrustedIdentity(body, "input", new WeakSet<object>(), options.allowSnapshotEnvelope === true);
     assertNoUntrustedTenantHeaders(headers);
     const response = await this.fetchImpl(url, {
       method,
@@ -508,22 +538,32 @@ function assertNoUntrustedTenantHeaders(headers: Headers): void {
   }
 }
 
+function isSnapshotEnvelope(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.format === "string"
+    && Number.isInteger(record.version)
+    && Array.isArray(record.memories);
+}
+
 function assertNoUntrustedIdentity(
   value: unknown,
   path = "input",
   seen = new WeakSet<object>(),
+  allowSnapshotEnvelope = false,
 ): void {
   if (value === null || typeof value !== "object") return;
+  if (allowSnapshotEnvelope && path === "input" && isSnapshotEnvelope(value)) return;
   if (seen.has(value)) throw new TypeError(`${path} must be JSON-serializable`);
   seen.add(value);
   if (Array.isArray(value)) {
-    value.forEach((item, index) => assertNoUntrustedIdentity(item, `${path}[${index}]`, seen));
+    value.forEach((item, index) => assertNoUntrustedIdentity(item, `${path}[${index}]`, seen, allowSnapshotEnvelope));
   } else {
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
       if (IDENTITY_KEYS.has(normalizeIdentityKey(key))) {
         throw new TypeError(`${path}.${key} is server-managed and cannot be sent by the SDK`);
       }
-      assertNoUntrustedIdentity(child, `${path}.${key}`, seen);
+      assertNoUntrustedIdentity(child, `${path}.${key}`, seen, allowSnapshotEnvelope);
     }
   }
   seen.delete(value);
