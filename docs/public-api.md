@@ -144,7 +144,9 @@ Trusted host/operator code can import `@hilbras/remembra/tenant-directory-file`
 for the durable local directory adapter and
 `@hilbras/remembra/tenant-migration` to build and apply a signed, checksummed
 migration plan. `@hilbras/remembra/migration-state` provides an atomic, bounded
-checkpoint file.
+checkpoint file. `@hilbras/remembra/tenant-entities` provides the trusted,
+organization-derived CRUD/pagination service; mutations require an
+organization-admin context and emit an audit callback.
 `runDurableTenantMigration` verifies the manifest and destination capability
 before writes, resumes only after checking prior records, and records failures.
 `publishTenantMigration` is an explicit operator-confirmed marker; callers are

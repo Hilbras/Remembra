@@ -139,6 +139,7 @@ test("published SDK and tenant subpaths resolve without starting the CLI", async
   const packageTenant = await import("@hilbras/remembra/tenant");
   const packageDirectory = await import("@hilbras/remembra/tenant-directory");
   const packageDirectoryFile = await import("@hilbras/remembra/tenant-directory-file");
+  const packageEntities = await import("@hilbras/remembra/tenant-entities");
   const packageMigration = await import("@hilbras/remembra/tenant-migration");
   const packageMigrationState = await import("@hilbras/remembra/migration-state");
   const packageRecovery = await import("@hilbras/remembra/recovery");
@@ -147,6 +148,7 @@ test("published SDK and tenant subpaths resolve without starting the CLI", async
   assert.equal(typeof packageTenant.createTenantContext, "function");
   assert.equal(typeof packageDirectory.InMemoryTenantDirectory, "function");
   assert.equal(typeof packageDirectoryFile.FileTenantDirectory, "function");
+  assert.equal(typeof packageEntities.TenantEntityService, "function");
   assert.equal(typeof packageMigration.planTenantMigration, "function");
   assert.equal(typeof packageMigrationState.runDurableTenantMigration, "function");
   assert.equal(typeof packageRecovery.writeSignedSnapshotFile, "function");

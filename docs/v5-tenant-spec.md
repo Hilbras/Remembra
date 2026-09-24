@@ -189,11 +189,11 @@ host `TenantDirectory` for versioned membership re-authorization; the shipped
 `InMemoryTenantDirectory` is a deterministic reference adapter, and
 `FileTenantDirectory` provides an atomic, permission-safe local durable
 adapter. A production host should implement the same contract in its identity
-store. Entity CRUD/pagination remains disabled in the memory API until its
-tenant predicate, lifecycle, and cross-tenant tests are implemented. A
-principal used for a memory operation must be resolved against the current
-organization membership version; stale or revoked membership fails closed,
-including queued work.
+store. The trusted `TenantEntityService` provides bounded organization-derived
+CRUD/pagination and membership changes with an audit callback. A principal
+used for a memory operation must be resolved against the current organization
+membership version; stale or revoked membership fails closed, including queued
+work.
 
 ## Storage contract
 

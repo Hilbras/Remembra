@@ -144,7 +144,9 @@ fail-closed identifier/matching primitives. `src/tenant-directory.ts` defines
 the versioned organization/user/project/agent membership authority used to
 re-authorize queued work; its in-memory implementation is a reference adapter
 and `tenant-directory-file.ts` provides an atomic local durable adapter, both
-replaceable by the host's production identity store.
+replaceable by the host's production identity store. `tenant-entities.ts`
+adds the trusted organization-derived CRUD/pagination and membership-audit
+service.
 `src/tenant-migration.ts` defines the canonical HMAC-signed migration manifest;
 `src/tenant-migration-runner.ts` preflights and idempotently applies a mapped
 plan to a tenant-capable backend. `src/migration-state.ts` adds an atomic,

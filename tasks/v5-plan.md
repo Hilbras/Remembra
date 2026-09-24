@@ -115,7 +115,8 @@ Implementation slices:
 5. [ ] Service authorization, immutable job context, and transport binding
    (strict service/HTTP/MCP/SDK core, job membership recheck, cache partitions,
    local operator binding, and versioned in-memory/file directory adapters are
-   complete; derived-cache invalidation and full entity API pagination remain).
+   complete; derived-cache invalidation and the public transport surface for
+   entity pagination remain).
 6. [ ] Cross-tenant relation/import/export/maintenance hardening and matrix.
 
 ### Phase 4 — Retrieval quality and scale

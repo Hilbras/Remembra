@@ -32,7 +32,8 @@ V5 work is additive until the tenant/schema migration contract is approved.
 - **V5 tenant contract and identity primitives** with opaque host contexts,
   canonical scoped identifiers, fail-closed matching, migration boundaries,
   versioned organization/user/project/agent directory verification, an atomic
-  file-backed directory adapter with strict entity-reference validation, and a
+  file-backed directory adapter with strict entity-reference validation, a
+  bounded organization-derived entity CRUD/pagination service, and a
   `TENANT_REQUIRED` error. Backend enforcement remains a staged task.
 - **V5 tenant schema expansion** adds optional persisted organization/project/
   user/agent metadata while keeping tenantless V4 records at schema 3 and
