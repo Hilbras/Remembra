@@ -182,6 +182,7 @@ Full reference: **[docs/tools.md](docs/tools.md)**
 | [Memory model](docs/memory-model.md) | Types, scopes, ranking, storage format |
 | [Tool reference](docs/tools.md) | Every MCP tool with arguments |
 | [Public API](docs/public-api.md) | Stability contract: tools, HTTP routes, error codes, snapshot format, CLI |
+| [TypeScript SDK](docs/sdk.md) | Fetch-based client for the versioned HTTP API |
 | [Storage format](docs/storage.md) | On-disk layout, file format, read validation, history |
 | [Web dashboard](docs/ui.md) | Pages, theming, dashboard auth, static-serving security |
 | [Client setup](docs/clients.md) | Config for each supported tool |
@@ -225,7 +226,9 @@ npm test        # run tests
 - **v3** — memory lifecycle (archive/decay), contradiction merging, maintenance CLI ✅
 - **v4** — full web dashboard, write API (`PUT`/archive/revive), HTTP snapshot I/O ✅
 - **v4.1** — 11 semantic types, provenance + trust gate, typed relations, retention modes, optimistic concurrency ✅
-- **v4.2** *(current)* — multi-stage retrieval pipeline (RRF fusion, MMR diversity, temporal parsing, explainable scores, embedding cache) ✅
+- **v4.2** — multi-stage retrieval pipeline (RRF fusion, MMR diversity, temporal parsing, explainable scores, embedding cache) ✅
+- **v4.8** — performance/scalability: bounded retrieval, batch operations, background jobs ✅
+- **v4.9** *(current)* — API/SDK compatibility stabilization 🚧
 
 > Package versions match milestones: `3.0.0` = v3, `4.0.0` = v4.
 

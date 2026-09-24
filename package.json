@@ -8,6 +8,19 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./sdk": {
+      "types": "./dist/sdk.d.ts",
+      "import": "./dist/sdk.js",
+      "default": "./dist/sdk.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "!dist/test",
