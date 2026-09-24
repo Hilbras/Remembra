@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { MemoryStore } from "./store.js";
 import { SqliteBackend } from "./sqlite-backend.js";
+import { reconcileSqliteRestore } from "./sqlite-recovery.js";
 import { logEvent } from "./log.js";
 
 export type InitialBackendName = "sqlite" | "file";
@@ -43,6 +44,7 @@ export async function selectInitialBackend(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<InitialBackendSelection> {
   const resolvedRoot = await ensureStorageRoot(root);
+  await reconcileSqliteRestore(path.join(resolvedRoot, "data.sqlite"));
   try {
     const store = new SqliteBackend({ root: resolvedRoot });
     try {

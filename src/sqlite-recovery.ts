@@ -64,6 +64,138 @@ async function regularFileExists(filePath: string): Promise<boolean> {
   }
 }
 
+const RESTORE_JOURNAL_SUFFIX = ".restore-journal.json";
+type RestoreJournalPhase = "prepared" | "previous-moved";
+
+interface RestoreJournal {
+  format: "remembra-sqlite-restore";
+  version: 1;
+  target: string;
+  temp: string;
+  rollback: string;
+  phase: RestoreJournalPhase;
+}
+
+function restoreJournalPath(targetPath: string): string {
+  return `${path.resolve(targetPath)}${RESTORE_JOURNAL_SUFFIX}`;
+}
+
+async function writeRestoreJournal(journal: RestoreJournal): Promise<void> {
+  const journalPath = restoreJournalPath(journal.target);
+  await fs.mkdir(path.dirname(journalPath), { recursive: true });
+  const temp = `${journalPath}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    handle = await fs.open(temp, "wx", 0o600);
+    await handle.writeFile(JSON.stringify(journal), "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await fs.rename(temp, journalPath);
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    await fs.unlink(temp).catch(() => {});
+    throw error;
+  }
+}
+
+async function removeRestoreJournal(targetPath: string): Promise<void> {
+  await fs.unlink(restoreJournalPath(targetPath)).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "ENOENT") throw error;
+  });
+}
+
+async function readRestoreJournal(targetPath: string): Promise<RestoreJournal | undefined> {
+  const journalPath = restoreJournalPath(targetPath);
+  let raw: string;
+  try {
+    const stat = await fs.lstat(journalPath);
+    if (stat.isSymbolicLink()) invalid("restore journal must not be a symlink");
+    if (!stat.isFile()) invalid("restore journal must be a regular file");
+    if (stat.size > 64 * 1024) invalid("restore journal is too large");
+    raw = await fs.readFile(journalPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    invalid("restore journal is not valid JSON");
+  }
+  if (!parsed || typeof parsed !== "object") invalid("restore journal has an invalid shape");
+  const value = parsed as Record<string, unknown>;
+  if (value.format !== "remembra-sqlite-restore" || value.version !== 1) invalid("restore journal has an invalid format");
+  if (typeof value.target !== "string" || typeof value.temp !== "string" || typeof value.rollback !== "string") {
+    invalid("restore journal has invalid paths");
+  }
+  if (value.phase !== "prepared" && value.phase !== "previous-moved") invalid("restore journal has an invalid phase");
+  const target = path.resolve(value.target);
+  const directory = path.dirname(target);
+  if (path.resolve(value.temp) === target || path.resolve(value.rollback) === target) invalid("restore journal paths must be distinct");
+  if (path.dirname(path.resolve(value.temp)) !== directory || path.dirname(path.resolve(value.rollback)) !== directory) {
+    invalid("restore journal paths must share the target directory");
+  }
+  return {
+    format: "remembra-sqlite-restore",
+    version: 1,
+    target,
+    temp: path.resolve(value.temp),
+    rollback: path.resolve(value.rollback),
+    phase: value.phase,
+  };
+}
+
+/** Complete or roll back a restore left between its publication renames. */
+export async function reconcileSqliteRestore(targetPath: string): Promise<{
+  recovered: boolean;
+  action: "none" | "kept-target" | "published-staged" | "restored-previous";
+}> {
+  const journal = await readRestoreJournal(targetPath);
+  if (!journal) return { recovered: false, action: "none" };
+
+  let targetExists = await regularFileExists(journal.target);
+  const tempExists = await regularFileExists(journal.temp);
+  const rollbackExists = await regularFileExists(journal.rollback);
+
+  if (targetExists && journal.phase === "prepared") {
+    if (rollbackExists) {
+      await verifySqliteBackup(journal.target, { maxBytes: undefined });
+      await fs.unlink(journal.temp).catch(() => {});
+      await removeRestoreJournal(journal.target);
+      return { recovered: true, action: "kept-target" };
+    }
+    await fs.rename(journal.target, journal.rollback);
+    targetExists = false;
+  }
+
+  if (targetExists) {
+    await verifySqliteBackup(journal.target, { maxBytes: undefined });
+    await fs.unlink(journal.temp).catch(() => {});
+    await removeRestoreJournal(journal.target);
+    return { recovered: true, action: "kept-target" };
+  }
+
+  if (tempExists) {
+    await verifySqliteBackup(journal.temp, { maxBytes: undefined });
+    await fs.rename(journal.temp, journal.target);
+    await verifySqliteBackup(journal.target, { maxBytes: undefined });
+    await removeRestoreJournal(journal.target);
+    return { recovered: true, action: "published-staged" };
+  }
+
+  if (rollbackExists) {
+    await verifySqliteBackup(journal.rollback, { maxBytes: undefined });
+    await fs.rename(journal.rollback, journal.target);
+    await verifySqliteBackup(journal.target, { maxBytes: undefined });
+    await removeRestoreJournal(journal.target);
+    return { recovered: true, action: "restored-previous" };
+  }
+
+  invalid("restore journal has no recoverable database");
+}
+
 function openVerified(filePath: string): { db: Database.Database; verification: SqliteVerification } {
   const db = new Database(filePath, { readonly: true, fileMustExist: true });
   try {
@@ -167,6 +299,9 @@ export async function restoreSqliteBackup(
   }
   const temp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`);
   let previousMoved = false;
+  const journal: RestoreJournal | undefined = rollbackPath
+    ? { format: "remembra-sqlite-restore", version: 1, target, temp, rollback: rollbackPath, phase: "prepared" }
+    : undefined;
   try {
     await fs.copyFile(source, temp);
     await fs.chmod(temp, 0o600);
@@ -177,11 +312,17 @@ export async function restoreSqliteBackup(
     } finally {
       await handle.close();
     }
+    if (journal) await writeRestoreJournal(journal);
     if (rollbackPath) {
       await fs.rename(target, rollbackPath);
       previousMoved = true;
+      if (journal) await writeRestoreJournal({ ...journal, phase: "previous-moved" });
     }
     await fs.rename(temp, target);
+    if (journal) {
+      await verifySqliteBackup(target, { maxBytes: options.maxBytes });
+      await removeRestoreJournal(target);
+    }
     return { path: target, schemaVersion: verification.schemaVersion, ...(rollbackPath ? { rollbackPath } : {}) };
   } catch (error) {
     await fs.unlink(temp).catch(() => {});
@@ -189,6 +330,7 @@ export async function restoreSqliteBackup(
       const targetStillExists = await regularFileExists(target);
       if (!targetStillExists) await fs.rename(rollbackPath!, target).catch(() => {});
     }
+    if (journal) await removeRestoreJournal(target).catch(() => {});
     throw error;
   }
 }
