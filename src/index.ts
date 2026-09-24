@@ -12,6 +12,7 @@ import { createHttpServer } from "./http.js";
 import { startMcp } from "./mcp.js";
 import { createOperatorTenantContext, snapshotKeyFromEnv, tenantModeFromEnv } from "./operator.js";
 import { tenantFilterFromContext } from "./tenant.js";
+import { readSignedSnapshotFile, writeSignedSnapshotFile } from "./recovery.js";
 import {
   MemoryType,
   TrustLevel,
@@ -55,7 +56,11 @@ if (argv[0] === "export") {
     process.exit(1);
   }
   const snapshot = await service.exportSnapshot(operatorOptions);
-  await fs.writeFile(out, JSON.stringify(snapshot, null, 2), "utf8");
+  if (operatorSnapshotKey) {
+    await writeSignedSnapshotFile(out, snapshot, operatorSnapshotKey, { overwrite: true });
+  } else {
+    await fs.writeFile(out, JSON.stringify(snapshot, null, 2), { encoding: "utf8", mode: 0o600 });
+  }
   console.log(`Exported ${snapshot.memories.length} memories to ${out}`);
   process.exit(0);
 } else if (argv[0] === "import") {
@@ -68,7 +73,9 @@ if (argv[0] === "export") {
   }
   let data: unknown;
   try {
-    data = JSON.parse(await fs.readFile(input, "utf8"));
+    data = operatorSnapshotKey
+      ? await readSignedSnapshotFile(input, operatorSnapshotKey)
+      : JSON.parse(await fs.readFile(input, "utf8"));
   } catch (err) {
     console.error(`Cannot read snapshot ${input}: ${err instanceof Error ? err.message : err}`);
     process.exit(1);

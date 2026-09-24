@@ -157,7 +157,9 @@ Implementation slices:
 2. [x] Tenant reference sanitization and pre-write reference validation.
 3. [x] Signed, preflighted, idempotent tenant migration runner (durable
    crash-recovery/publication state remains).
-4. [ ] File/SQLite backup/restore dry-run and atomic publication fixtures.
+4. [x] Atomic signed snapshot file writer/reader with fsync + rename,
+   symlink/size/tamper checks, and keyed CLI integration.
+5. [ ] Durable crash-state publication and database-level restore fixtures.
 
 - [ ] Task 9: Complete the V5 security baseline.
   - Acceptance: authenticated API, authorization, rate limits, request limits,

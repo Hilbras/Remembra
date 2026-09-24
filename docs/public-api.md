@@ -221,6 +221,9 @@ Envelope written by `remembra export` and `GET /snapshot`:
 - Strict HTTP data requests reject tenant-bearing headers, query parameters,
   and body fields with `400`; signed snapshot records are the only permitted
   exception and are still bound to the authenticated tenant context.
+- Keyed CLI export/import uses atomic signed snapshot files (temporary file,
+  fsync, rename); readers reject symlinks, oversized files, and tampering before
+  invoking the service.
 
 ## CLI
 

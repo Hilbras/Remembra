@@ -40,6 +40,9 @@ V5 work is additive until the tenant/schema migration contract is approved.
   mappings, signs and verifies manifests, validates source/reference checksums,
   and applies records idempotently to tenant-capable backends. Durable crash
   publication remains a follow-up.
+- **Atomic recovery files** write signed snapshots through fsync + rename,
+  reject symlink/oversized/tampered inputs, and are used by keyed CLI
+  export/import.
 - **Strict HTTP ingress hardening** rejects tenant-bearing headers, query
   parameters, and request fields (while allowing signed snapshot records) so
   public callers cannot select an organization.
