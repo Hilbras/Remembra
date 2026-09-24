@@ -16,7 +16,7 @@ function context(organizationId: string, projectId: string) {
     projectId,
     membershipVersion: "membership-1",
     scopes: [`project/${projectId}`],
-    capabilities: ["tenant:read", "tenant:write"],
+    capabilities: ["tenant:read", "tenant:write", "tenant:export"],
   });
 }
 

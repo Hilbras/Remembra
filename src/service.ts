@@ -36,10 +36,13 @@ import {
   memoryBelongsToTenant,
   tenantFilterFromContext,
   type TenantContext,
-  type TenantCapability,
   type TenantFilter,
   type TenantMode,
 } from "./tenant.js";
+import {
+  assertAuthorized,
+  type AuthorizationOperation,
+} from "./authorization.js";
 import { createSignedSnapshot, isSignedSnapshot, verifySignedSnapshot } from "./snapshot-integrity.js";
 import { JobQueue } from "./job-queue.js";
 import type { TenantDirectory } from "./tenant-directory.js";
@@ -369,20 +372,26 @@ export class MemoryService {
   private tenantFilter(
     options: AgentReadOptions,
     capability: "read" | "write" | "admin" = "read",
+    operation?: AuthorizationOperation,
   ): TenantFilter | undefined {
     if (this.tenantMode === "strict") assertTenantContext(options.tenant);
     if (!options.tenant) return undefined;
     assertTenantContext(options.tenant);
-    const capabilities = options.tenant.principal.capabilities ?? [];
-    const required: TenantCapability = capability === "admin" ? "tenant:admin" : `tenant:${capability}`;
-    if (!capabilities.includes(required) && !(capability !== "admin" && capabilities.includes("tenant:admin"))) {
-      throw new RemembraError("TENANT_REQUIRED", `tenant principal lacks ${capability} capability`);
-    }
+    const defaultOperation: AuthorizationOperation = capability === "admin"
+      ? "tenant.manage"
+      : capability === "write"
+        ? "memory.write"
+        : "memory.search";
+    assertAuthorized(options.tenant, operation ?? defaultOperation);
     return tenantFilterFromContext(options.tenant);
   }
 
-  private async freshTenantFilter(options: AgentReadOptions, capability: "read" | "write" = "read") {
-    const filter = this.tenantFilter(options, capability);
+  private async freshTenantFilter(
+    options: AgentReadOptions,
+    capability: "read" | "write" = "read",
+    operation?: AuthorizationOperation,
+  ) {
+    const filter = this.tenantFilter(options, capability, operation);
     if (filter && this.verifyTenantContext) {
       const valid = await this.verifyTenantContext(options.tenant!);
       if (!valid) throw new RemembraError("TENANT_REQUIRED", "tenant membership is no longer valid");
@@ -1821,7 +1830,7 @@ export class MemoryService {
    * Written by `remembra export <file>` as JSON.
    */
   async exportSnapshot(options: AgentReadOptions = {}) {
-    const tenant = this.tenantFilter(options, "read");
+    const tenant = this.tenantFilter(options, "read", "snapshot.create");
     const visible = (await this.backend.all(true, tenant)).filter((m) => this.canRead(m, options));
     const visibleIds = new Set(visible.map((m) => m.id));
     const memories = visible.map((m) => this.sanitizeMemory(m, options, visibleIds));
@@ -1856,7 +1865,7 @@ export class MemoryService {
       if (err instanceof RemembraError) throw err;
       throw inputError(err, "SNAPSHOT_INVALID");
     }
-    const tenant = this.tenantFilter(options, "write");
+    const tenant = this.tenantFilter(options, "write", "snapshot.restore");
     const allExisting = await this.backend.all(true, tenant);
     const hiddenExistingIds = new Set(
       allExisting.filter((m) => !this.canRead(m, options)).map((m) => m.id),
@@ -1978,7 +1987,7 @@ export class MemoryService {
     key: Buffer | Uint8Array,
     options: AgentReadOptions & { dryRun?: boolean } = {},
   ): Promise<SnapshotMigrationResult> {
-    const tenant = await this.freshTenantFilter(options, "write");
+    const tenant = await this.freshTenantFilter(options, "write", "snapshot.restore");
     if (!tenant) throw new RemembraError("TENANT_REQUIRED", "snapshot migration requires a trusted tenant context");
     const snapshot = verifySignedSnapshot(data, key);
     const sourceById = new Map(snapshot.memories.map((memory) => [memory.id, memory]));

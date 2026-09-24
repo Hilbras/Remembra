@@ -10,6 +10,7 @@ import {
   type TenantMembershipRole,
 } from "./tenant-directory.js";
 import { isTenantContext, type TenantContext } from "./tenant.js";
+import { assertAuthorized } from "./authorization.js";
 
 const MAX_PAGE_SIZE = 100;
 const MAX_OFFSET = 1_000_000;
@@ -331,13 +332,8 @@ export class TenantEntityService {
   private async authorize(context: TenantContext, capability: "read" | "write") {
     if (!isTenantContext(context)) throw new RemembraError("TENANT_REQUIRED", "trusted tenant context required");
     if (!(await this.directory.verifyContext(context))) throw new RemembraError("TENANT_REQUIRED", "tenant membership is not current");
-    const principal = context.principal;
-    const required = capability === "write" ? "tenant:admin" : "tenant:read";
-    const allowed = capability === "write"
-      ? principal.capabilities?.includes("tenant:admin")
-      : (principal.capabilities?.includes("tenant:read") || principal.capabilities?.includes("tenant:admin"));
-    if (!allowed) throw new RemembraError("TENANT_REQUIRED", `tenant capability ${required} required`);
-    return principal;
+    assertAuthorized(context, capability === "write" ? "tenant.manage" : "memory.read");
+    return context.principal;
   }
 
   private async authorizeAdmin(context: TenantContext) {

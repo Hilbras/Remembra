@@ -73,6 +73,8 @@ export interface TenantFilter {
   readonly projectId?: string;
   readonly userId?: string;
   readonly agentId?: string;
+  /** True only for an explicitly authorized organization-wide principal. */
+  readonly organizationWide?: boolean;
 }
 
 export const TenantFilterSchema = z
@@ -81,6 +83,7 @@ export const TenantFilterSchema = z
     projectId: identifier.optional(),
     userId: identifier.optional(),
     agentId: identifier.optional(),
+    organizationWide: z.boolean().optional(),
   })
   .strict();
 
@@ -138,11 +141,13 @@ export function parseTenantFilter(input: unknown): TenantFilter {
 export function tenantFilterFromContext(context: TenantContext): TenantFilter {
   assertTenantContext(context);
   const principal = context.principal;
+  const dimensions = [principal.projectId, principal.userId, principal.agentId].filter(Boolean).length;
   return Object.freeze({
     organizationId: principal.organizationId,
     ...(principal.projectId ? { projectId: principal.projectId } : {}),
     ...(principal.userId ? { userId: principal.userId } : {}),
     ...(principal.agentId ? { agentId: principal.agentId } : {}),
+    organizationWide: dimensions === 0 || principal.capabilities?.includes("tenant:admin") === true,
   });
 }
 
@@ -153,10 +158,18 @@ export function tenantDirectoryKey(organizationId: string): string {
 }
 
 export function memoryBelongsToTenant(
-  memory: { tenantId?: string; projectId?: string },
+  memory: { tenantId?: string; projectId?: string; userId?: string; agentId?: string },
   filter: TenantFilter,
 ): boolean {
   if (memory.tenantId !== filter.organizationId) return false;
+  if (filter.organizationWide === true) return true;
   if (filter.projectId && memory.projectId !== filter.projectId) return false;
+  if (filter.userId && memory.userId !== filter.userId) return false;
+  if (filter.agentId && memory.agentId !== filter.agentId) return false;
+  if (filter.organizationWide === false) {
+    if (!filter.projectId && memory.projectId != null) return false;
+    if (!filter.userId && memory.userId != null) return false;
+    if (!filter.agentId && memory.agentId != null) return false;
+  }
   return true;
 }

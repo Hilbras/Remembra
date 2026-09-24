@@ -41,6 +41,7 @@ test("tenant principals validate opaque identifiers and trusted dimensions", () 
   assert.deepEqual(tenantFilterFromContext(context), {
     organizationId: "org_01",
     projectId: "project.alpha",
+    organizationWide: false,
   });
   assert.equal(tenantDirectoryKey("org_01"), "tenant_b3JnXzAx");
 });

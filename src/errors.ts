@@ -85,11 +85,30 @@ export function inputError(err: unknown, code: "INVALID_INPUT" | "SNAPSHOT_INVAL
   return err;
 }
 
+/** Stable public message for provider and server failures. */
+export function publicErrorMessage(error: unknown): string {
+  if (isRemembraError(error)) {
+    switch (error.code) {
+      case "LLM_ERROR":
+        return "The provider request failed.";
+      case "PROVIDER_TIMEOUT":
+        return "The provider request timed out.";
+      case "IO_ERROR":
+        return "The server could not complete the request.";
+      default:
+        return error.message;
+    }
+  }
+  if (isZodLike(error)) return zodSummary(error);
+  if (error instanceof Error && error.name === "BadRequestError") return error.message;
+  return "The server could not complete the request.";
+}
+
 /** Uniform single-line rendering for MCP tool failures. */
 export function formatToolError(err: unknown): string {
-  if (isRemembraError(err)) return `[${err.code}] ${err.message}`;
+  if (isRemembraError(err)) return `[${err.code}] ${publicErrorMessage(err)}`;
   if (isZodLike(err)) return `[INVALID_INPUT] ${zodSummary(err)}`;
-  return `[INTERNAL] ${err instanceof Error ? err.message : String(err)}`;
+  return `[INTERNAL] ${publicErrorMessage(err)}`;
 }
 
 /** Stable low-cardinality label for metrics (`remembra_errors_total{code}`). */

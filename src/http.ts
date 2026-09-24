@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { timingSafeEqual, createHash } from "node:crypto";
 import { MemoryService } from "./service.js";
 import { DigestInput } from "./types.js";
-import { isRemembraError, statusFor, errorLabel, RemembraError } from "./errors.js";
+import { isRemembraError, statusFor, errorLabel, publicErrorMessage, RemembraError } from "./errors.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { RateLimiter } from "./rate-limiter.js";
@@ -73,23 +73,8 @@ const SECURE_HEADERS: Record<string, string> = {
   "cache-control": "no-store",
 };
 
-function publicErrorMessage(error: unknown): string {
-  if (isRemembraError(error)) {
-    switch (error.code) {
-      case "LLM_ERROR":
-        return "The provider request failed.";
-      case "PROVIDER_TIMEOUT":
-        return "The provider request timed out.";
-      case "IO_ERROR":
-        return "The server could not complete the request.";
-      default:
-        return error.message;
-    }
-  }
-  if (error instanceof Error && (error.name === "ZodError" || error.name === "BadRequestError")) {
-    return error.message;
-  }
-  return "The server could not complete the request.";
+function publicErrorMessageForHttp(error: unknown): string {
+  return publicErrorMessage(error);
 }
 
 const UI_MIME: Record<string, string> = {
@@ -710,7 +695,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       applySecureHeaders(res);
       applyCorsHeaders(res);
       send(res, status, {
-        error: publicErrorMessage(err),
+        error: publicErrorMessageForHttp(err),
         ...(isRemembraError(err) ? { code: err.code } : {}),
       });
     } finally {

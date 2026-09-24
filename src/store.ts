@@ -27,7 +27,7 @@ import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { encryptionEnabled, isEncrypted, encryptBuffer, decryptBuffer } from "./crypto.js";
 import { defaultAccess, defaultOwner } from "./agent.js";
-import { tenantDirectoryKey, type TenantFilter } from "./tenant.js";
+import { memoryBelongsToTenant, tenantDirectoryKey, type TenantFilter } from "./tenant.js";
 
 export interface StoreLockOptions {
   /** Max wait for the cross-process lock (ms). Env: REMEMBRA_LOCK_TIMEOUT_MS. Default 5000. */
@@ -162,6 +162,8 @@ export class MemoryStore implements MemoryBackend {
     return this.withLock(async () => {
       const file = await this.findFile(id, tenant);
       if (!file) return false;
+      const current = await this.parseCached(file);
+      if (!current || (tenant && !this.matchesTenant(current, tenant))) return false;
       await fs.unlink(file);
       this.cache.forget(file);
       return true;
@@ -573,9 +575,7 @@ export class MemoryStore implements MemoryBackend {
   }
 
   private matchesTenant(memory: Memory, tenant: TenantFilter): boolean {
-    if (memory.tenantId !== tenant.organizationId) return false;
-    if (tenant.projectId && memory.projectId !== tenant.projectId) return false;
-    return true;
+    return memoryBelongsToTenant(memory, tenant);
   }
 
   private fileFor(m: Memory): string {

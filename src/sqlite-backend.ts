@@ -37,7 +37,7 @@ import {
   MemoryOwner,
 } from "./types.js";
 import { defaultAccess, defaultOwner } from "./agent.js";
-import type { TenantFilter } from "./tenant.js";
+import { memoryBelongsToTenant, type TenantFilter } from "./tenant.js";
 
 // ---------------------------------------------------------------------------
 //  Id generation (UUIDv7, plan §3.6)
@@ -99,14 +99,50 @@ function assertScope(scope: string): void {
   }
 }
 
+function memoryDimensions(memory: Pick<Memory, "projectId" | "userId" | "agentId">): {
+  projectId?: string;
+  userId?: string;
+  agentId?: string;
+} {
+  return {
+    ...(memory.projectId ? { projectId: memory.projectId } : {}),
+    ...(memory.userId ? { userId: memory.userId } : {}),
+    ...(memory.agentId ? { agentId: memory.agentId } : {}),
+  };
+}
+
+function candidateTenantParams(tenant?: TenantFilter): Array<string | number> {
+  const hasTenant = tenant ? 1 : 0;
+  const params: Array<string | number> = [hasTenant, hasTenant, tenant?.organizationId ?? ""];
+  for (const key of ["projectId", "userId", "agentId"] as const) {
+    const value = tenant?.[key];
+    const mode = !tenant || tenant.organizationWide === true || !value
+      ? tenant?.organizationWide === false && !value
+        ? 1
+        : 0
+      : 2;
+    params.push(mode, mode, mode, value ?? "");
+  }
+  return params;
+}
+
 function tenantWhere(alias: string, tenant?: TenantFilter): { sql: string; params: string[] } {
   const prefix = alias ? `${alias}.` : "";
   if (!tenant) return { sql: `${prefix}tenant_id IS NULL`, params: [] };
   const params = [tenant.organizationId];
   let sql = `${prefix}tenant_id = ?`;
-  if (tenant.projectId) {
-    sql += ` AND ${prefix}project_id = ?`;
-    params.push(tenant.projectId);
+  const exactDimensions = tenant.organizationWide === false;
+  for (const [column, value] of [
+    ["project_id", tenant.projectId],
+    ["user_id", tenant.userId],
+    ["agent_id", tenant.agentId],
+  ] as const) {
+    if (value) {
+      sql += ` AND ${prefix}${column} = ?`;
+      params.push(value);
+    } else if (exactDimensions) {
+      sql += ` AND ${prefix}${column} IS NULL`;
+    }
   }
   return { sql, params };
 }
@@ -170,6 +206,8 @@ CREATE TABLE IF NOT EXISTS memory_versions (
   memory_id  TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
   tenant_id  TEXT,
   project_id TEXT,
+  user_id    TEXT,
+  agent_id   TEXT,
   content    TEXT NOT NULL,
   reason     TEXT,
   created_at TEXT NOT NULL
@@ -181,6 +219,8 @@ CREATE TABLE IF NOT EXISTS memory_audit (
   memory_id  TEXT REFERENCES memories(id),
   tenant_id  TEXT,
   project_id TEXT,
+  user_id    TEXT,
+  agent_id   TEXT,
   action     TEXT NOT NULL CHECK (action IN (
                 'store','update','archive','revive','forget','import'
               )),
@@ -295,7 +335,7 @@ export class SqliteBackend implements MemoryBackend {
       ? this.prepare("DELETE FROM memories_fts WHERE rowid = ?")
       : null;
     this.auditStatement = this.prepare(
-      "INSERT INTO memory_audit (memory_id, tenant_id, project_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO memory_audit (memory_id, tenant_id, project_id, user_id, agent_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     );
     const eligibleFilter = `
       (? = 1 OR m.archived_at IS NULL)
@@ -324,7 +364,9 @@ export class SqliteBackend implements MemoryBackend {
         (? = 0 AND m.tenant_id IS NULL)
         OR (? = 1 AND m.tenant_id = ?)
       )
-      AND (? = '' OR m.project_id = ?)
+      AND ((? = 0) OR (? = 1 AND m.project_id IS NULL) OR (? = 2 AND m.project_id = ?))
+      AND ((? = 0) OR (? = 1 AND m.user_id IS NULL) OR (? = 2 AND m.user_id = ?))
+      AND ((? = 0) OR (? = 1 AND m.agent_id IS NULL) OR (? = 2 AND m.agent_id = ?))
     `;
     const candidateFilter = `${eligibleFilter}
       AND (? = '' OR m.scope = ? OR m.scope = 'global')
@@ -429,12 +471,16 @@ export class SqliteBackend implements MemoryBackend {
       const names = new Set(columns.map((column) => column.name));
       if (!names.has("tenant_id")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN tenant_id TEXT`);
       if (!names.has("project_id")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN project_id TEXT`);
+      if (!names.has("user_id")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN user_id TEXT`);
+      if (!names.has("agent_id")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN agent_id TEXT`);
     }
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_tenant ON memories(tenant_id);
       CREATE INDEX IF NOT EXISTS idx_tenant_scope ON memories(tenant_id, scope);
       CREATE INDEX IF NOT EXISTS idx_versions_tenant ON memory_versions(tenant_id, memory_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_versions_dimensions ON memory_versions(tenant_id, project_id, user_id, agent_id, memory_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_audit_tenant ON memory_audit(tenant_id, memory_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_audit_dimensions ON memory_audit(tenant_id, project_id, user_id, agent_id, memory_id, created_at DESC);
     `);
   }
 
@@ -489,7 +535,7 @@ export class SqliteBackend implements MemoryBackend {
         embedding,
       };
       this.insertRow(memory);
-      this.audit("store", memory.id, { type: memory.type, scope: memory.scope }, provenance, tenant);
+      this.audit("store", memory.id, { type: memory.type, scope: memory.scope }, provenance, tenant, memoryDimensions(memory));
       return memory;
     });
   }
@@ -558,9 +604,7 @@ export class SqliteBackend implements MemoryBackend {
       nowIso,
       includeQuarantined,
     ] as const;
-    const tenantParams = request.tenant
-      ? [1, 1, request.tenant.organizationId, request.tenant.projectId ?? "", request.tenant.projectId ?? ""]
-      : [0, 0, "", "", ""];
+    const tenantParams = candidateTenantParams(request.tenant);
     const candidateParams = [...eligibleParams, scope, scope, ...tenantParams] as const;
     const termsJson = JSON.stringify(request.terms);
 
@@ -616,20 +660,22 @@ export class SqliteBackend implements MemoryBackend {
     tenant?: TenantFilter,
   ): Promise<Memory> {
     return this.withLock(async () => {
-      if (tenant && memory.tenantId !== tenant.organizationId) {
+      if (tenant && !memoryBelongsToTenant(memory, tenant)) {
         throw new RemembraError("NOT_FOUND", `memory ${memory.id} not found`);
       }
       if (!tenant && memory.tenantId) {
         throw new RemembraError("NOT_FOUND", `memory ${memory.id} not found`);
       }
       const scoped = tenantWhere("m", tenant);
-      const existingRow = this.prepare(`SELECT rowid, version, content, tenant_id, project_id FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+      const existingRow = this.prepare(`SELECT rowid, version, content, tenant_id, project_id, user_id, agent_id FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
         .get(memory.id, ...scoped.params) as {
           rowid: number;
           version: number;
           content: string;
           tenant_id: string | null;
           project_id: string | null;
+          user_id: string | null;
+          agent_id: string | null;
         } | undefined;
       if (!existingRow) throw new RemembraError("NOT_FOUND", `memory ${memory.id} not found`);
 
@@ -644,15 +690,21 @@ export class SqliteBackend implements MemoryBackend {
 
       const updated: Memory = {
         ...memory,
-        ...(existingRow.tenant_id ? { tenantId: existingRow.tenant_id } : {}),
-        ...(existingRow.project_id ? { projectId: existingRow.project_id } : {}),
+        tenantId: existingRow.tenant_id ?? undefined,
+        projectId: existingRow.project_id ?? undefined,
+        userId: existingRow.user_id ?? undefined,
+        agentId: existingRow.agent_id ?? undefined,
         version: existingRow.version + 1,
         updatedAt: new Date().toISOString(),
       };
 
       // Snapshot history if content changed.
       if (memory.content !== existingRow.content) {
-        await this.snapshotHistory(memory.id, existingRow.content, opts?.reason, tenant);
+        await this.snapshotHistory(memory.id, existingRow.content, opts?.reason, tenant, {
+          projectId: existingRow.project_id ?? undefined,
+          userId: existingRow.user_id ?? undefined,
+          agentId: existingRow.agent_id ?? undefined,
+        });
       }
 
       this.prepare(`
@@ -701,7 +753,7 @@ export class SqliteBackend implements MemoryBackend {
         this.insertFtsStatement.run(existingRow.rowid, updated.content);
       }
 
-      this.audit("update", updated.id, { reason: opts?.reason }, updated.provenance, tenant);
+      this.audit("update", updated.id, { reason: opts?.reason }, updated.provenance, tenant, memoryDimensions(updated));
       return updated;
     });
   }
@@ -721,7 +773,7 @@ export class SqliteBackend implements MemoryBackend {
         this.deleteFtsStatement.run(Number(row.rowid));
       }
       const updated = rowToMemory({ ...row, archived_at: now, updated_at: now });
-      this.audit("archive", id, undefined, updated?.provenance, tenant);
+      this.audit("archive", id, undefined, updated?.provenance, tenant, updated ? memoryDimensions(updated) : undefined);
       return updated;
     });
   }
@@ -741,7 +793,7 @@ export class SqliteBackend implements MemoryBackend {
         this.insertFtsStatement.run(Number(row.rowid), String(row.content));
       }
       const updated = rowToMemory({ ...row, archived_at: null, last_seen: now, updated_at: now });
-      this.audit("revive", id, undefined, updated?.provenance, tenant);
+      this.audit("revive", id, undefined, updated?.provenance, tenant, updated ? memoryDimensions(updated) : undefined);
       return updated;
     });
   }
@@ -763,12 +815,22 @@ export class SqliteBackend implements MemoryBackend {
     return this.withLock(async () => {
       // Look up the integer rowid for FTS sync.
       const scoped = tenantWhere("m", tenant);
-      const memRow = this.prepare(`SELECT rowid, m.provenance FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
-        .get(id, ...scoped.params) as { rowid: number; provenance: string } | undefined;
+      const memRow = this.prepare(`SELECT rowid, m.provenance, m.project_id, m.user_id, m.agent_id FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+        .get(id, ...scoped.params) as {
+          rowid: number;
+          provenance: string;
+          project_id: string | null;
+          user_id: string | null;
+          agent_id: string | null;
+        } | undefined;
       if (!memRow) return false;
       // Audit before deleting so the FK reference is valid.
       const provenance = parseJson<Memory["provenance"]>(memRow.provenance);
-      this.audit("forget", id, undefined, provenance ?? undefined, tenant);
+      this.audit("forget", id, undefined, provenance ?? undefined, tenant, {
+        projectId: memRow.project_id ?? undefined,
+        userId: memRow.user_id ?? undefined,
+        agentId: memRow.agent_id ?? undefined,
+      });
       // Manually sync FTS before deleting.
       if (this.ftsEnabled && this.deleteFtsStatement && memRow.rowid) {
         try {
@@ -792,16 +854,13 @@ export class SqliteBackend implements MemoryBackend {
 
   async importMemory(m: Memory, tenant?: TenantFilter): Promise<boolean> {
     return this.withLock(async () => {
-      if (
-        (!tenant && m.tenantId) ||
-        (tenant && (m.tenantId !== tenant.organizationId || (tenant.projectId && m.projectId !== tenant.projectId)))
-      ) return false;
+      if ((!tenant && m.tenantId) || (tenant && !memoryBelongsToTenant(m, tenant))) return false;
       const scoped = tenantWhere("m", tenant);
       const existing = this.prepare(`SELECT 1 FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
         .get(m.id, ...scoped.params) as { 1: number } | undefined;
       if (existing) return false;
       this.insertRow(m);
-      this.audit("import", m.id, undefined, m.provenance, tenant);
+      this.audit("import", m.id, undefined, m.provenance, tenant, memoryDimensions(m));
       return true;
     });
   }
@@ -930,17 +989,28 @@ export class SqliteBackend implements MemoryBackend {
     }
   }
 
-  private async snapshotHistory(id: string, oldContent: string, reason?: string, tenant?: TenantFilter): Promise<void> {
+  private async snapshotHistory(
+    id: string,
+    oldContent: string,
+    reason?: string,
+    tenant?: TenantFilter,
+    dimensions?: { projectId?: string; userId?: string; agentId?: string },
+  ): Promise<void> {
     const limit = Number(process.env.REMEMBRA_HISTORY_LIMIT ?? 20);
     if (limit <= 0) return;
-    const scoped = tenantWhere("", tenant);
+    const recordTenant = tenant && dimensions
+      ? { ...tenant, ...dimensions, organizationWide: false }
+      : tenant;
+    const scoped = tenantWhere("", recordTenant);
     this.prepare(
-        "INSERT INTO memory_versions (memory_id, tenant_id, project_id, content, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO memory_versions (memory_id, tenant_id, project_id, user_id, agent_id, content, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         id,
-        tenant?.organizationId ?? null,
-        tenant?.projectId ?? null,
+        recordTenant?.organizationId ?? null,
+        recordTenant?.projectId ?? null,
+        recordTenant?.userId ?? null,
+        recordTenant?.agentId ?? null,
         oldContent,
         reason ?? null,
         new Date().toISOString(),
@@ -962,7 +1032,11 @@ export class SqliteBackend implements MemoryBackend {
     details?: Record<string, unknown>,
     provenance?: Memory["provenance"],
     tenant?: TenantFilter,
+    dimensions?: { projectId?: string; userId?: string; agentId?: string },
   ): void {
+    const recordTenant = tenant && dimensions
+      ? { ...tenant, ...dimensions, organizationWide: false }
+      : tenant;
     const actor = provenance?.agentId
       ? {
           actor: {
@@ -977,8 +1051,10 @@ export class SqliteBackend implements MemoryBackend {
       : {};
     this.auditStatement!.run(
       memoryId,
-      tenant?.organizationId ?? null,
-      tenant?.projectId ?? null,
+      recordTenant?.organizationId ?? null,
+      recordTenant?.projectId ?? null,
+      recordTenant?.userId ?? null,
+      recordTenant?.agentId ?? null,
       action,
       (details || Object.keys(actor).length > 0) ? jsonStr({ ...details, ...actor }) : null,
       new Date().toISOString(),
