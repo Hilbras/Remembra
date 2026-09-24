@@ -111,7 +111,7 @@ Implementation slices:
 2. [x] Versioned tenant fields and explicit signed migration manifest (the
    migration executor and readiness gate remain part of slice 6).
 3. [x] Tenant-aware `MemoryBackend` contract plus file backend enforcement.
-4. [ ] SQLite tenant columns, predicates, history/audit, and candidate SQL.
+4. [x] SQLite tenant columns, predicates, history/audit, and candidate SQL.
 5. [ ] Service authorization, immutable job context, and transport binding.
 6. [ ] Cross-tenant relation/import/export/maintenance hardening and matrix.
 

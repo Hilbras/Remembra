@@ -188,10 +188,15 @@ Schema (auto-created):
 
 | Table | Purpose |
 |-------|---------|
-| `memories` | Main memory rows; BLOB column for embeddings |
+| `memories` | Main memory rows; BLOB embeddings; nullable V5 tenant/project/user/agent columns |
 | `memories_fts` | FTS5 virtual table for keyword search |
 | `memory_versions` | Content-change snapshots (history) |
-| `memory_audit` | Immutable audit log of all mutations |
+| `memory_audit` | Immutable audit log; tenant columns scope strict reads |
+
+Tenant columns are nullable during the expand phase so V4.9 SQLite databases
+remain readable. Strict mode requires the service to supply a tenant filter;
+candidate SQL applies it before limits and count calculation. Unscoped reads
+exclude tenant rows.
 
 FTS5 is optional: if the SQLite build lacks FTS5 support the backend starts
 without the virtual table and degrades to keyword-only scoring with a startup

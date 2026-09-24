@@ -37,6 +37,7 @@ import {
   MemoryOwner,
 } from "./types.js";
 import { defaultAccess, defaultOwner } from "./agent.js";
+import type { TenantFilter } from "./tenant.js";
 
 // ---------------------------------------------------------------------------
 //  Id generation (UUIDv7, plan §3.6)
@@ -98,6 +99,18 @@ function assertScope(scope: string): void {
   }
 }
 
+function tenantWhere(alias: string, tenant?: TenantFilter): { sql: string; params: string[] } {
+  const prefix = alias ? `${alias}.` : "";
+  if (!tenant) return { sql: `${prefix}tenant_id IS NULL`, params: [] };
+  const params = [tenant.organizationId];
+  let sql = `${prefix}tenant_id = ?`;
+  if (tenant.projectId) {
+    sql += ` AND ${prefix}project_id = ?`;
+    params.push(tenant.projectId);
+  }
+  return { sql, params };
+}
+
 // ---------------------------------------------------------------------------
 //  Schema
 // ---------------------------------------------------------------------------
@@ -157,15 +170,20 @@ CREATE INDEX IF NOT EXISTS idx_last_seen   ON memories(last_seen);
 CREATE TABLE IF NOT EXISTS memory_versions (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   memory_id  TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  tenant_id  TEXT,
+  project_id TEXT,
   content    TEXT NOT NULL,
   reason     TEXT,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_versions_memory ON memory_versions(memory_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_versions_tenant ON memory_versions(tenant_id, memory_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS memory_audit (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   memory_id  TEXT REFERENCES memories(id),
+  tenant_id  TEXT,
+  project_id TEXT,
   action     TEXT NOT NULL CHECK (action IN (
                 'store','update','archive','revive','forget','import'
               )),
@@ -173,6 +191,7 @@ CREATE TABLE IF NOT EXISTS memory_audit (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_memory ON memory_audit(memory_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_tenant ON memory_audit(tenant_id, memory_id, created_at DESC);
 `;
 
 // ---------------------------------------------------------------------------
@@ -191,6 +210,7 @@ export interface SqliteOptions {
 }
 
 export class SqliteBackend implements MemoryBackend {
+  readonly tenantCapable = true;
   protected readonly db: Database.Database;
   private readonly idGen: () => string;
   private ftsEnabled: boolean;
@@ -227,11 +247,12 @@ export class SqliteBackend implements MemoryBackend {
     this.db.pragma("foreign_keys = ON");
     this.db.exec(SQLITE_SCHEMA_SQL);
     this.ensureAgentColumns();
+    this.ensureTenantAuxColumns();
     this.allActiveStatement = this.db.prepare(
-      "SELECT * FROM memories WHERE archived_at IS NULL ORDER BY updated_at DESC",
+      "SELECT * FROM memories WHERE archived_at IS NULL AND tenant_id IS NULL ORDER BY updated_at DESC",
     );
     this.allIncludingArchivedStatement = this.db.prepare(
-      "SELECT * FROM memories ORDER BY updated_at DESC",
+      "SELECT * FROM memories WHERE tenant_id IS NULL ORDER BY updated_at DESC",
     );
 
     // Detect FTS5 support.
@@ -267,7 +288,7 @@ export class SqliteBackend implements MemoryBackend {
       ? this.db.prepare("DELETE FROM memories_fts WHERE rowid = ?")
       : null;
     this.auditStatement = this.db.prepare(
-      "INSERT INTO memory_audit (memory_id, action, details, created_at) VALUES (?, ?, ?, ?)",
+      "INSERT INTO memory_audit (memory_id, tenant_id, project_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?)",
     );
     const eligibleFilter = `
       (? = 1 OR m.archived_at IS NULL)
@@ -291,8 +312,16 @@ export class SqliteBackend implements MemoryBackend {
         ) = 0
       )
     `;
+    const tenantFilter = `
+      AND (
+        (? = 0 AND m.tenant_id IS NULL)
+        OR (? = 1 AND m.tenant_id = ?)
+      )
+      AND (? = '' OR m.project_id = ?)
+    `;
     const candidateFilter = `${eligibleFilter}
       AND (? = '' OR m.scope = ? OR m.scope = 'global')
+      ${tenantFilter}
     `;
     const keywordPredicate = `
       EXISTS (
@@ -346,7 +375,7 @@ export class SqliteBackend implements MemoryBackend {
     this.candidateCountStatement = this.db.prepare(`
       SELECT count(*) AS count
       FROM memories AS m
-      WHERE ${eligibleFilter}
+      WHERE ${eligibleFilter}${tenantFilter}
     `);
 
     this.idGen = opts.idGen ?? genId;
@@ -387,11 +416,20 @@ export class SqliteBackend implements MemoryBackend {
     }
   }
 
+  private ensureTenantAuxColumns(): void {
+    for (const table of ["memory_versions", "memory_audit"] as const) {
+      const columns = this.db.pragma(`table_info(${table})`) as Array<{ name: string }>;
+      const names = new Set(columns.map((column) => column.name));
+      if (!names.has("tenant_id")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN tenant_id TEXT`);
+      if (!names.has("project_id")) this.db.exec(`ALTER TABLE ${table} ADD COLUMN project_id TEXT`);
+    }
+  }
+
   // -------------------------------------------------------------------------
   //  Public API (MemoryBackend)
   // -------------------------------------------------------------------------
 
-  async store(input: StoreInput, embedding?: number[]): Promise<Memory> {
+  async store(input: StoreInput, embedding?: number[], tenant?: TenantFilter): Promise<Memory> {
     return this.withLock(async () => {
       const now = new Date().toISOString();
       const id = this.idGen();
@@ -413,6 +451,10 @@ export class SqliteBackend implements MemoryBackend {
         type: input.type,
         content: input.content,
         scope: input.scope,
+        ...(tenant ? { tenantId: tenant.organizationId } : {}),
+        ...(tenant?.projectId ? { projectId: tenant.projectId } : {}),
+        ...(tenant?.userId ? { userId: tenant.userId } : {}),
+        ...(tenant?.agentId ? { agentId: tenant.agentId } : {}),
         tags: input.tags,
         importance: input.importance,
         createdAt: now,
@@ -434,15 +476,16 @@ export class SqliteBackend implements MemoryBackend {
         embedding,
       };
       this.insertRow(memory);
-      this.audit("store", memory.id, { type: memory.type, scope: memory.scope }, provenance);
+      this.audit("store", memory.id, { type: memory.type, scope: memory.scope }, provenance, tenant);
       return memory;
     });
   }
 
-  async get(id: string): Promise<Memory | null> {
+  async get(id: string, tenant?: TenantFilter): Promise<Memory | null> {
+    const scoped = tenantWhere("m", tenant);
     const row = this.db
-      .prepare("SELECT * FROM memories WHERE id = ?")
-      .get(id) as Record<string, unknown> | undefined;
+      .prepare(`SELECT m.* FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+      .get(id, ...scoped.params) as Record<string, unknown> | undefined;
     if (!row) return null;
     try {
       return rowToMemory(row);
@@ -452,11 +495,20 @@ export class SqliteBackend implements MemoryBackend {
     }
   }
 
-  async all(includeArchived = false): Promise<Memory[]> {
-    const statement = includeArchived
-      ? this.allIncludingArchivedStatement
-      : this.allActiveStatement;
-    const rows = statement.all() as Record<string, unknown>[];
+  async all(includeArchived = false, tenant?: TenantFilter): Promise<Memory[]> {
+    let rows: Record<string, unknown>[];
+    if (!tenant) {
+      const statement = includeArchived
+        ? this.allIncludingArchivedStatement
+        : this.allActiveStatement;
+      rows = statement.all() as Record<string, unknown>[];
+    } else {
+      const scoped = tenantWhere("m", tenant);
+      const archived = includeArchived ? "" : " AND m.archived_at IS NULL";
+      rows = this.db
+        .prepare(`SELECT m.* FROM memories AS m WHERE ${scoped.sql}${archived} ORDER BY m.updated_at DESC`)
+        .all(...scoped.params) as Record<string, unknown>[];
+    }
     return rows.map(rowToMemory).filter((m): m is Memory => m !== null);
   }
 
@@ -495,7 +547,10 @@ export class SqliteBackend implements MemoryBackend {
       nowIso,
       includeQuarantined,
     ] as const;
-    const candidateParams = [...eligibleParams, scope, scope] as const;
+    const tenantParams = request.tenant
+      ? [1, 1, request.tenant.organizationId, request.tenant.projectId ?? "", request.tenant.projectId ?? ""]
+      : [0, 0, "", "", ""];
+    const candidateParams = [...eligibleParams, scope, scope, ...tenantParams] as const;
     const termsJson = JSON.stringify(request.terms);
 
     try {
@@ -530,7 +585,7 @@ export class SqliteBackend implements MemoryBackend {
       }
       if (byId.size > maxCandidates) return partial();
 
-      const countRow = this.candidateCountStatement.get(...eligibleParams) as { count: number };
+      const countRow = this.candidateCountStatement.get(...eligibleParams, ...tenantParams) as { count: number };
       return {
         memories: [...byId.values()],
         coverage: "complete",
@@ -547,11 +602,25 @@ export class SqliteBackend implements MemoryBackend {
   async update(
     memory: Memory,
     opts?: { expectedVersion?: number; reason?: string },
+    tenant?: TenantFilter,
   ): Promise<Memory> {
     return this.withLock(async () => {
+      if (tenant && memory.tenantId !== tenant.organizationId) {
+        throw new RemembraError("NOT_FOUND", `memory ${memory.id} not found`);
+      }
+      if (!tenant && memory.tenantId) {
+        throw new RemembraError("NOT_FOUND", `memory ${memory.id} not found`);
+      }
+      const scoped = tenantWhere("m", tenant);
       const existingRow = this.db
-        .prepare("SELECT rowid, version, content FROM memories WHERE id = ?")
-        .get(memory.id) as { rowid: number; version: number; content: string } | undefined;
+        .prepare(`SELECT rowid, version, content, tenant_id, project_id FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+        .get(memory.id, ...scoped.params) as {
+          rowid: number;
+          version: number;
+          content: string;
+          tenant_id: string | null;
+          project_id: string | null;
+        } | undefined;
       if (!existingRow) throw new RemembraError("NOT_FOUND", `memory ${memory.id} not found`);
 
       if (opts?.expectedVersion !== undefined) {
@@ -565,13 +634,15 @@ export class SqliteBackend implements MemoryBackend {
 
       const updated: Memory = {
         ...memory,
+        ...(existingRow.tenant_id ? { tenantId: existingRow.tenant_id } : {}),
+        ...(existingRow.project_id ? { projectId: existingRow.project_id } : {}),
         version: existingRow.version + 1,
         updatedAt: new Date().toISOString(),
       };
 
       // Snapshot history if content changed.
       if (memory.content !== existingRow.content) {
-        await this.snapshotHistory(memory.id, existingRow.content, opts?.reason);
+        await this.snapshotHistory(memory.id, existingRow.content, opts?.reason, tenant);
       }
 
       this.db
@@ -582,7 +653,7 @@ export class SqliteBackend implements MemoryBackend {
             valid_from = ?, valid_until = ?, observed_at = ?, superseded_by = ?, meta = ?, retention = ?,
             relations = ?, version = ?, created_at = ?, updated_at = ?,
             last_seen = ?, archived_at = ?, embedding = ?
-          WHERE id = ?
+          WHERE id = ? AND ${tenantWhere("", tenant).sql}
         `)
         .run(
           updated.type,
@@ -613,6 +684,7 @@ export class SqliteBackend implements MemoryBackend {
           updated.archivedAt ?? null,
           embedToBlob(updated.embedding),
           updated.id,
+          ...scoped.params,
         );
 
       if (this.ftsEnabled && this.deleteFtsStatement && this.insertFtsStatement && updated.content !== existingRow.content) {
@@ -620,77 +692,81 @@ export class SqliteBackend implements MemoryBackend {
         this.insertFtsStatement.run(existingRow.rowid, updated.content);
       }
 
-      this.audit("update", updated.id, { reason: opts?.reason }, updated.provenance);
+      this.audit("update", updated.id, { reason: opts?.reason }, updated.provenance, tenant);
       return updated;
     });
   }
 
-  async archive(id: string): Promise<Memory | null> {
+  async archive(id: string, tenant?: TenantFilter): Promise<Memory | null> {
     return this.withLock(async () => {
+      const scoped = tenantWhere("m", tenant);
       const row = this.db
-        .prepare("SELECT rowid, * FROM memories WHERE id = ? AND archived_at IS NULL")
-        .get(id) as Record<string, unknown> | undefined;
+        .prepare(`SELECT rowid, m.* FROM memories AS m WHERE m.id = ? AND ${scoped.sql} AND m.archived_at IS NULL`)
+        .get(id, ...scoped.params) as Record<string, unknown> | undefined;
       if (!row) return null;
       const now = new Date().toISOString();
       this.db
         .prepare(
-          "UPDATE memories SET archived_at = ?, updated_at = ? WHERE id = ?",
+          `UPDATE memories SET archived_at = ?, updated_at = ? WHERE id = ? AND ${tenantWhere("", tenant).sql}`,
         )
-        .run(now, now, id);
+        .run(now, now, id, ...tenantWhere("", tenant).params);
       if (this.ftsEnabled && this.deleteFtsStatement) {
         this.deleteFtsStatement.run(Number(row.rowid));
       }
       const updated = rowToMemory({ ...row, archived_at: now, updated_at: now });
-      this.audit("archive", id, undefined, updated?.provenance);
+      this.audit("archive", id, undefined, updated?.provenance, tenant);
       return updated;
     });
   }
 
-  async revive(id: string): Promise<Memory | null> {
+  async revive(id: string, tenant?: TenantFilter): Promise<Memory | null> {
     return this.withLock(async () => {
+      const scoped = tenantWhere("m", tenant);
       const row = this.db
-        .prepare("SELECT rowid, * FROM memories WHERE id = ? AND archived_at IS NOT NULL")
-        .get(id) as Record<string, unknown> | undefined;
+        .prepare(`SELECT rowid, m.* FROM memories AS m WHERE m.id = ? AND ${scoped.sql} AND m.archived_at IS NOT NULL`)
+        .get(id, ...scoped.params) as Record<string, unknown> | undefined;
       if (!row) return null;
       const now = new Date().toISOString();
       this.db
         .prepare(
-          "UPDATE memories SET archived_at = NULL, last_seen = ?, updated_at = ? WHERE id = ?",
+          `UPDATE memories SET archived_at = NULL, last_seen = ?, updated_at = ? WHERE id = ? AND ${tenantWhere("", tenant).sql}`,
         )
-        .run(now, now, id);
+        .run(now, now, id, ...tenantWhere("", tenant).params);
       if (this.ftsEnabled && this.insertFtsStatement) {
         this.insertFtsStatement.run(Number(row.rowid), String(row.content));
       }
       const updated = rowToMemory({ ...row, archived_at: null, last_seen: now, updated_at: now });
-      this.audit("revive", id, undefined, updated?.provenance);
+      this.audit("revive", id, undefined, updated?.provenance, tenant);
       return updated;
     });
   }
 
-  async touch(id: string): Promise<void> {
+  async touch(id: string, tenant?: TenantFilter): Promise<void> {
     return this.withLock(async () => {
+      const scoped = tenantWhere("m", tenant);
       const row = this.db
-        .prepare("SELECT last_seen, updated_at FROM memories WHERE id = ?")
-        .get(id) as { last_seen: string; updated_at: string } | undefined;
+        .prepare(`SELECT last_seen, updated_at FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+        .get(id, ...scoped.params) as { last_seen: string; updated_at: string } | undefined;
       if (!row) return;
       const last = Date.parse(row.last_seen ?? row.updated_at);
       if (Number.isFinite(last) && Date.now() - last < 3_600_000) return;
       this.db
-        .prepare("UPDATE memories SET last_seen = ? WHERE id = ?")
-        .run(new Date().toISOString(), id);
+        .prepare(`UPDATE memories SET last_seen = ? WHERE id = ? AND ${tenantWhere("", tenant).sql}`)
+        .run(new Date().toISOString(), id, ...tenantWhere("", tenant).params);
     });
   }
 
-  async forget(id: string): Promise<boolean> {
+  async forget(id: string, tenant?: TenantFilter): Promise<boolean> {
     return this.withLock(async () => {
       // Look up the integer rowid for FTS sync.
+      const scoped = tenantWhere("m", tenant);
       const memRow = this.db
-        .prepare("SELECT rowid, provenance FROM memories WHERE id = ?")
-        .get(id) as { rowid: number; provenance: string } | undefined;
+        .prepare(`SELECT rowid, m.provenance FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+        .get(id, ...scoped.params) as { rowid: number; provenance: string } | undefined;
       if (!memRow) return false;
       // Audit before deleting so the FK reference is valid.
       const provenance = parseJson<Memory["provenance"]>(memRow.provenance);
-      this.audit("forget", id, undefined, provenance ?? undefined);
+      this.audit("forget", id, undefined, provenance ?? undefined, tenant);
       // Manually sync FTS before deleting.
       if (this.ftsEnabled && this.deleteFtsStatement && memRow.rowid) {
         try {
@@ -700,34 +776,45 @@ export class SqliteBackend implements MemoryBackend {
         }
       }
       // Delete child rows first (foreign key constraints).
-      this.db.prepare("DELETE FROM memory_audit WHERE memory_id = ?").run(id);
-      this.db.prepare("DELETE FROM memory_versions WHERE memory_id = ?").run(id);
+      const childScope = tenantWhere("", tenant);
+      this.db
+        .prepare(`DELETE FROM memory_audit WHERE memory_id = ? AND ${childScope.sql}`)
+        .run(id, ...childScope.params);
+      this.db
+        .prepare(`DELETE FROM memory_versions WHERE memory_id = ? AND ${childScope.sql}`)
+        .run(id, ...childScope.params);
       const info = this.db
-        .prepare("DELETE FROM memories WHERE id = ?")
-        .run(id);
+        .prepare(`DELETE FROM memories WHERE id = ? AND ${tenantWhere("", tenant).sql}`)
+        .run(id, ...tenantWhere("", tenant).params);
       if (info.changes === 0) return false;
       return true;
     });
   }
 
-  async importMemory(m: Memory): Promise<boolean> {
+  async importMemory(m: Memory, tenant?: TenantFilter): Promise<boolean> {
     return this.withLock(async () => {
+      if (
+        (!tenant && m.tenantId) ||
+        (tenant && (m.tenantId !== tenant.organizationId || (tenant.projectId && m.projectId !== tenant.projectId)))
+      ) return false;
+      const scoped = tenantWhere("m", tenant);
       const existing = this.db
-        .prepare("SELECT 1 FROM memories WHERE id = ?")
-        .get(m.id) as { 1: number } | undefined;
+        .prepare(`SELECT 1 FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+        .get(m.id, ...scoped.params) as { 1: number } | undefined;
       if (existing) return false;
       this.insertRow(m);
-      this.audit("import", m.id, undefined, m.provenance);
+      this.audit("import", m.id, undefined, m.provenance, tenant);
       return true;
     });
   }
 
-  async history(id: string): Promise<HistoryEntry[]> {
+  async history(id: string, tenant?: TenantFilter): Promise<HistoryEntry[]> {
+    const scoped = tenantWhere("", tenant);
     const rows = this.db
       .prepare(
-        "SELECT content, reason, created_at FROM memory_versions WHERE memory_id = ? ORDER BY created_at DESC",
+        `SELECT content, reason, created_at FROM memory_versions WHERE memory_id = ? AND ${scoped.sql} ORDER BY created_at DESC`,
       )
-      .all(id) as Array<{ content: string; reason: string | null; created_at: string }>;
+      .all(id, ...scoped.params) as Array<{ content: string; reason: string | null; created_at: string }>;
     return rows.map((r, idx) => ({
       file: `snapshot-${idx}.md`,
       content: r.content,
@@ -746,11 +833,17 @@ export class SqliteBackend implements MemoryBackend {
   }
 
   /** V4.4: query recent audit events. */
-  async getAudit(opts?: { limit?: number; since?: string }): Promise<Record<string, unknown>[]> {
-    let sql = "SELECT memory_id, action, details, created_at FROM memory_audit";
+  async getAudit(
+    opts?: { limit?: number; since?: string },
+    tenant?: TenantFilter,
+  ): Promise<Record<string, unknown>[]> {
+    let sql = "SELECT memory_id, action, details, created_at FROM memory_audit WHERE 1 = 1";
     const params: unknown[] = [];
+    const scoped = tenantWhere("", tenant);
+    sql += ` AND ${scoped.sql}`;
+    params.push(...scoped.params);
     if (opts?.since) {
-      sql += " WHERE created_at >= ?";
+      sql += " AND created_at >= ?";
       params.push(opts.since);
     }
     sql += " ORDER BY created_at DESC";
@@ -830,23 +923,31 @@ export class SqliteBackend implements MemoryBackend {
     }
   }
 
-  private async snapshotHistory(id: string, oldContent: string, reason?: string): Promise<void> {
+  private async snapshotHistory(id: string, oldContent: string, reason?: string, tenant?: TenantFilter): Promise<void> {
     const limit = Number(process.env.REMEMBRA_HISTORY_LIMIT ?? 20);
     if (limit <= 0) return;
+    const scoped = tenantWhere("", tenant);
     this.db
       .prepare(
-        "INSERT INTO memory_versions (memory_id, content, reason, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO memory_versions (memory_id, tenant_id, project_id, content, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
       )
-      .run(id, oldContent, reason ?? null, new Date().toISOString());
+      .run(
+        id,
+        tenant?.organizationId ?? null,
+        tenant?.projectId ?? null,
+        oldContent,
+        reason ?? null,
+        new Date().toISOString(),
+      );
     metrics.inc("remembra_history_snapshots_total");
     if (limit > 0) {
       this.db
         .prepare(
-          "DELETE FROM memory_versions WHERE id NOT IN (" +
-          "SELECT id FROM memory_versions WHERE memory_id = ? ORDER BY created_at DESC LIMIT ?" +
+          "DELETE FROM memory_versions WHERE " + scoped.sql + " AND id NOT IN (" +
+          "SELECT id FROM memory_versions WHERE memory_id = ? AND " + scoped.sql + " ORDER BY created_at DESC LIMIT ?" +
           ")",
         )
-        .run(id, limit);
+        .run(...scoped.params, id, ...scoped.params, limit);
     }
   }
 
@@ -855,6 +956,7 @@ export class SqliteBackend implements MemoryBackend {
     memoryId: string | null,
     details?: Record<string, unknown>,
     provenance?: Memory["provenance"],
+    tenant?: TenantFilter,
   ): void {
     const actor = provenance?.agentId
       ? {
@@ -870,6 +972,8 @@ export class SqliteBackend implements MemoryBackend {
       : {};
     this.auditStatement.run(
       memoryId,
+      tenant?.organizationId ?? null,
+      tenant?.projectId ?? null,
       action,
       (details || Object.keys(actor).length > 0) ? jsonStr({ ...details, ...actor }) : null,
       new Date().toISOString(),
@@ -934,14 +1038,15 @@ export class SqliteBackend implements MemoryBackend {
    * FTS5-compatible search: returns IDs of matching memories.
    * Falls back to empty when FTS5 is unavailable (caller should use keyword scoring).
    */
-  ftsSearch(query: string): string[] {
+  ftsSearch(query: string, tenant?: TenantFilter): string[] {
     if (!this.ftsEnabled) return [];
     try {
+      const scoped = tenantWhere("m", tenant);
       const rows = this.db
         .prepare(
-          "SELECT m.id FROM memories_fts JOIN memories AS m ON m.rowid = memories_fts.rowid WHERE memories_fts MATCH ?",
+          `SELECT m.id FROM memories_fts JOIN memories AS m ON m.rowid = memories_fts.rowid WHERE memories_fts MATCH ? AND ${scoped.sql}`,
         )
-        .all(query) as Array<{ id: string }>;
+        .all(query, ...scoped.params) as Array<{ id: string }>;
       return rows.map((r) => r.id);
     } catch {
       return [];

@@ -34,6 +34,10 @@ V5 work is additive until the tenant/schema migration contract is approved.
 - **File-backend tenant boundary** adds encoded tenant namespaces and
   tenant-filtered point reads, writes, lifecycle operations, and history;
   unscoped legacy reads never enumerate tenant directories.
+- **SQLite tenant boundary** adds nullable tenant/project/user/agent columns,
+  tenant-filtered point/lifecycle/history/audit operations, FTS filtering, and
+  candidate predicates before `LIMIT`/count calculation. Strict service
+  binding remains the next slice.
 
 ---
 

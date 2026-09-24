@@ -57,14 +57,28 @@ test("SQLite preserves optional V5 tenant metadata and V4 rows remain readable",
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-tenant-sqlite-"));
   const store = new SqliteBackend({ root: dir });
   const tenant = memory({ tenantId: "org_01", projectId: "project.alpha", userId: "user-1", agentId: "agent-1" });
-  assert.equal(await store.importMemory(tenant), true);
-  const loaded = await store.get(tenant.id);
+  assert.equal(await store.importMemory(tenant, {
+    organizationId: "org_01",
+    projectId: "project.alpha",
+    userId: "user-1",
+    agentId: "agent-1",
+  }), true);
+  const loaded = await store.get(tenant.id, {
+    organizationId: "org_01",
+    projectId: "project.alpha",
+    userId: "user-1",
+    agentId: "agent-1",
+  });
   assert.equal(loaded?.tenantId, "org_01");
   assert.equal(loaded?.projectId, "project.alpha");
   assert.equal(loaded?.userId, "user-1");
   assert.equal(loaded?.agentId, "agent-1");
   if (!loaded) throw new Error("expected tenant memory");
-  const updated = await store.update({ ...loaded, content: "Updated tenant metadata" });
+  const updated = await store.update(
+    { ...loaded, content: "Updated tenant metadata" },
+    undefined,
+    { organizationId: "org_01", projectId: "project.alpha" },
+  );
   assert.equal(updated.tenantId, "org_01");
   assert.equal(updated.projectId, "project.alpha");
   assert.equal(updated.agentId, "agent-1");

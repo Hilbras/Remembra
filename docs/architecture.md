@@ -141,11 +141,12 @@ provenance policy. See [v5-policy.md](v5-policy.md).
 
 `src/tenant.ts` defines the host-minted, immutable tenant context and
 fail-closed identifier/matching primitives. `src/tenant-migration.ts` defines
-the canonical HMAC-signed migration manifest. The file backend now accepts
-optional tenant filters and keeps tenant namespaces out of unscoped legacy
-reads; SQLite and service/transport enforcement remain staged in
-[v5-tenant-spec.md](v5-tenant-spec.md). Strict mode will require these contexts
-at every backend and transport boundary.
+the canonical HMAC-signed migration manifest. The file and SQLite backends now
+accept optional tenant filters, hide tenant rows from unscoped legacy reads,
+and apply tenant predicates to point/candidate/history/audit paths. Service and
+transport enforcement remain staged in [v5-tenant-spec.md](v5-tenant-spec.md).
+Strict mode will require these contexts at every backend and transport
+boundary.
 
 ## Schema versioning
 
