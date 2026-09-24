@@ -7,6 +7,7 @@ export type { ContextMemory, ContextResult } from "./context.js";
 import type {
   BatchExecutionMetadata,
   BatchOutcome,
+  BatchRequest,
   BatchSummary,
   DigestInput,
   Memory,
@@ -50,11 +51,14 @@ export type SdkStoreInput = Pick<StoreInput, "type" | "content"> &
 export type SdkBatchUpdateItem = { id: string } & Partial<Omit<UpdateInput, "id">>;
 
 /** SDK-friendly batch input; server validation remains authoritative. */
-export type SdkBatchRequest =
+export type SdkBatchRequestInput =
   | { operation: "store"; items: SdkStoreInput[] }
   | { operation: "update"; items: SdkBatchUpdateItem[] }
   | { operation: "delete"; ids: string[] }
   | { operation: "export"; ids: string[] };
+
+/** Preserve the pre-V5.4 full BatchRequest type while accepting SDK defaults. */
+export type SdkBatchRequest = BatchRequest | SdkBatchRequestInput;
 
 export const MAX_SDK_TIMEOUT_MS = 120_000;
 
@@ -535,7 +539,7 @@ export class Remembra {
       throw new TypeError("retry is only supported for read-only requests");
     }
     if (options.idempotencyKey !== undefined
-      && (method !== "POST" || path !== "/memories/batch")) {
+      && (method !== "POST" || path !== "/memories/batch" || isBatchExportRequest(body))) {
       throw new TypeError("idempotencyKey is only supported for batch mutations");
     }
     if (options.idempotencyKey !== undefined && !isValidIdempotencyKey(options.idempotencyKey)) {
@@ -592,7 +596,7 @@ export class Remembra {
     headers.set(REQUEST_ID_HEADER, requestId);
     const idempotencyKey = options.idempotencyKey ?? headers.get(IDEMPOTENCY_KEY_HEADER) ?? undefined;
     if (idempotencyKey !== undefined) {
-      if (method !== "POST" || path !== "/memories/batch") {
+      if (method !== "POST" || path !== "/memories/batch" || isBatchExportRequest(body)) {
         throw new TypeError("idempotencyKey is only supported for batch mutations");
       }
       if (!isValidIdempotencyKey(idempotencyKey)) {
@@ -657,6 +661,11 @@ export class Remembra {
       if (controller) options.signal?.removeEventListener("abort", onAbort);
     }
   }
+}
+
+function isBatchExportRequest(value: unknown): boolean {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    && (value as { operation?: unknown }).operation === "export";
 }
 
 function shouldRetryRequest(error: unknown): boolean {

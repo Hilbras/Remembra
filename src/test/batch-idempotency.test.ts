@@ -1,12 +1,15 @@
+import Database from "better-sqlite3";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { FileBatchIdempotencyStore } from "../batch-idempotency-store.js";
+import { FileBatchIdempotencyStore, batchIdempotencyFingerprint, batchIdempotencyScope } from "../batch-idempotency-store.js";
 import { createHttpServer } from "../http.js";
 import { MemoryService } from "../service.js";
 import { MemoryStore } from "../store.js";
+import { createTenantContext } from "../tenant.js";
+import { RemembraError } from "../errors.js";
 
 async function temporaryRoot(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -23,22 +26,23 @@ test("batch idempotency records replay durably and rejects a changed request", a
   const root = await temporaryRoot("remembra-idempotency-store-");
   try {
     const firstStore = new FileBatchIdempotencyStore(path.join(root, "claims"));
-    const input = { scope: "tenant:alpha", key: "batch-001", fingerprint: "fingerprint-a" };
+    const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "batch-001", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
     assert.deepEqual(await firstStore.claim(input), { status: "fresh" });
     await firstStore.complete({ ...input, response: { operation: "store", ids: ["m1"] } });
     const claimFiles = await fs.readdir(path.join(root, "claims"));
-    assert.equal(claimFiles.length, 1);
-    assert.doesNotMatch(claimFiles[0]!, /batch-001|tenant:alpha/);
-    const claimText = await fs.readFile(path.join(root, "claims", claimFiles[0]!), "utf8");
+    assert.ok(claimFiles.includes("claims.sqlite"));
+    assert.ok(claimFiles.includes("claims.key"));
+    assert.ok(claimFiles.every((file) => !/batch-001|tenant:alpha/.test(file)));
+    const claimText = await fs.readFile(firstStore.databasePath, "utf8");
     assert.doesNotMatch(claimText, /batch-001|tenant:alpha/);
 
     const restartedStore = new FileBatchIdempotencyStore(path.join(root, "claims"));
-    assert.deepEqual(await restartedStore.claim({ ...input, fingerprint: "fingerprint-a" }), {
+    assert.deepEqual(await restartedStore.claim({ ...input, fingerprint: batchIdempotencyFingerprint("fingerprint-a") }), {
       status: "replay",
       response: { operation: "store", ids: ["m1"] },
     });
     await assert.rejects(
-      () => restartedStore.claim({ ...input, fingerprint: "fingerprint-b" }),
+      () => restartedStore.claim({ ...input, fingerprint: batchIdempotencyFingerprint("fingerprint-b") }),
       expectCode("CONFLICT"),
     );
   } finally {
@@ -50,9 +54,72 @@ test("batch idempotency fails closed while a claim is in progress", async () => 
   const root = await temporaryRoot("remembra-idempotency-progress-");
   try {
     const store = new FileBatchIdempotencyStore(path.join(root, "claims"));
-    const input = { scope: "tenant:alpha", key: "batch-002", fingerprint: "fingerprint-a" };
+    const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "batch-002", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
     assert.deepEqual(await store.claim(input), { status: "fresh" });
     await assert.rejects(() => store.claim(input), expectCode("SERVICE_UNAVAILABLE"));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("batch idempotency rejects tampered claim records", async () => {
+  const root = await temporaryRoot("remembra-idempotency-tamper-");
+  const store = new FileBatchIdempotencyStore(path.join(root, "claims"));
+  const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "batch-tamper", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
+  try {
+    assert.deepEqual(await store.claim(input), { status: "fresh" });
+    const database = new Database(store.databasePath);
+    database.prepare("UPDATE batch_idempotency_claims SET mac = ?").run("tampered");
+    database.close();
+    await assert.rejects(() => store.claim(input), expectCode("SERVICE_UNAVAILABLE"));
+  } finally {
+    store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("batch idempotency refuses to strand a completed mutation on oversized responses", async () => {
+  const root = await temporaryRoot("remembra-idempotency-oversized-");
+  const store = new FileBatchIdempotencyStore(path.join(root, "claims"), { maxBytes: 1024 });
+  const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "batch-oversized", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
+  try {
+    assert.deepEqual(await store.claim(input), { status: "fresh" });
+    await assert.rejects(
+      () => store.complete({ ...input, response: { text: "x".repeat(2000) } }),
+      expectCode("SERVICE_UNAVAILABLE"),
+    );
+    await assert.rejects(() => store.claim(input), expectCode("SERVICE_UNAVAILABLE"));
+  } finally {
+    store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("batch idempotency coordinates capacity across concurrent claims", async () => {
+  const root = await temporaryRoot("remembra-idempotency-capacity-");
+  try {
+    const store = new FileBatchIdempotencyStore(path.join(root, "claims"), { maxEntries: 1 });
+    const results = await Promise.allSettled(
+      Array.from({ length: 8 }, (_, index) =>
+        store.claim({ scope: batchIdempotencyScope("tenant:alpha"), key: `batch-${index}`, fingerprint: batchIdempotencyFingerprint(`fingerprint-${index}`) }),
+      ),
+    );
+    assert.equal(results.filter((result) => result.status === "fulfilled" && result.value.status === "fresh").length, 1);
+    assert.equal(results.filter((result) => result.status === "rejected").length, 7);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("invalidating idempotency state prevents replay after a data restore", async () => {
+  const root = await temporaryRoot("remembra-idempotency-invalidate-");
+  try {
+    const store = new FileBatchIdempotencyStore(path.join(root, "claims"));
+    const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "batch-invalidate", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
+    assert.deepEqual(await store.claim(input), { status: "fresh" });
+    await store.complete({ ...input, response: { operation: "store" } });
+    await store.invalidate();
+    assert.deepEqual(await store.claim(input), { status: "fresh" });
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -63,9 +130,8 @@ test("batch idempotency refuses a symlinked claim directory", async () => {
   const outside = await temporaryRoot("remembra-idempotency-outside-");
   try {
     await fs.symlink(outside, path.join(root, "claims"));
-    const store = new FileBatchIdempotencyStore(path.join(root, "claims"));
-    await assert.rejects(
-      () => store.claim({ scope: "tenant:alpha", key: "batch-link", fingerprint: "fingerprint-a" }),
+    assert.throws(
+      () => new FileBatchIdempotencyStore(path.join(root, "claims")),
       expectCode("SERVICE_UNAVAILABLE"),
     );
   } finally {
@@ -78,15 +144,13 @@ test("batch idempotency never expires an in-progress claim into a duplicate writ
   const root = await temporaryRoot("remembra-idempotency-expiry-");
   const claimRoot = path.join(root, "claims");
   try {
-    const store = new FileBatchIdempotencyStore(claimRoot, { maxAgeMs: 60_000 });
-    const input = { scope: "tenant:alpha", key: "batch-stuck", fingerprint: "fingerprint-a" };
+    let now = Date.now();
+    const store = new FileBatchIdempotencyStore(claimRoot, { maxAgeMs: 60_000, now: () => now });
+    const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "batch-stuck", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
     assert.deepEqual(await store.claim(input), { status: "fresh" });
-    const [claimFile] = await fs.readdir(claimRoot);
-    assert.ok(claimFile);
-    const old = new Date(Date.now() - 120_000);
-    await fs.utimes(path.join(claimRoot, claimFile), old, old);
+    now += 120_000;
 
-    const restarted = new FileBatchIdempotencyStore(claimRoot, { maxAgeMs: 60_000 });
+    const restarted = new FileBatchIdempotencyStore(claimRoot, { maxAgeMs: 60_000, now: () => now });
     await assert.rejects(() => restarted.claim(input), expectCode("SERVICE_UNAVAILABLE"));
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -135,6 +199,64 @@ test("HTTP batch idempotency is scoped after authentication", async () => {
   }
 });
 
+test("batch replay rechecks current tenant membership before returning a result", async () => {
+  const root = await temporaryRoot("remembra-idempotency-reauth-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  let valid = true;
+  const tenant = createTenantContext({
+    organizationId: "org-alpha",
+    userId: "user-alpha",
+    membershipVersion: "1",
+    scopes: ["global"],
+    capabilities: ["tenant:read", "tenant:write"],
+  });
+  const service = new MemoryService(new MemoryStore(path.join(root, "memories")), {
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+    verifyTenantContext: async () => valid,
+    batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(root, "claims")),
+  });
+  const options = { idempotencyKey: "batch-reauth", idempotencyScope: "a".repeat(64), tenant };
+  try {
+    await service.batch({ operation: "store", items: [{ type: "fact", content: "authorized once" }] }, options);
+    valid = false;
+    await assert.rejects(
+      () => service.batch({ operation: "store", items: [{ type: "fact", content: "authorized once" }] }, options),
+      expectCode("TENANT_REQUIRED"),
+    );
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("ambiguous batch outcomes remain fail-closed instead of becoming replayable failures", async () => {
+  const root = await temporaryRoot("remembra-idempotency-ambiguous-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  const backend = new MemoryStore(path.join(root, "memories"));
+  const originalStore = backend.store.bind(backend);
+  (backend as unknown as { store: typeof backend.store }).store = async (input, embedding, tenant) => {
+    await originalStore(input, embedding, tenant);
+    throw new RemembraError("IO_ERROR", "write outcome is unknown");
+  };
+  const service = new MemoryService(backend, {
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+    batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(root, "claims")),
+  });
+  const options = { idempotencyKey: "batch-ambiguous", idempotencyScope: batchIdempotencyScope("test-client") };
+  const request = { operation: "store" as const, items: [{ type: "fact" as const, content: "possibly written" }] };
+  try {
+    await assert.rejects(() => service.batch(request, options), expectCode("SERVICE_UNAVAILABLE"));
+    assert.equal((await service.list({})).memories.length, 1);
+    await assert.rejects(() => service.batch(request, options), expectCode("SERVICE_UNAVAILABLE"));
+    assert.equal((await service.list({})).memories.length, 1);
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("MemoryService replays a durable batch without creating duplicate memories", async () => {
   const root = await temporaryRoot("remembra-idempotency-service-");
   await fs.mkdir(path.join(root, "memories"), { recursive: true });
@@ -143,7 +265,7 @@ test("MemoryService replays a durable batch without creating duplicate memories"
     decayIntervalMs: Number.MAX_SAFE_INTEGER,
     batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(root, "claims")),
   });
-  const options = { idempotencyKey: "batch-003", idempotencyScope: "test-client" };
+  const options = { idempotencyKey: "batch-003", idempotencyScope: batchIdempotencyScope("test-client") };
   try {
     const first = await service.batch({
       operation: "store",
@@ -159,6 +281,12 @@ test("MemoryService replays a durable batch without creating duplicate memories"
     assert.equal(replay.results[0]?.id, first.results[0]?.id);
     assert.equal((replay.execution as { idempotency: string }).idempotency, "replayed");
     assert.equal((await service.list({})).memories.length, 1);
+
+    const deleteKey = { idempotencyKey: "batch-delete", idempotencyScope: batchIdempotencyScope("test-client") };
+    const deleted = await service.batch({ operation: "delete", ids: [first.results[0]?.id ?? ""] }, deleteKey);
+    const deletedReplay = await service.batch({ operation: "delete", ids: [first.results[0]?.id ?? ""] }, deleteKey);
+    assert.equal(deletedReplay.results[0]?.id, deleted.results[0]?.id);
+    assert.equal((deletedReplay.execution as { idempotency: string }).idempotency, "replayed");
 
     await assert.rejects(
       () => service.batch({

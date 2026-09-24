@@ -51,6 +51,16 @@ const backendSelection = await selectInitialBackend(validatedRoot);
 const store = backendSelection.store;
 const operatorSnapshotKey = startup.snapshotKey;
 const argv = process.argv.slice(2);
+let batchIdempotencyStore: FileBatchIdempotencyStore | undefined;
+try {
+  batchIdempotencyStore = new FileBatchIdempotencyStore(path.join(validatedRoot, ".idempotency"));
+} catch (error) {
+  // Idempotency is an additive keyed-batch capability; do not make the
+  // explicitly allowed file fallback unusable when the native SQLite helper
+  // is unavailable. Unkeyed batches remain available and keyed batches fail
+  // closed with SERVICE_UNAVAILABLE.
+  logEvent("warn", "idempotency.unavailable", { error: String(error).slice(0, 160) }, "Batch idempotency ledger unavailable");
+}
 const service = new MemoryService(store, {
   tenantMode,
   backend: backendSelection.backend,
@@ -60,7 +70,7 @@ const service = new MemoryService(store, {
   llmProvider: startup.llmProvider,
   ...(operatorSnapshotKey ? { snapshotKey: operatorSnapshotKey } : {}),
   recoveryStateStore: new FileRecoveryStateStore(path.join(validatedRoot, ".recovery-state.json")),
-  batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(validatedRoot, ".idempotency")),
+  batchIdempotencyStore,
 });
 await service.initializeRecovery();
 const initialHealth = await service.health();
@@ -256,8 +266,11 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
       process.exit(1);
     }
     const dst = (store as SqliteBackend).getDbPath();
-    (store as SqliteBackend).close();
     try {
+      // Claims from the pre-restore data generation must never replay against
+      // the restored database. Invalidate before publishing the replacement.
+      await service.invalidateBatchIdempotency();
+      (store as SqliteBackend).close();
       await restoreSqliteBackup(inFile, dst, { overwrite: true });
     } catch (err) {
       console.error(`Restore aborted: ${err instanceof Error ? err.message : err}`);

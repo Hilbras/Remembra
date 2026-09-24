@@ -229,14 +229,22 @@ Batch limits are 100 items and 10 MiB. HTTP mixed results use status `200`;
 top-level malformed requests use the normal `INVALID_INPUT` envelope.
 
 Mutation requests may include `Idempotency-Key` (1–128 safe ASCII
-characters). The authenticated, host-derived tenant/API-key scope and canonical
-request body are fingerprinted; raw keys and tenant identifiers are never
-written to the claim store. A completed claim replays its original response,
-the same key with a different body returns `CONFLICT`, and an in-progress or
-ambiguous claim fails closed rather than risking duplicate writes. Completed
-claims are retained for 24 hours by default; capacity exhaustion returns
-`SERVICE_UNAVAILABLE`. This V5.4 implementation is a durable local claim store;
-distributed idempotency remains a V5.2 concern.
+characters). The authenticated, host-derived credential/tenant/agent scope and
+canonical request body are fingerprinted with a full digest; raw keys and
+tenant identifiers are never written to the claim store. Claims are held in a
+transactional local SQLite ledger under `<REMEMBRA_HOME>/.idempotency`, with
+an integrity-protected record, atomic cross-process transactions, per-scope and
+aggregate capacity limits, and a 24-hour completed-claim retention window.
+A completed claim replays its original response, the same key with a different
+body returns `CONFLICT`, and an in-progress or ambiguous claim fails closed
+rather than risking duplicate writes. Per-item storage/provider/queue failures
+that may have happened after a side effect are not finalized as replayable
+responses; the claim remains in progress for host/operator resolution. Keyed
+requests are limited to 256 KiB so the response can be persisted safely. Capacity exhaustion returns
+`SERVICE_UNAVAILABLE`. The built-in SQLite restore command invalidates the
+ledger before replacing data; out-of-band restores must call the store's
+`invalidate()` operation before serving requests. This V5.4 implementation is
+single-host durable storage; distributed idempotency remains a V5.2 concern.
 
 ### Error codes → HTTP status
 

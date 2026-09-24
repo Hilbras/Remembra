@@ -2,9 +2,10 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { timingSafeEqual, createHash, randomUUID } from "node:crypto";
+import { timingSafeEqual, createHash, createHmac, randomUUID } from "node:crypto";
 import { MemoryService } from "./service.js";
 import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION, API_VERSION_HEADER, IDEMPOTENCY_KEY_HEADER, REQUEST_ID_HEADER, isValidIdempotencyKey, isValidRequestId } from "./api-contract.js";
+import { batchIdempotencyScope } from "./batch-idempotency-store.js";
 import { DigestInput } from "./types.js";
 import { isRemembraError, statusFor, errorLabel, publicErrorMessage, RemembraError } from "./errors.js";
 import { logEvent } from "./log.js";
@@ -90,6 +91,27 @@ const UI_MIME: Record<string, string> = {
 
 function rateIdentityPart(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function idempotencyScopeFor(
+  apiKey: string | undefined,
+  tenant: TenantContext | undefined,
+  agent: AgentContext | undefined,
+): string {
+  const credential = apiKey
+    ? `api-key:${createHmac("sha256", apiKey).update("remembra-idempotency-credential", "utf8").digest("hex")}`
+    : "local";
+  const principal = tenant
+    ? [
+        "tenant",
+        tenant.principal.organizationId,
+        tenant.principal.projectId ?? "",
+        tenant.principal.userId ?? "",
+        tenant.principal.agentId ?? "",
+      ].join(":")
+    : "legacy";
+  const agentPart = agent ? `agent:${agent.agentId}` : "no-agent";
+  return batchIdempotencyScope(`v5.4\\0${credential}\\0${principal}\\0${agentPart}`);
 }
 
 function requestAddress(req: http.IncomingMessage): string {
@@ -572,7 +594,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         const result = await service.batch(body, {
           ...agentOptions,
           idempotencyKey,
-          idempotencyScope: rateKey,
+          idempotencyScope: idempotencyScopeFor(opts.apiKey, tenant, agent),
         });
         applySecureHeaders(res);
         applyCorsHeaders(res);

@@ -124,6 +124,10 @@ test("SDK sends bounded idempotency keys for batch mutations", async () => {
     /idempotency/i,
   );
   assert.equal(called, false);
+  await assert.rejects(
+    () => client.batch({ operation: "export", ids: ["m1"] }, { idempotencyKey: "export-key" }),
+    /only supported for batch mutations/i,
+  );
 });
 
 test("SDK retries only opted-in read requests and never retries writes", async () => {
@@ -415,6 +419,7 @@ test("published SDK and tenant subpaths resolve without starting the CLI", async
   assert.equal(typeof packageSdk.Remembra, "function");
   assert.equal(packageContract.API_VERSION, API_VERSION);
   assert.equal(typeof packageIdempotency.FileBatchIdempotencyStore, "function");
+  assert.equal(typeof packageIdempotency.SqliteBatchIdempotencyStore, "function");
   assert.equal(typeof packageTenant.createTenantContext, "function");
   assert.equal(typeof packageDirectory.InMemoryTenantDirectory, "function");
   assert.equal(typeof packageDirectoryFile.FileTenantDirectory, "function");

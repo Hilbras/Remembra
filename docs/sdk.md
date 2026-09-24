@@ -79,8 +79,10 @@ const result = await memory.batch(
 The first response reports `execution.idempotency: "stored"`. Repeating the
 same authenticated scope and canonical request returns the original response
 with `"replayed"` and does not write again. Reusing a key for a different body
-returns `CONFLICT`; a claim left in progress fails closed until explicitly
-resolved. The SDK never retries unsafe writes automatically.
+returns `CONFLICT`; a claim left in progress fails closed until the host
+verifies and explicitly invalidates the ledger. Ambiguous storage/provider
+failures are not finalized as replayable responses. The SDK never retries
+unsafe writes automatically. Keyed requests are limited to 256 KiB.
 
 All methods return typed decoded JSON. Non-2xx responses throw
 `RemembraApiError`, which exposes `status`, machine-readable `code`, and the

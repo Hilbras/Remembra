@@ -31,6 +31,7 @@ export const API_CAPABILITIES = [
   "context",
   "snapshot",
   "batch",
+  "batch-idempotency",
   "tenant-entities",
   "health",
   "metrics",
