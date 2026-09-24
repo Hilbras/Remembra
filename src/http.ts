@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual, createHash } from "node:crypto";
 import { MemoryService } from "./service.js";
 import { DigestInput } from "./types.js";
 import { isRemembraError, statusFor, errorLabel, RemembraError } from "./errors.js";
@@ -79,6 +79,27 @@ const UI_MIME: Record<string, string> = {
   ".js": "text/javascript; charset=utf-8",
   ".map": "application/json; charset=utf-8",
 };
+
+function rateIdentityPart(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function requestAddress(req: http.IncomingMessage): string {
+  return req.socket.remoteAddress ?? "unknown";
+}
+
+function protectedRateIdentity(req: http.IncomingMessage, tenant: TenantContext | undefined, apiKey: string | undefined): string {
+  if (tenant) {
+    const principal = tenant.principal;
+    const dimensions = [principal.organizationId, principal.projectId, principal.userId, principal.agentId]
+      .filter((value): value is string => Boolean(value))
+      .map(rateIdentityPart)
+      .join(":");
+    return `tenant:${dimensions}`;
+  }
+  if (apiKey) return `api:${rateIdentityPart(apiKey)}:${rateIdentityPart(requestAddress(req))}`;
+  return `ip:${rateIdentityPart(requestAddress(req))}`;
+}
 
 /**
  * Listen policy (P1 audit: default-deny):
@@ -261,25 +282,25 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return serveStatic(res, req.method ?? "GET", path);
       }
 
-      // V4.4: rate limiting (exempt /health and UI).
-      const clientKey = opts.apiKey ? `key:${opts.apiKey}` : `ip:${url.hostname || "unknown"}`;
-      const rateCheck = rateLimiter.check(clientKey);
-      if (!rateCheck.allowed) {
-        metrics.inc("remembra_errors_total", { code: "RATE_LIMITED", transport: "http" });
-        logEvent("warn", "rate_limit", { key: clientKey }, "Remembra: rate limit exceeded");
-        applySecureHeaders(res);
-        applyCorsHeaders(res);
-        return send(
-          res,
-          429,
-          { error: "Rate limit exceeded", retryAfterMs: rateCheck.retryAfterMs },
-          { "retry-after": String(Math.ceil(rateCheck.retryAfterMs / 1000)) },
-        );
-      }
-
+      // Authenticate before consuming a protected rate bucket. Anonymous
+      // attempts use a separate address bucket so they cannot exhaust the
+      // configured client's quota.
       if (opts.apiKey && !authorized(req, opts.apiKey)) {
+        const anonymousRate = rateLimiter.check(`anon:${rateIdentityPart(requestAddress(req))}`);
+        if (!anonymousRate.allowed) {
+          metrics.inc("remembra_errors_total", { code: "RATE_LIMITED", transport: "http" });
+          logEvent("warn", "rate_limit", { identity: "anonymous" }, "Remembra: rate limit exceeded");
+          applySecureHeaders(res);
+          applyCorsHeaders(res);
+          return send(
+            res,
+            429,
+            { error: "Rate limit exceeded", retryAfterMs: anonymousRate.retryAfterMs },
+            { "retry-after": String(Math.ceil(anonymousRate.retryAfterMs / 1000)) },
+          );
+        }
         metrics.inc("remembra_errors_total", { code: "UNAUTHORIZED", transport: "http" });
-        logEvent("warn", "auth.failure", { remote: url.hostname }, "Remembra: unauthorized access attempt");
+        logEvent("warn", "auth.failure", { remote: requestAddress(req) }, "Remembra: unauthorized access attempt");
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 401, { error: "Unauthorized: missing or invalid API key" });
@@ -293,6 +314,26 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       const resolvedAgent = await opts.resolveAgentContext?.(req);
       const agent = resolvedAgent?.agentId?.trim() ? resolvedAgent : undefined;
       const tenant = await opts.resolveTenantContext?.(req);
+
+      // Protected requests are charged only after authentication and trusted
+      // identity resolution. Tenant dimensions provide separate quotas when
+      // the host has resolved them; the API-key/address pair is the safe
+      // fallback for legacy mode or a host without a tenant resolver.
+      const rateKey = protectedRateIdentity(req, tenant, opts.apiKey);
+      const rateCheck = rateLimiter.check(rateKey);
+      if (!rateCheck.allowed) {
+        metrics.inc("remembra_errors_total", { code: "RATE_LIMITED", transport: "http" });
+        logEvent("warn", "rate_limit", { identity: rateKey }, "Remembra: rate limit exceeded");
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(
+          res,
+          429,
+          { error: "Rate limit exceeded", retryAfterMs: rateCheck.retryAfterMs },
+          { "retry-after": String(Math.ceil(rateCheck.retryAfterMs / 1000)) },
+        );
+      }
+
       const agentOptions = { agent, tenant };
 
       const requireEntityTenant = (): TenantContext => {
