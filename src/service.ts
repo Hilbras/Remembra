@@ -9,7 +9,7 @@ import {
   type ContextResult,
   type TokenCounter,
 } from "./context.js";
-import { resolveEmbeddingProvider, embedText, embedTexts, EmbeddingProvider, EmbeddingAdapter, cosine, type EmbedCallOptions } from "./embeddings.js";
+import { resolveEmbeddingProvider, embedText, embedTexts, clearEmbedCachePartition, EmbeddingProvider, EmbeddingAdapter, cosine, type EmbedCallOptions } from "./embeddings.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { VERSION } from "./version.js";
@@ -927,6 +927,7 @@ export class MemoryService {
     if (this.agentMode || tenant) this.assertCanRead(existing, id, options);
     if (!existing) return { ok: false, text: `No memory with id ${id}.` };
     const ok = await this.backend.forget(id, tenant);
+    if (ok && tenant) clearEmbedCachePartition(tenant.organizationId);
     return { ok, text: ok ? `Deleted memory ${id}.` : `No memory with id ${id}.` };
   }
 

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { search, searchQ, rrfFuse, mmrDedup } from "../retrieval.js";
-import { embedCached, clearEmbedCache } from "../embeddings.js";
+import { embedCached, clearEmbedCache, clearEmbedCachePartition } from "../embeddings.js";
 import { Memory } from "../types.js";
 
 function mem(over: Partial<Memory>): Memory {
@@ -149,6 +149,25 @@ test("MMR reduces redundancy: two near-identical vectors don't both rank top", (
   assert.ok(ids.includes("sim1"));
   assert.ok(ids.includes("diff"));
   assert.ok(!ids.includes("sim2"), "MMR dedupes near-duplicate embeddings");
+});
+
+test("embedding cache partitions and purges are tenant-safe", async () => {
+  clearEmbedCache();
+  let calls = 0;
+  const adapter = {
+    id: "test-embedding",
+    embed: async () => {
+      calls++;
+      return [1, 0];
+    },
+  };
+  await embedCached("same query", "openai", { adapter, cachePartition: "org-a" });
+  await embedCached("same query", "openai", { adapter, cachePartition: "org-a" });
+  await embedCached("same query", "openai", { adapter, cachePartition: "org-b" });
+  assert.equal(calls, 2);
+  clearEmbedCachePartition("org-a");
+  await embedCached("same query", "openai", { adapter, cachePartition: "org-a" });
+  assert.equal(calls, 3);
 });
 
 test("embedding cache exports are callable", () => {

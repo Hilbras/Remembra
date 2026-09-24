@@ -184,6 +184,14 @@ export function clearEmbedCache(): void {
   embedCache.clear();
 }
 
+/** Remove derived vectors for one tenant partition after destructive changes. */
+export function clearEmbedCachePartition(partition: string): void {
+  const prefix = `${partition}:`;
+  for (const key of embedCache.keys()) {
+    if (key.startsWith(prefix)) embedCache.delete(key);
+  }
+}
+
 /** Exposed for metrics (plan §V4.2.0 — observability on the retrieval path). */
 export function embedCacheStats(): { size: number; capacity_ms: number; ttl_ms: number } {
   return {
