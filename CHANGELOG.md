@@ -7,10 +7,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
-## [Unreleased] — V5.0.0 development
+## [Unreleased]
+
+## [5.0.0] — 2026-09-24
 
 **Production Memory Platform** — plan §13 of the Master Development Plan.
-V5 work is additive until the tenant/schema migration contract is approved.
+V5 preserves V4.9 compatibility while adding strict tenant isolation, bounded
+context/retrieval, verified recovery, and release-gated operations.
 
 ### Added
 

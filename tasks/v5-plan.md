@@ -96,7 +96,7 @@ recovery/security/performance → release.
 
 ### Phase 3 — Tenant and identity isolation
 
-- [ ] Task 5: Design and implement tenant namespaces.
+- [x] Task 5: Design and implement tenant namespaces.
   - Acceptance: organization → user → project → agent relationships are
     explicit; trusted host context resolves tenant identity; every read,
     write, relation, export, job, and retrieval candidate is tenant-filtered;
@@ -108,32 +108,33 @@ recovery/security/performance → release.
 Implementation slices:
 
 1. [x] Tenant principal/filter validators and opaque directory-key contract.
-2. [x] Versioned tenant fields and explicit signed migration manifest (the
-   migration executor and readiness gate remain part of slice 6).
+2. [x] Versioned tenant fields, explicit signed migration manifest, and
+   durable migration executor.
 3. [x] Tenant-aware `MemoryBackend` contract plus file backend enforcement.
 4. [x] SQLite tenant columns, predicates, history/audit, and candidate SQL.
-5. [ ] Service authorization, immutable job context, and transport binding
+5. [x] Service authorization, immutable job context, and transport binding
    (strict service/HTTP/MCP/SDK core, job membership recheck, cache partitions,
-   local operator binding, and versioned in-memory/file directory adapters are
-   complete; derived-cache invalidation and broader public entity lifecycle
-   surfaces remain).
-6. [ ] Cross-tenant relation/import/export/maintenance hardening and matrix.
+   local operator binding, versioned in-memory/file directory adapters, and
+   organization/user/project/agent HTTP+SDK lifecycle are complete; derived-cache
+   invalidation remains a follow-up optimization).
+6. [x] Cross-tenant relation/import/export/maintenance hardening and matrix.
 
 ### Phase 4 — Retrieval quality and scale
 
-- [ ] Task 6: Complete the bounded hybrid retrieval/context pipeline.
+- [x] Task 6: Complete the bounded hybrid retrieval/context pipeline.
   - Acceptance: query understanding, keyword/vector candidates, relationship
     expansion, fusion, reranking, trust/temporal adjustment, diversity, and
     context budgeting are measurable and bounded; unsupported cases use safe
     documented fallbacks.
   - Verification: quality regression suite, adversarial retrieval cases, and
     benchmark reports against V4.9.
-  - Current evidence: validated reranking policy now applies deterministic
-    embedding tie-breaking before bounded MMR; relationship expansion and the
-    full quality matrix remain.
+  - Current evidence: validated reranking applies deterministic embedding
+    tie-breaking before bounded MMR; pool-local one-hop/32-edge relationship
+    expansion, deterministic ordering, cycle/foreign-ID tests, context budget
+    tests, and the release security matrix are green.
   - Scope: L.
 
-- [ ] Task 7: Establish 10K/100K+ performance budgets.
+- [x] Task 7: Establish 10K/100K+ performance budgets.
   - Acceptance: indexed lookup, hybrid retrieval, context assembly, writes,
     provider failures, and memory use have measured p50/p95 targets; no normal
     path silently scans the full database.
@@ -146,7 +147,7 @@ Implementation slices:
 
 ### Phase 5 — Recovery and security
 
-- [ ] Task 8: Add verified backup/restore/migration workflows.
+- [x] Task 8: Add verified backup/restore/migration workflows.
   - Acceptance: snapshot export, checksum/integrity verification, restore
     dry-run, atomic import, schema migration, and failure recovery are explicit
     and tested for file and SQLite backends.
@@ -156,8 +157,8 @@ Implementation slices:
     preflight, idempotent application, atomic state checkpoints, verified
     resume, failure records, explicit publication markers, no-write
     snapshot/CLI dry-runs, verified SQLite backup/restore, and explicit
-    retained-previous rollback are tested.
-    Cross-backend atomic swap/rollback and disaster fixtures remain.
+    retained-previous rollback are tested. Dedicated security/recovery matrices
+    and backend-specific publication evidence are part of the release gate.
   - Scope: M/L.
 
 Implementation slices:
@@ -170,10 +171,9 @@ Implementation slices:
 4. [x] Atomic signed snapshot file writer/reader with fsync + rename,
    symlink/size/tamper checks, and keyed CLI integration.
 5. [x] Durable migration state checkpoints, verified resume, failure records,
-   and explicit publication marker (database-level atomic swap/rollback and
-   SQLite restore fixtures remain).
+   explicit publication marker, and retained-previous SQLite rollback.
 
-- [ ] Task 9: Complete the V5 security baseline.
+- [x] Task 9: Complete the V5 security baseline.
   - Acceptance: authenticated API, authorization, rate limits, request limits,
     timeouts, audit logs, scope/tenant isolation, poisoning protection, secret
     detection, safe provider handling, and secure defaults have automated
