@@ -10,7 +10,8 @@ import {
 test("REC-STATE-001: recovery transitions are deterministic and do not erase terminal states", () => {
   const states: RecoveryState[] = ["Recovering", "Healthy", "Degraded", "Failed", "ReadOnly"];
   for (const state of states) {
-    assert.equal(transitionRecoveryState(state, "ready"), "Healthy");
+    assert.equal(transitionRecoveryState(state, "ready"), state === "Recovering" ? "Healthy" : state);
+    assert.equal(transitionRecoveryState(state, "verified"), "Healthy");
     assert.equal(transitionRecoveryState(state, "recovery_started"), "Recovering");
     assert.equal(transitionRecoveryState(state, "read_only"), "ReadOnly");
     assert.equal(transitionRecoveryState(state, "failed"), "Failed");

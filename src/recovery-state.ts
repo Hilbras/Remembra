@@ -1,14 +1,17 @@
 export type RecoveryState = "Healthy" | "Degraded" | "Recovering" | "Failed" | "ReadOnly";
-export type RecoveryEvent = "ready" | "degraded" | "storage_error" | "recovery_started" | "read_only" | "failed";
+export type RecoveryEvent = "ready" | "verified" | "degraded" | "storage_error" | "recovery_started" | "read_only" | "failed";
 
 /**
- * Deterministic readiness transitions. Explicit recovery/verification events
- * may move a failed/read-only service back into an operational state; an
- * ordinary storage error never silently upgrades a terminal state.
+ * Deterministic readiness transitions. An ordinary probe may establish initial
+ * readiness or preserve an existing state, but only an explicit verification
+ * event may clear Failed/ReadOnly. An ordinary storage error never silently
+ * upgrades a terminal state.
  */
 export function transitionRecoveryState(current: RecoveryState, event: RecoveryEvent): RecoveryState {
   switch (event) {
     case "ready":
+      return current === "Recovering" ? "Healthy" : current;
+    case "verified":
       return "Healthy";
     case "degraded":
       return "Degraded";
