@@ -7,6 +7,7 @@ import { createHttpServer } from "../http.js";
 import { MemoryService } from "../service.js";
 import { MemoryStore } from "../store.js";
 import { createTenantContext } from "../tenant.js";
+import { logEvent } from "../log.js";
 
 async function makeService(): Promise<MemoryService> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-"));
@@ -112,4 +113,36 @@ test("SEC-RL-002: rate identities are opaque and tenant-scoped", async (t) => {
 
   assert.ok(!logs.includes("v501-secret"), "raw API key must not be logged");
   assert.ok(logs.includes("rate_limit"));
+});
+
+test("SEC-LOG-001: structured logs redact credentials, headers, and secret-bearing messages", async () => {
+  const restore = withEnv({ REMEMBRA_LOG: "json" });
+  try {
+    const output = await captureStderr(async () => {
+      logEvent(
+        "error",
+        "secret_fixture",
+        {
+          authorization: "Bearer top-secret-token",
+          nested: { apiKey: "sk-live-1234567890", safe: "visible" },
+          password: "hunter2",
+          token: "ghp_abcdefghijklmnop",
+        },
+        "request failed with Bearer message-secret and sk-message-1234567890",
+      );
+    });
+    const event = JSON.parse(output) as Record<string, unknown>;
+    assert.equal(event.authorization, "[REDACTED]");
+    assert.deepEqual(event.nested, { apiKey: "[REDACTED]", safe: "visible" });
+    assert.equal(event.password, "[REDACTED]");
+    assert.equal(event.token, "[REDACTED]");
+    assert.match(String(event.msg), /\[REDACTED\]/);
+    assert.ok(!output.includes("top-secret-token"));
+    assert.ok(!output.includes("sk-live-1234567890"));
+    assert.ok(!output.includes("hunter2"));
+    assert.ok(!output.includes("ghp_abcdefghijklmnop"));
+    assert.ok(!output.includes("message-secret"));
+  } finally {
+    restore();
+  }
 });
