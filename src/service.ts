@@ -2026,6 +2026,10 @@ export class MemoryService {
   /** Restore a fully preflighted snapshot; existing/duplicate IDs are skipped. */
   async importSnapshot(data: unknown, options: AgentReadOptions = {}): Promise<{ imported: number; skipped: number }> {
     const prepared = await this.prepareSnapshotImport(data, options);
+    if (this.#backend.importBatch) {
+      const result = await this.#backend.importBatch(prepared.prepared, prepared.tenant);
+      return { imported: result.imported, skipped: prepared.skipped + result.skipped };
+    }
     let imported = 0;
     let skipped = prepared.skipped;
     for (const memory of prepared.prepared) {

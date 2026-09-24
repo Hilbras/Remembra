@@ -464,16 +464,46 @@ export class MemoryStore implements MemoryBackend {
     });
   }
 
+  private async importMemoryLocked(m: Memory, tenant?: TenantFilter): Promise<{ imported: boolean; file?: string }> {
+    if ((!tenant && m.tenantId) || (tenant && !this.matchesTenant(m, tenant))) return { imported: false };
+    if (await this.findFile(m.id, tenant)) return { imported: false };
+    const file = this.fileFor(m); // containment check applies (P0)
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await this.writeCached(file, render(m), m);
+    return { imported: true, file };
+  }
+
   /** Import a snapshot memory verbatim (id preserved). Returns false if the id exists. */
   async importMemory(m: Memory, tenant?: TenantFilter): Promise<boolean> {
     await this.ensureRecovered();
+    return this.withLock(async () => (await this.importMemoryLocked(m, tenant)).imported);
+  }
+
+  /** Import a prepared batch with rollback for operational write failures. */
+  async importBatch(memories: readonly Memory[], tenant?: TenantFilter): Promise<{ imported: number; skipped: number }> {
+    await this.ensureRecovered();
     return this.withLock(async () => {
-      if ((!tenant && m.tenantId) || (tenant && !this.matchesTenant(m, tenant))) return false;
-      if (await this.findFile(m.id, tenant)) return false;
-      const file = this.fileFor(m); // containment check applies (P0)
-      await fs.mkdir(path.dirname(file), { recursive: true });
-      await this.writeCached(file, render(m), m);
-      return true;
+      const created: string[] = [];
+      let imported = 0;
+      let skipped = 0;
+      try {
+        for (const memory of memories) {
+          const result = await this.importMemoryLocked(memory, tenant);
+          if (result.imported && result.file) {
+            created.push(result.file);
+            imported++;
+          } else {
+            skipped++;
+          }
+        }
+        return { imported, skipped };
+      } catch (error) {
+        for (const file of created.reverse()) {
+          await fs.unlink(file).catch(() => {});
+          this.cache.forget(file);
+        }
+        throw error;
+      }
     });
   }
 

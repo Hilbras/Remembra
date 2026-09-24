@@ -92,6 +92,8 @@ export interface MemoryBackend {
   touch(id: string, tenant?: TenantFilter): Promise<void>;
   forget(id: string, tenant?: TenantFilter): Promise<boolean>;
   importMemory(m: Memory, tenant?: TenantFilter): Promise<boolean>;
+  /** Optional atomic batch import for snapshot restore staging. */
+  importBatch?(memories: readonly Memory[], tenant?: TenantFilter): Promise<{ imported: number; skipped: number }>;
   /** Optional (audit Phase 8): superseded pre-images, newest first. */
   history?(id: string, tenant?: TenantFilter): Promise<HistoryEntry[]>;
   /** V4.4: query audit events (optional; stub returns empty). */

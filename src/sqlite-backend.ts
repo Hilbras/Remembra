@@ -854,17 +854,31 @@ export class SqliteBackend implements MemoryBackend {
     });
   }
 
+  private importMemoryLocked(m: Memory, tenant?: TenantFilter): boolean {
+    if ((!tenant && m.tenantId) || (tenant && !memoryBelongsToTenant(m, tenant))) return false;
+    const scoped = tenantWhere("m", tenant);
+    const existing = this.prepare(`SELECT 1 FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+      .get(m.id, ...scoped.params) as { 1: number } | undefined;
+    if (existing) return false;
+    this.insertRow(m);
+    this.audit("import", m.id, undefined, m.provenance, tenant, memoryDimensions(m));
+    return true;
+  }
+
   async importMemory(m: Memory, tenant?: TenantFilter): Promise<boolean> {
-    return this.withLock(async () => {
-      if ((!tenant && m.tenantId) || (tenant && !memoryBelongsToTenant(m, tenant))) return false;
-      const scoped = tenantWhere("m", tenant);
-      const existing = this.prepare(`SELECT 1 FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
-        .get(m.id, ...scoped.params) as { 1: number } | undefined;
-      if (existing) return false;
-      this.insertRow(m);
-      this.audit("import", m.id, undefined, m.provenance, tenant, memoryDimensions(m));
-      return true;
-    });
+    return this.withLock(async () => this.importMemoryLocked(m, tenant));
+  }
+
+  async importBatch(memories: readonly Memory[], tenant?: TenantFilter): Promise<{ imported: number; skipped: number }> {
+    return this.withLock(async () => this.db.transaction(() => {
+      let imported = 0;
+      let skipped = 0;
+      for (const memory of memories) {
+        if (this.importMemoryLocked(memory, tenant)) imported++;
+        else skipped++;
+      }
+      return { imported, skipped };
+    })());
   }
 
   async history(id: string, tenant?: TenantFilter): Promise<HistoryEntry[]> {
