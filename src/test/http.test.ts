@@ -50,6 +50,25 @@ test("v1 API namespace preserves auth, headers, and legacy handler behavior", as
   assert.equal(found.status, 200);
   assert.ok((await found.json()).results.some((m: { id: string }) => m.id === id));
 
+  const context = await fetch(`${base}/api/v1/context`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": "test-key" },
+    body: JSON.stringify({ query: "versioned", maxTokens: 200 }),
+  });
+  assert.equal(context.status, 200);
+  assert.equal(context.headers.get("x-remembra-api-version"), "v1");
+  const contextBody = await context.json() as { tokenCount: number; context: string };
+  assert.ok(contextBody.tokenCount <= 200);
+  assert.match(contextBody.context, /versioned HTTP memory/);
+
+  const invalidContext = await fetch(`${base}/api/v1/context`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": "test-key" },
+    body: JSON.stringify({ maxTokens: 0 }),
+  });
+  assert.equal(invalidContext.status, 400);
+  assert.equal((await invalidContext.json() as { code?: string }).code, "INVALID_INPUT");
+
   const missing = await fetch(`${base}/api/v1/does-not-exist`, {
     headers: { "x-api-key": "test-key" },
   });

@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [Unreleased] — V5.0.0 development
+
+**Production Memory Platform** — plan §13 of the Master Development Plan.
+V5 work is additive until the tenant/schema migration contract is approved.
+
+### Added
+
+- **V5 context contract and threat model** covering token budgets, visibility,
+  tenant boundaries, and release evidence.
+- **Bounded context assembly** through `MemoryService.context`, the v1 HTTP
+  route, the TypeScript SDK, and the additive `memory_context` MCP tool.
+- **Conservative token estimator** with injectable counters, hard candidate and
+  budget limits, deterministic ordering, and internal-vector omission.
+
+---
+
 ## [4.9.0] — 2026-09-24
 
 **API, SDK & Compatibility Stabilization** — plan §12 of the Master

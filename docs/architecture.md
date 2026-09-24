@@ -116,6 +116,16 @@ handling. The service only depends on the adapter interfaces, so provider
 selection does not leak into memory storage or retrieval policy. See
 [providers.md](providers.md).
 
+## V5 context assembly
+
+`MemoryService.context` reuses the same candidate generation, ranking, and
+trusted visibility filters as `search`, then applies a hard token budget while
+walking ranked results. It is read-only (`touch` and opportunistic decay are
+disabled), omits internal embedding vectors from returned memory objects, and
+never serializes a candidate that exceeds the budget. The HTTP, SDK, and MCP
+transports call this same service method; see
+[v5-context-spec.md](v5-context-spec.md).
+
 ## Schema versioning
 
 Every memory file carries `version: <n>` in frontmatter (`SCHEMA_VERSION` in

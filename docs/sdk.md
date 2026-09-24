@@ -20,6 +20,12 @@ const results = await memory.search({
   query: "PostgreSQL",
   limit: 5,
 });
+
+const context = await memory.context({
+  query: "PostgreSQL",
+  maxTokens: 1200,
+});
+// context.tokenCount <= 1200; context.memories is visibility-filtered.
 ```
 
 ## Client options
@@ -40,6 +46,7 @@ caller.
 
 - `store(input)`
 - `search(params)`
+- `context({ query, scope, maxTokens })` — deterministic token-bounded context (V5)
 - `list(params)`
 - `get(id)`
 - `update(id, patch)`

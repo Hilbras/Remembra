@@ -316,6 +316,15 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return send(res, 200, result);
       }
 
+      // POST /context — bounded, read-only context assembly.
+      if (req.method === "POST" && path === "/context") {
+        const body = await readBody(req, maxBody);
+        const result = await service.context(body, agentOptions);
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, 200, result);
+      }
+
       // POST /memories/digest — must be checked before /memories/:id DELETE patterns
       if (req.method === "POST" && path === "/memories/digest") {
         const body = await readBody(req, maxBody);

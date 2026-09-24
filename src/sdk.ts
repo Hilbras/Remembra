@@ -1,3 +1,5 @@
+import type { ContextResult } from "./context.js";
+export type { ContextMemory, ContextResult } from "./context.js";
 import type {
   BatchOutcome,
   BatchRequest,
@@ -65,6 +67,18 @@ export interface ListOptions {
   includeFuture?: boolean;
   offset?: number;
   limit?: number;
+}
+
+export interface ContextOptions {
+  query?: string;
+  scope?: string;
+  maxTokens?: number;
+  limit?: number;
+  explain?: boolean;
+  includeArchived?: boolean;
+  includeExpired?: boolean;
+  includeFuture?: boolean;
+  includeQuarantined?: boolean;
 }
 
 export interface HistoryOptions {
@@ -246,6 +260,10 @@ export class Remembra {
       ...options,
       query: params as Record<string, unknown>,
     });
+  }
+
+  context(input: ContextOptions, options?: RequestOptions): Promise<ContextResult> {
+    return this.request("POST", "/context", input, options);
   }
 
   get(id: string, options?: RequestOptions): Promise<GetResponse> {

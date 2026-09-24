@@ -5,6 +5,7 @@ import { MemoryStore } from "./store.js";
 import { VERSION } from "./version.js";
 import { logEvent } from "./log.js";
 import { toolFail } from "./errors.js";
+import { contextInputShape } from "./context.js";
 import {
   DigestInput,
   storeInputShape,
@@ -20,11 +21,11 @@ import {
 } from "./types.js";
 
 /** Version of the stable MCP tool surface. */
-export const MCP_TOOLS_VERSION = 1 as const;
+export const MCP_TOOLS_VERSION = 2 as const;
 
 /**
- * Canonical tool names. Existing names remain canonical for V4.9; aliases are
- * intentionally explicit and empty until a compatibility migration is needed.
+ * Canonical tool names. Existing V4.9 names remain canonical; V5 adds
+ * `memory_context` without renaming or removing any existing tool.
  */
 export const MCP_TOOL_NAMES = [
   "memory_store",
@@ -32,6 +33,7 @@ export const MCP_TOOL_NAMES = [
   "memory_digest",
   "memory_maintain",
   "memory_search",
+  "memory_context",
   "memory_list",
   "memory_forget",
   "memory_get",
@@ -150,6 +152,25 @@ export function createMcpServer(service: MemoryService): McpServer {
       try {
         const result = await service.search(args);
         return { content: [{ type: "text", text: result.text }] };
+      } catch (err) {
+        return toolFail(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "memory_context",
+    {
+      title: "Build bounded memory context",
+      description:
+        "Assemble a deterministic, token-bounded context from ranked memories. " +
+        "The response includes selected memories, rendered context, token count, and retrieval metadata.",
+      inputSchema: contextInputShape,
+    },
+    async (args) => {
+      try {
+        const result = await service.context(args);
+        return { content: [{ type: "text", text: JSON.stringify(result) }] };
       } catch (err) {
         return toolFail(err);
       }

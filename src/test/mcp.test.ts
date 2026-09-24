@@ -13,7 +13,7 @@ import {
   MCP_TOOLS_VERSION,
 } from "../mcp.js";
 
-test("MCP manifest lists the stable v1 tool set", async () => {
+test("MCP manifest lists the stable V4.9 plus V5 context tool set", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-mcp-"));
   const service = new MemoryService(new MemoryStore(dir));
   const server = createMcpServer(service);
@@ -23,7 +23,7 @@ test("MCP manifest lists the stable v1 tool set", async () => {
   try {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const listed = await client.listTools();
-    assert.equal(MCP_TOOLS_VERSION, 1);
+    assert.equal(MCP_TOOLS_VERSION, 2);
     assert.deepEqual(listed.tools.map((tool) => tool.name), [...MCP_TOOL_NAMES]);
     assert.equal(new Set(listed.tools.map((tool) => tool.name)).size, MCP_TOOL_NAMES.length);
   } finally {
@@ -52,6 +52,12 @@ test("MCP store and search tools use the extracted service boundary", async () =
     });
     assert.ok(!found.isError);
     assert.match(JSON.stringify(found.content), /MCP manifest memory/);
+    const context = await client.callTool({
+      name: "memory_context",
+      arguments: { query: "manifest", maxTokens: 200 },
+    });
+    assert.ok(!context.isError);
+    assert.match(JSON.stringify(context.content), /tokenCount/);
   } finally {
     await client.close();
     await server.close();

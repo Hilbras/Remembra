@@ -113,6 +113,9 @@ test("SDK completes an authenticated store/search/get/forget round trip", async 
     assert.ok(found.results.some((memory) => memory.id === stored.id));
     const fetched = await client.get(stored.id);
     assert.equal(fetched.memory.id, stored.id);
+    const context = await client.context({ query: "round trip", maxTokens: 200 });
+    assert.ok(context.tokenCount <= 200);
+    assert.match(context.context, /SDK HTTP round trip/);
     const deleted = await client.forget(stored.id);
     assert.equal(deleted.ok, true);
   } finally {

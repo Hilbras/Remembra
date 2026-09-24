@@ -2,6 +2,13 @@ import type { MemoryBackend } from "./backend.js";
 import { extractQuery, searchQ } from "./retrieval.js";
 import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, Provenance, defaultTrust, CompressInput, BatchRequest, MAX_BATCH_BYTES, BatchOutcome, BatchSummary, BatchFailure } from "./types.js";
 import { RemembraError, inputError, errorLabel } from "./errors.js";
+import {
+  ContextInput,
+  defaultTokenCounter,
+  selectContextMemories,
+  type ContextResult,
+  type TokenCounter,
+} from "./context.js";
 import { resolveEmbeddingProvider, embedText, embedTexts, EmbeddingProvider, EmbeddingAdapter, cosine } from "./embeddings.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
@@ -55,6 +62,8 @@ export interface ServiceDeps {
   llmProvider?: LlmProvider;
   /** Optional vendor-neutral LLM adapter; takes precedence over the legacy name. */
   llmAdapter?: LlmAdapter;
+  /** Token counter used by the V5 context API. */
+  tokenCounter?: TokenCounter;
   /** Injection points for tests. */
   embedFn?: (text: string, opts?: { signal?: AbortSignal }) => Promise<number[]>;
   extractFn?: (transcript: string, opts?: { signal?: AbortSignal }) => Promise<ExtractedMemory[]>;
@@ -80,6 +89,12 @@ export interface ServiceDeps {
 export interface AgentReadOptions {
   /** Identity established by the host application, never an unauthenticated request field. */
   agent?: AgentContext;
+}
+
+export interface SearchExecutionOptions {
+  /** Internal read-only mode used by context assembly. */
+  touch?: boolean;
+  runDecay?: boolean;
 }
 
 function envNumber(name: string, fallback: number): number {
@@ -139,6 +154,7 @@ export class MemoryService {
   private readonly sensitiveDetector = createSensitiveDetector();
   /** Resolved extraction LLM — recorded as provenance.provider on digests (§4.3). */
   private readonly llmName: string;
+  private readonly tokenCounter: TokenCounter;
   private lastDecayRun = 0;
   private decayRunning = false;
 
@@ -148,6 +164,7 @@ export class MemoryService {
     const embeddingAdapter = deps.embeddingAdapter;
     const llmAdapter = deps.llmAdapter;
     this.llmName = llmAdapter?.id ?? llm;
+    this.tokenCounter = deps.tokenCounter ?? defaultTokenCounter;
 
     this.embedFn =
       deps.embedFn ??
@@ -430,7 +447,10 @@ export class MemoryService {
     };
   }
 
-  async search(q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean; includeExpired?: boolean; includeFuture?: boolean; includeQuarantined?: boolean; includeArchived?: boolean; candidates?: string[] } & AgentReadOptions) {
+  async search(
+    q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean; includeExpired?: boolean; includeFuture?: boolean; includeQuarantined?: boolean; includeArchived?: boolean; candidates?: string[] } & AgentReadOptions,
+    execution: SearchExecutionOptions = {},
+  ) {
     const t0 = performance.now();
     let queryVec: number[] | null = null;
     if (q.query && this.embedFn) queryVec = (await this.maybeEmbed(q.query)) ?? null;
@@ -525,17 +545,19 @@ export class MemoryService {
     });
 
     // Refresh decay clocks for memories that surfaced (fire-and-forget).
-    for (const m of ranked)
-      this.db.touch(m.id).catch((err) => {
-        logEvent(
-          "warn",
-          "touch_failed",
-          { id: m.id, error: String(err).slice(0, 150) },
-          `Remembra: touch failed (${m.id}): ${String(err).slice(0, 150)}`,
-        );
-      });
+    if (execution.touch !== false) {
+      for (const m of ranked)
+        this.db.touch(m.id).catch((err) => {
+          logEvent(
+            "warn",
+            "touch_failed",
+            { id: m.id, error: String(err).slice(0, 150) },
+            `Remembra: touch failed (${m.id}): ${String(err).slice(0, 150)}`,
+          );
+        });
+    }
     // Opportunistic decay pass, debounced (decision v3-Q1: piggyback on search).
-    this.maybeRunDecay();
+    if (execution.runDecay !== false) this.maybeRunDecay();
 
     const text =
       ranked.length === 0
@@ -547,6 +569,48 @@ export class MemoryService {
             )
             .join("\n\n");
     return { text, results: ranked, ...(explanations ? { explanations } : {}) };
+  }
+
+  /** Build a deterministic, token-bounded context from the ranked search path. */
+  async context(input: unknown, options: AgentReadOptions = {}): Promise<ContextResult> {
+    let parsed: ContextInput;
+    try {
+      parsed = ContextInput.parse(input);
+    } catch (err) {
+      throw inputError(err, "INVALID_INPUT");
+    }
+
+    const result = await this.search(
+      {
+        query: parsed.query,
+        scope: parsed.scope,
+        limit: parsed.limit,
+        explain: parsed.explain,
+        includeExpired: parsed.includeExpired,
+        includeFuture: parsed.includeFuture,
+        includeQuarantined: parsed.includeQuarantined,
+        includeArchived: parsed.includeArchived,
+        ...options,
+      },
+      { touch: false, runDecay: false },
+    );
+    const selected = selectContextMemories(result.results, parsed.maxTokens, this.tokenCounter);
+    const publicMemories = selected.memories.map(({ embedding: _embedding, ...memory }) => memory);
+    return {
+      memories: publicMemories,
+      context: selected.context,
+      tokenCount: selected.tokenCount,
+      retrievalMetadata: {
+        query: parsed.query ?? "",
+        ...(parsed.scope ? { scope: parsed.scope } : {}),
+        maxTokens: parsed.maxTokens,
+        tokenCounter: this.tokenCounter.id,
+        candidateCount: result.results.length,
+        selectedCount: selected.memories.length,
+        omittedCount: selected.omittedCount,
+        ...(parsed.explain && result.explanations ? { explanations: result.explanations } : {}),
+      },
+    };
   }
 
   /**

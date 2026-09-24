@@ -18,7 +18,7 @@ files with a **higher** version are refused on read, never served partially —
 older readers skip newer files (logged, never deleted) instead of serving
 them half-understood.
 
-## MCP tools (13)
+## MCP tools (V4.9: 13; V5 adds `memory_context`)
 
 One stdio server, identical behavior in every MCP client. Full argument
 tables: [tools.md](tools.md).
@@ -29,6 +29,7 @@ tables: [tools.md](tools.md).
 | `memory_update` | patch fields incl. `trust`/`retention`; `expectedVersion` → `CONFLICT`; scope change = file move; content change = history snapshot with `reason` |
 | `memory_archive` / `memory_revive` | manual lifecycle |
 | `memory_search` | layered retrieval (standing-instruction + scope gates → provenance → trust → pinned → importance → recency → match) |
+| `memory_context` | V5 token-bounded context assembled from authorized ranked results |
 | `memory_list` | browse with filters |
 | `memory_get` | one memory + typed relations + backlinks |
 | `memory_relate` | add / remove / retype typed edges |
@@ -77,6 +78,7 @@ Remembra does not trust an `agentId` JSON field or public agent header. See
 | GET | `/memories/:id/history` | versions + unified diffs |
 | POST | `/memories/:id/archive` · `/revive` | manual lifecycle |
 | POST | `/memories/digest` | LLM extraction (cancels if the client disconnects) |
+| POST | `/api/v1/context` | V5 deterministic token-bounded context assembly |
 | POST | `/maintain` | decay sweep + backfill |
 | GET | `/snapshot` | full export |
 | POST | `/import` | idempotent, atomic import |
@@ -116,6 +118,17 @@ metadata may still be stored as untrusted provenance, and the SDK rejects
 server-managed `owner`/`access` and agent-attribution fields before
 transmission. Provenance IDs used for ordinary audit correlation remain
 non-authenticating metadata.
+
+### V5 context assembly
+
+`POST /api/v1/context` reuses the authenticated search and trusted
+visibility path, then selects ranked memories in order until the requested
+`maxTokens` budget is full. The response contains `memories`, a deterministic
+`context` string, `tokenCount`, and bounded `retrievalMetadata`. The default
+budget is 4,000 tokens; the hard maximum is 100,000 and the candidate cap is
+100. Oversized memories are skipped and counted in `omittedCount` rather than
+being silently truncated. Internal embedding vectors are omitted from returned
+memory objects. See [v5-context-spec.md](v5-context-spec.md).
 
 ### Batches
 

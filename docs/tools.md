@@ -1,15 +1,16 @@
 # Tool Reference
 
-Remembra exposes thirteen MCP tools. All of them work the same way across every
-MCP-compatible client.
+Remembra exposes thirteen V4.9 MCP tools plus the additive V5
+`memory_context` tool. All of them work the same way across every MCP-compatible
+client.
 
 The V4.9 stable manifest is version `1` and contains exactly these names:
 `memory_store`, `memory_batch`, `memory_digest`, `memory_maintain`,
 `memory_search`, `memory_list`, `memory_forget`, `memory_get`,
 `memory_relate`, `memory_history`, `memory_update`, `memory_archive`, and
-`memory_revive`. Existing names are not renamed or removed; aliases are only
-introduced through an explicit compatibility table in a future minor release.
-The manifest is covered by an automated `tools/list` test.
+`memory_revive`. V5 manifest version `2` adds `memory_context` without
+renaming or removing an existing tool. The manifest is covered by an automated
+`tools/list` test.
 
 ## `memory_store`
 
@@ -106,6 +107,25 @@ Returns formatted memories:
 [7133edba] DECISION (scope: global, importance: 4, 2026-09-23)
 Chose file-based storage for v1
 ```
+
+## `memory_context`
+
+Build a deterministic, token-bounded context from the same ranked, authorized
+retrieval path as `memory_search` (V5).
+
+| Argument | Type | Required | Default | Description |
+|----------|------|----------|---------|-------------|
+| `query` | string | no | — | Keywords; omit for a scope/recency-ranked context |
+| `scope` | string | no | — | Current project path/id |
+| `maxTokens` | 1–100000 | no | `4000` | Hard budget for the rendered context |
+| `limit` | 1–100 | no | `100` | Candidate cap |
+| `explain` | boolean | no | `false` | Include retrieval score metadata |
+
+Returns JSON containing `memories`, `context`, `tokenCount`, and
+`retrievalMetadata`. Oversized memories are skipped and counted in
+`omittedCount`; the context is never silently truncated or allowed to exceed
+the budget. Internal embedding vectors are omitted from the returned memory
+objects. See [v5-context-spec.md](v5-context-spec.md).
 
 ## `memory_list`
 

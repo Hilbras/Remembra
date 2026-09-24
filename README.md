@@ -123,6 +123,7 @@ light-mode toggle. Guide: **[docs/ui.md](docs/ui.md)**.
 | POST | `/memories/batch` | Bounded store/update/delete/selected-export batch |
 | PUT | `/memories/:id` | Patch fields incl. `trust`/`retention`; stale `expectedVersion` → 409 |
 | GET | `/memories/search?query=&scope=` | Search |
+| POST | `/api/v1/context` | Deterministic token-bounded context assembly (V5) |
 | GET | `/memories?scope=&type=` | List |
 | GET | `/memories/:id` | One memory + typed relations + backlinks |
 | POST | `/memories/:id/relate` | Add / remove / retype typed links |
@@ -188,6 +189,7 @@ tampered snapshot is rejected atomically, never half-imported. Of course,
 | `memory_archive` / `memory_revive` | Manually park a memory aside / bring it back |
 | `memory_digest` | Extract + store memories from a transcript (LLM) |
 | `memory_search` | Retrieve relevant memories (pass `scope` = current project) |
+| `memory_context` | Build a deterministic token-bounded context (V5) |
 | `memory_list` | Browse stored memories |
 | `memory_get` | Fetch one memory with its links and backlinks |
 | `memory_relate` | Typed links: supports/contradicts/supersedes/… (relationship graph) |
@@ -206,6 +208,8 @@ Full reference: **[docs/tools.md](docs/tools.md)**
 | [Self-hosting](docs/self-hosting.md) | Deployment, backups, limits, agent mode |
 | [Troubleshooting](docs/troubleshooting.md) | Common auth, provider, import, and SDK issues |
 | [V4.9 compatibility](docs/v4.9-compatibility.md) | Release matrix and verification results |
+| [V5 context contract](docs/v5-context-spec.md) | Token-budget API contract |
+| [V5 threat model](docs/v5-threat-model.md) | Context/tenant security boundaries |
 | [Memory model](docs/memory-model.md) | Types, scopes, ranking, storage format |
 | [Tool reference](docs/tools.md) | Every MCP tool with arguments |
 | [Public API](docs/public-api.md) | Stability contract: tools, HTTP routes, error codes, snapshot format, CLI |
