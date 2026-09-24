@@ -556,6 +556,7 @@ The release gate includes build, tests, security/recovery matrices, documentatio
 | Providers | [Providers](docs/providers.md) |
 | Operations | [Self-hosting](docs/self-hosting.md) · [Observability](docs/observability.md) · [UI](docs/ui.md) |
 | Project process | [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [V5 gates](docs/v5-release-gates.md) |
+| Future architecture | [V6 architecture specification](docs/v6-architecture-spec.md) |
 
 ---
 
@@ -564,6 +565,7 @@ The release gate includes build, tests, security/recovery matrices, documentatio
 - **V4.9 remains supported:** legacy HTTP routes, Markdown, existing clients, and all thirteen original MCP tools remain available.
 - **V5 is additive:** `memory_context`, tenant entities, and versioned APIs do not rename or remove the V4.9 surface.
 - **Current focus:** hardening the production memory platform, operational recovery, and measurable retrieval quality.
+- **V6 direction:** see the [V6 architecture specification](docs/v6-architecture-spec.md) for the security-first policy model, provider independence, offline-first core, migration lifecycle, and release roadmap.
 - **Schema boundary:** tenantless V4 records use schema `3`; tenant records use schema `4`.
 
 ## License

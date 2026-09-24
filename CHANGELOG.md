@@ -9,6 +9,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Added the draft [V6 architecture specification](docs/v6-architecture-spec.md),
+  covering first-class trust/sensitivity/expiration policy, provider-independent
+  offline operation, versioned API domains, migration gates, and release
+  discipline. No V6 implementation is implied by this design document.
+
 ## [5.0.0] — 2026-09-24
 
 **Production Memory Platform** — plan §13 of the Master Development Plan.
