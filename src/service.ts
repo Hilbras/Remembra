@@ -615,19 +615,9 @@ export class MemoryService {
     // before disk, before export — raw patterns never leave this process.
     if (this.redactOn) parsed = this.applyRedaction(parsed);
 
-    // V4.4: sensitive data policy check.
-    const sensitive = this.sensitiveDetector.scan(parsed.content);
-    if (sensitive.detected && sensitive.action === "reject") {
-      logEvent("warn", "sensitive_data.rejected", { categories: sensitive.categories }, "Remembra: sensitive data rejected by policy");
-      metrics.inc("remembra_errors_total", { code: "SENSITIVE_DATA", transport: "service" });
-      throw new RemembraError("SENSITIVE_DATA", `Sensitive data detected (${sensitive.categories.join(", ")})`);
-    }
-    if (sensitive.detected && sensitive.action === "quarantine") {
-      parsed.trust = "unverified";
-      parsed.meta = { ...parsed.meta, quarantined: true };
-      logEvent("warn", "sensitive_data.quarantined", { categories: sensitive.categories }, "Remembra: memory quarantined due to sensitive data");
-      metrics.inc("remembra_memory_quarantined_total", { categories: sensitive.categories.join(",") });
-    }
+    // V4.4/V5.0.2: apply the configured sensitive-data policy before any
+    // provider call, write, or derived representation is produced.
+    parsed = this.applySensitivePolicy(parsed);
 
     // V4.4: prompt injection detection (informational flag).
     const injection = this.injectionDetector.scan(parsed.content);
@@ -1090,7 +1080,23 @@ export class MemoryService {
       throw new RemembraError("INVALID_INPUT", "memory scope is not available to the verified agent context");
     }
     if (fields.content !== undefined && fields.content !== existing.content) {
-      next.embedding = await this.maybeEmbed(fields.content, undefined, tenant?.organizationId); // fail-open → keyword fallback
+      const cleaned = this.redactPair(fields.content, next.tags);
+      const policyApplied = this.applySensitivePolicy({
+        content: cleaned?.content ?? fields.content,
+        tags: cleaned?.tags ?? next.tags,
+        trust: next.trust,
+        meta: next.meta,
+      });
+      next.content = policyApplied.content;
+      if (policyApplied.trust) next.trust = policyApplied.trust;
+      if (policyApplied.meta) next.meta = policyApplied.meta;
+      const injection = this.injectionDetector.scan(next.content);
+      if (injection.flagged) {
+        logEvent("warn", "injection.detected", { matches: injection.matches.length }, "Remembra: prompt injection pattern detected in updated memory");
+        next.meta = { ...next.meta, injected: true };
+        metrics.inc("remembra_injection_flagged_total");
+      }
+      next.embedding = await this.maybeEmbed(next.content, undefined, tenant?.organizationId); // fail-open → keyword fallback
     }
     // A trust change is a (re)validation event (plan §4.2 lastValidated).
     if (fields.trust !== undefined && fields.trust !== existing.trust) {
@@ -1352,6 +1358,36 @@ export class MemoryService {
     const clean = this.redactPair(parsed.content, parsed.tags);
     if (!clean) return parsed;
     return { ...parsed, content: clean.content, tags: clean.tags };
+  }
+
+  /** Apply the configured sensitive-data policy to a content-bearing record. */
+  private applySensitivePolicy<
+    T extends {
+      content: string;
+      tags: string[];
+      trust?: StoreInput["trust"];
+      meta?: StoreInput["meta"];
+    },
+  >(input: T): T {
+    const sensitive = this.sensitiveDetector.scan(input.content);
+    if (!sensitive.detected) return input;
+    if (sensitive.action === "reject") {
+      logEvent("warn", "sensitive_data.rejected", { categories: sensitive.categories }, "Remembra: sensitive data rejected by policy");
+      metrics.inc("remembra_errors_total", { code: "SENSITIVE_DATA", transport: "service" });
+      throw new RemembraError("SENSITIVE_DATA", `Sensitive data detected (${sensitive.categories.join(", ")})`);
+    }
+    if (sensitive.action === "quarantine") {
+      logEvent("warn", "sensitive_data.quarantined", { categories: sensitive.categories }, "Remembra: sensitive data quarantined by policy");
+      metrics.inc("remembra_memory_quarantined_total", { categories: sensitive.categories.join(",") });
+      return {
+        ...input,
+        content: sensitive.text,
+        trust: "unverified",
+        meta: { ...input.meta, quarantined: true },
+      } as T;
+    }
+    if (sensitive.action === "redact") return { ...input, content: sensitive.text } as T;
+    return input;
   }
 
   /** Readiness probe (audit Phase 7): can the backend actually be read? */
@@ -1939,6 +1975,15 @@ export class MemoryService {
         provenance: (policy.provenance ?? m.provenance) as Provenance,
         owner: policy.owner,
         access: policy.access,
+      };
+      const cleaned = this.applyRedaction({ ...m, content: m.content, tags: m.tags } as StoreInput);
+      const policyApplied = this.applySensitivePolicy(cleaned);
+      m = {
+        ...m,
+        content: policyApplied.content,
+        tags: policyApplied.tags,
+        ...(policyApplied.trust ? { trust: policyApplied.trust } : {}),
+        ...(policyApplied.meta ? { meta: policyApplied.meta } : {}),
       };
       this.assertAgentWrite(m, options);
       prepared.push(m);
