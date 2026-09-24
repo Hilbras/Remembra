@@ -26,7 +26,8 @@ import {
   ExtractedMemory,
 } from "./llm.js";
 import { createInjectionDetector, InjectionResult } from "./injection-detector.js";
-import { createSensitiveDetector, SensitivePolicy } from "./sensitive-data.js";
+import { SensitiveDataDetector } from "./sensitive-data.js";
+import { loadMemoryPolicy, type MemoryPolicy } from "./policy.js";
 import { consolidate, ConsolidationFindings } from "./consolidation.js";
 import { computeHealth, getLifecycleState, agingScorePenalty } from "./lifecycle.js";
 import { AgentContext, canReadMemory, canUseScope, defaultAccess, defaultOwner } from "./agent.js";
@@ -64,6 +65,8 @@ export interface ServiceDeps {
   llmAdapter?: LlmAdapter;
   /** Token counter used by the V5 context API. */
   tokenCounter?: TokenCounter;
+  /** Validated V5 policy; loaded once from trusted configuration when omitted. */
+  policy?: MemoryPolicy;
   /** Injection points for tests. */
   embedFn?: (text: string, opts?: { signal?: AbortSignal }) => Promise<number[]>;
   extractFn?: (transcript: string, opts?: { signal?: AbortSignal }) => Promise<ExtractedMemory[]>;
@@ -150,10 +153,11 @@ export class MemoryService {
   private readonly jobs: JobQueue;
   /** V4.4: prompt injection detector (pattern-based). */
   private readonly injectionDetector = createInjectionDetector();
-  /** V4.4: sensitive data policy detector. */
-  private readonly sensitiveDetector = createSensitiveDetector();
+  /** V4.4/V5: sensitive data policy detector. */
+  private readonly sensitiveDetector: SensitiveDataDetector;
   /** Resolved extraction LLM — recorded as provenance.provider on digests (§4.3). */
   private readonly llmName: string;
+  private readonly policy: MemoryPolicy;
   private readonly tokenCounter: TokenCounter;
   private lastDecayRun = 0;
   private decayRunning = false;
@@ -163,6 +167,8 @@ export class MemoryService {
     const llm = deps.llmProvider ?? resolveLlmProvider();
     const embeddingAdapter = deps.embeddingAdapter;
     const llmAdapter = deps.llmAdapter;
+    this.policy = deps.policy ?? loadMemoryPolicy();
+    this.sensitiveDetector = new SensitiveDataDetector(this.policy.sensitiveData.action);
     this.llmName = llmAdapter?.id ?? llm;
     this.tokenCounter = deps.tokenCounter ?? defaultTokenCounter;
 
@@ -309,7 +315,12 @@ export class MemoryService {
     };
     const access = input.access ?? defaultAccess();
     if (!this.agentMode) {
-      return { ...input, access, owner: input.owner ?? defaultOwner(provenance) };
+      return {
+        ...input,
+        retention: input.retention ?? this.policy.lifecycle.default,
+        access,
+        owner: input.owner ?? defaultOwner(provenance),
+      };
     }
 
     const context = options.agent;
@@ -325,7 +336,15 @@ export class MemoryService {
     if (!context && hasAttribution) {
       throw new RemembraError("INVALID_INPUT", "agent attribution requires a verified agent context");
     }
-    if (!context) return { ...input, provenance, access, owner: input.owner ?? defaultOwner(provenance) };
+    if (!context) {
+      return {
+        ...input,
+        retention: input.retention ?? this.policy.lifecycle.default,
+        provenance,
+        access,
+        owner: input.owner ?? defaultOwner(provenance),
+      };
+    }
 
     for (const key of attributedKeys) {
       const supplied = provenance[key];
@@ -349,6 +368,7 @@ export class MemoryService {
     };
     return {
       ...input,
+      retention: input.retention ?? this.policy.lifecycle.default,
       provenance: canonical,
       access,
       owner: input.owner ?? (sourceType === "agent" ? "agent" : defaultOwner(canonical)),
@@ -528,6 +548,11 @@ export class MemoryService {
       pool,
       totalDocs === undefined ? q : { ...q, totalDocs },
       queryVec,
+      {
+        requireRoleTrust: this.policy.roles.requireTrust,
+        diversity: this.policy.retrieval.diversity,
+        reranking: this.policy.retrieval.reranking,
+      },
     );
     const durationMs = performance.now() - t0;
 
@@ -1155,6 +1180,9 @@ export class MemoryService {
     /** Cancellation (plan §3.7): HTTP disconnects abort the in-flight provider calls. */
     signal?: AbortSignal;
   } & AgentReadOptions): Promise<DigestResult> {
+    if (!this.policy.extraction.enabled) {
+      throw new RemembraError("INVALID_INPUT", "memory extraction is disabled by policy");
+    }
     const t0 = performance.now();
     const run = this.digestLock.then(() => this.doDigest(opts));
     this.digestLock = run.then(

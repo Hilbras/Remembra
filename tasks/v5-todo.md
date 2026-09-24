@@ -3,7 +3,7 @@
 - [x] Task 1: Define V5 public contracts and threat model.
 - [x] Task 2: Add deterministic token accounting and `memory.context`.
 - [x] Task 3: Publish the context API through stable transports.
-- [ ] Task 4: Add validated, fail-closed policy configuration.
+- [x] Task 4: Add validated, fail-closed policy configuration.
 - [ ] Task 5: Design and implement tenant namespaces.
 - [ ] Task 6: Complete the bounded hybrid retrieval/context pipeline.
 - [ ] Task 7: Establish 10K/100K+ performance budgets.

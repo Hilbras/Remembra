@@ -20,6 +20,9 @@ V5 work is additive until the tenant/schema migration contract is approved.
   route, the TypeScript SDK, and the additive `memory_context` MCP tool.
 - **Conservative token estimator** with injectable counters, hard candidate and
   budget limits, deterministic ordering, and internal-vector omission.
+- **Validated V5 policy configuration** with trusted file/env layering,
+  fail-closed validation, lifecycle defaults, extraction control, retrieval
+  toggles, and sensitive-data policy integration.
 
 ---
 

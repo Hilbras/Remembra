@@ -18,8 +18,17 @@ export const TRUST_POINTS: Record<TrustLevel, number> = {
 };
 
 /** Roles/instructions allowed to steer responses — trust ≥ trusted (§4.9). */
-function isStandingInstruction(m: Memory): boolean {
-  return (m.type === "role" || m.type === "instruction") && m.trust !== "unverified";
+function isStandingInstruction(m: Memory, requireTrust = true): boolean {
+  return (m.type === "role" || m.type === "instruction") && (!requireTrust || m.trust !== "unverified");
+}
+
+export interface RetrievalPolicyOptions {
+  /** Require trusted/verified/system trust for standing-instruction promotion. */
+  requireRoleTrust?: boolean;
+  /** Apply bounded MMR diversity when a query vector is available. */
+  diversity?: boolean;
+  /** Reserved for a future non-identity reranker; preserved in the policy contract. */
+  reranking?: boolean;
 }
 
 // =============================================================================
@@ -212,8 +221,8 @@ export function modifierScore(
 // =============================================================================
 
 /** Apply the +1000 standing-instruction gate (unchanged from v4.1 semantics). */
-export function applyStandingGate(score: number, m: Memory): number {
-  if (isStandingInstruction(m)) return score + 1000;
+export function applyStandingGate(score: number, m: Memory, requireTrust = true): number {
+  if (isStandingInstruction(m, requireTrust)) return score + 1000;
   return score;
 }
 
@@ -337,8 +346,11 @@ export function searchQ(
   memories: Memory[],
   q: SearchQuery,
   queryVec: number[] | null = null,
+  policy: RetrievalPolicyOptions = {},
 ): SearchResults {
   const now = Date.now();
+  const requireRoleTrust = policy.requireRoleTrust ?? true;
+  const diversity = policy.diversity ?? true;
   const { terms, temporal } = extractQuery(q.query);
   const effectiveLimit = q.limit ?? 10;
   const explain = q.explain ?? false;
@@ -363,7 +375,7 @@ export function searchQ(
     if (kwScore > 0) reasons.push("keyword_hit");
     const vecScore = queryVec ? vectorScore(m, queryVec) : 0;
     if (vecScore > 0) reasons.push("semantic_hit");
-    if (vecScore > 0 && vecScore < 5 && !isStandingInstruction(m) && m.scope !== "global" && !(q.scope && m.scope === q.scope)) {
+    if (vecScore > 0 && vecScore < 5 && !isStandingInstruction(m, requireRoleTrust) && m.scope !== "global" && !(q.scope && m.scope === q.scope)) {
       // Near-zero similarity gate for scoped memories without scope strength.
       continue;
     }
@@ -432,9 +444,9 @@ export function searchQ(
   // Step 8: standing-instruction gate (+1000 absolute).
   const gated = merged.map((e) => ({
     ...e,
-    final: applyStandingGate(e.final, e.m),
-    comp: { ...e.comp, ...(isStandingInstruction(e.m) ? { standing_gate: 1000 } : {}) },
-    reasons: [...e.reasons, ...(isStandingInstruction(e.m) ? ["role_gate"] : [])],
+    final: applyStandingGate(e.final, e.m, requireRoleTrust),
+    comp: { ...e.comp, ...(isStandingInstruction(e.m, requireRoleTrust) ? { standing_gate: 1000 } : {}) },
+    reasons: [...e.reasons, ...(isStandingInstruction(e.m, requireRoleTrust) ? ["role_gate"] : [])],
   }));
 
   // Sort by final score desc, then updatedAt desc, then id for determinism.
@@ -450,7 +462,7 @@ export function searchQ(
   // O(K·pool) loop bounded — full N-scan is prohibitively expensive at
   // audit scale (10K memories × 768-dim vectors).
   let finalRanked: Memory[];
-  if (queryVec && queryVec.length > 0 && ranked.length > 1) {
+  if (diversity && queryVec && queryVec.length > 0 && ranked.length > 1) {
     const mmrCap = Math.max(effectiveLimit * 10, 100);
     finalRanked = mmrDedup(ranked.slice(0, mmrCap), queryVec, effectiveLimit);
   } else {
@@ -475,7 +487,7 @@ export function searchQ(
       vector_scoring: scored.filter((e) => e.vecScore > 0).slice(0, 5).map((e) => ({ id: e.m.id, score: e.vecScore })),
       rrf_fusion: { method: "reciprocal_rank", k: 60 },
       ranking_modifiers: { recency_boost: true, importance_boost: true, aging_penalty: process.env.REMEMBRA_AGING_BOOST ?? "-50" },
-      standing_instruction_gate: { skipped: [], promoted: gated.filter((e) => isStandingInstruction(e.m)).map((e) => e.m.id) },
+      standing_instruction_gate: { skipped: [], promoted: gated.filter((e) => isStandingInstruction(e.m, requireRoleTrust)).map((e) => e.m.id) },
       mmr_diversity: { lambda: 0.5, removed_duplicates: ranked.length - finalRanked.length },
       final_context_selection: { max_tokens: 4000, memories_selected: finalRanked.length },
     };

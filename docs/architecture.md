@@ -126,6 +126,14 @@ never serializes a candidate that exceeds the budget. The HTTP, SDK, and MCP
 transports call this same service method; see
 [v5-context-spec.md](v5-context-spec.md).
 
+## V5 policy configuration
+
+`src/policy.ts` loads a bounded, validated policy once during service
+construction. Defaults are merged with an optional trusted YAML file and
+explicit environment overrides; invalid configuration fails closed. Request
+payloads cannot override extraction, sensitive-data, lifecycle, retrieval, or
+provenance policy. See [v5-policy.md](v5-policy.md).
+
 ## Schema versioning
 
 Every memory file carries `version: <n>` in frontmatter (`SCHEMA_VERSION` in

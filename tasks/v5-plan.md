@@ -85,7 +85,7 @@ recovery/security/performance → release.
 
 ### Phase 2 — Policy configuration
 
-- [ ] Task 4: Add validated, fail-closed policy configuration.
+- [x] Task 4: Add validated, fail-closed policy configuration.
   - Acceptance: extraction, sensitive-data, lifecycle, retrieval diversity,
     reranking, and provenance requirements have typed defaults, environment
     or file loading, validation errors, and no request-body override of
