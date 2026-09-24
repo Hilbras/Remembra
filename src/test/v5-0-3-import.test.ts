@@ -17,6 +17,12 @@ function record(id: string, content: string) {
     scope: "global",
     tags: [],
     importance: 3,
+    confidence: 1,
+    trust: "trusted" as const,
+    owner: "global" as const,
+    access: "global" as const,
+    provenance: { sourceType: "manual" as const },
+    version: 1,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
   };
@@ -47,6 +53,30 @@ test("REC-ATOMIC-001: service uses the backend atomic batch import path", async 
   } finally {
     (backend as unknown as { importMemory: typeof backend.importMemory }).importMemory = originalImport;
     await service.shutdownBackgroundJobs();
+    backend.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("REC-FAIL-001: SQLite batch import rolls back a transaction on injected failure", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v503-sqlite-failure-"));
+  const backend = new SqliteBackend({ root });
+  const originalInsert = (backend as unknown as { insertRow: (memory: unknown) => void }).insertRow.bind(backend);
+  let inserts = 0;
+  (backend as unknown as { insertRow: (memory: unknown) => void }).insertRow = (memory) => {
+    if (inserts++ === 1) throw new Error("injected sqlite transaction failure");
+    originalInsert(memory);
+  };
+  try {
+    await assert.rejects(
+      () => backend.importBatch([
+        record("52345678-1234-4234-8234-123456789abc", "sqlite batch one"),
+        record("62345678-1234-4234-8234-123456789abc", "sqlite batch two"),
+      ] as never),
+      /injected sqlite transaction failure/,
+    );
+    assert.equal((await backend.all()).length, 0);
+  } finally {
     backend.close();
     await fs.rm(root, { recursive: true, force: true });
   }
