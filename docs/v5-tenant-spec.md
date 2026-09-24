@@ -186,8 +186,9 @@ relationship is stored. Membership changes are versioned and audited.
 Creating, listing, updating, deleting, or changing membership for any of these
 entities is a separate authorized operation. The V5 service can consume a
 host `TenantDirectory` for versioned membership re-authorization; the shipped
-`InMemoryTenantDirectory` is a deterministic reference adapter, while a
-production host should implement the same contract in its durable identity
+`InMemoryTenantDirectory` is a deterministic reference adapter, and
+`FileTenantDirectory` provides an atomic, permission-safe local durable
+adapter. A production host should implement the same contract in its identity
 store. Entity CRUD/pagination remains disabled in the memory API until its
 tenant predicate, lifecycle, and cross-tenant tests are implemented. A
 principal used for a memory operation must be resolved against the current

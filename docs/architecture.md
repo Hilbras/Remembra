@@ -143,7 +143,8 @@ provenance policy. See [v5-policy.md](v5-policy.md).
 fail-closed identifier/matching primitives. `src/tenant-directory.ts` defines
 the versioned organization/user/project/agent membership authority used to
 re-authorize queued work; its in-memory implementation is a reference adapter
-for hosts, not a replacement for the host's durable identity store.
+and `tenant-directory-file.ts` provides an atomic local durable adapter, both
+replaceable by the host's production identity store.
 `src/tenant-migration.ts` defines the canonical HMAC-signed migration manifest;
 `src/tenant-migration-runner.ts` preflights and idempotently applies a mapped
 plan to a tenant-capable backend. `src/migration-state.ts` adds an atomic,

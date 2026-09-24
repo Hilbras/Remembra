@@ -140,9 +140,11 @@ memory objects. See [v5-context-spec.md](v5-context-spec.md).
 
 ### Tenant migration and recovery host API
 
-Trusted host/operator code can import `@hilbras/remembra/tenant-migration` to
-build and apply a signed, checksummed migration plan, and
-`@hilbras/remembra/migration-state` for an atomic, bounded checkpoint file.
+Trusted host/operator code can import `@hilbras/remembra/tenant-directory-file`
+for the durable local directory adapter and
+`@hilbras/remembra/tenant-migration` to build and apply a signed, checksummed
+migration plan. `@hilbras/remembra/migration-state` provides an atomic, bounded
+checkpoint file.
 `runDurableTenantMigration` verifies the manifest and destination capability
 before writes, resumes only after checking prior records, and records failures.
 `publishTenantMigration` is an explicit operator-confirmed marker; callers are

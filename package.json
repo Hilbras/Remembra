@@ -34,6 +34,11 @@
       "import": "./dist/tenant-directory.js",
       "default": "./dist/tenant-directory.js"
     },
+    "./tenant-directory-file": {
+      "types": "./dist/tenant-directory-file.d.ts",
+      "import": "./dist/tenant-directory-file.js",
+      "default": "./dist/tenant-directory-file.js"
+    },
     "./tenant-migration": {
       "types": "./dist/tenant-migration-runner.d.ts",
       "import": "./dist/tenant-migration-runner.js",

@@ -1,3 +1,7 @@
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { randomBytes } from "node:crypto";
+import { z } from "zod";
 import { RemembraError } from "./errors.js";
 import { isValidTenantId } from "./types.js";
 import {
@@ -43,6 +47,54 @@ export interface TenantDirectory {
   verifyContext(context: TenantContext): boolean | Promise<boolean>;
 }
 
+const directoryId = z.string().refine(isValidTenantId, "invalid tenant entity id");
+const displayName = z.string().min(1).max(256).optional();
+const directoryUserSchema = z.object({
+  organizationId: directoryId,
+  userId: directoryId,
+  displayName,
+}).strict();
+const directoryProjectSchema = z.object({
+  organizationId: directoryId,
+  projectId: directoryId,
+  displayName,
+}).strict();
+const directoryAgentSchema = z.object({
+  organizationId: directoryId,
+  agentId: directoryId,
+  userId: directoryId.optional(),
+  projectId: directoryId.optional(),
+  displayName,
+}).strict();
+const directoryRole = z.enum(["member", "manager", "admin"]);
+const directoryMemberSchema = z.object({
+  organizationId: directoryId,
+  projectId: directoryId,
+  userId: directoryId,
+  role: directoryRole,
+}).strict();
+const directoryProjectAgentSchema = z.object({
+  organizationId: directoryId,
+  projectId: directoryId,
+  agentId: directoryId,
+}).strict();
+const directorySnapshotSchema = z.object({
+  organizations: z.array(z.object({
+    organizationId: directoryId,
+    membershipVersion: z.number().int().positive(),
+  }).strict()).max(100_000),
+  users: z.array(directoryUserSchema).max(1_000_000),
+  projects: z.array(directoryProjectSchema).max(1_000_000),
+  agents: z.array(directoryAgentSchema).max(1_000_000),
+  projectMembers: z.array(directoryMemberSchema).max(5_000_000),
+  projectAgents: z.array(directoryProjectAgentSchema).max(5_000_000),
+}).strict();
+const directoryFileSchema = z.object({
+  format: z.literal("remembra-tenant-directory"),
+  version: z.literal(1),
+  state: directorySnapshotSchema,
+}).strict();
+
 interface OrganizationRecord {
   organizationId: string;
   membershipVersion: number;
@@ -69,6 +121,10 @@ function key(organizationId: string, id: string): string {
   return `${organizationId}\u0000${id}`;
 }
 
+function membershipKey(organizationId: string, projectId: string, userId: string): string {
+  return `${organizationId}\u0000${projectId}\u0000${userId}`;
+}
+
 /**
  * Deterministic reference directory for host adapters and tests. It is
  * intentionally separate from MemoryBackend: production hosts may implement
@@ -81,6 +137,72 @@ export class InMemoryTenantDirectory implements TenantDirectory {
   private readonly agents = new Map<string, TenantDirectoryAgent>();
   private readonly projectMembers = new Map<string, ProjectMemberRecord>();
   private readonly projectAgents = new Map<string, ProjectAgentRecord>();
+
+  static fromSnapshot(snapshot: TenantDirectorySnapshot): InMemoryTenantDirectory {
+    const parsed = directorySnapshotSchema.parse(snapshot);
+    const directory = new InMemoryTenantDirectory();
+    for (const organization of parsed.organizations) {
+      if (directory.organizations.has(organization.organizationId)) {
+        throw new RemembraError("INVALID_INPUT", `duplicate organization ${organization.organizationId}`);
+      }
+      directory.organizations.set(organization.organizationId, { ...organization });
+    }
+    for (const user of parsed.users) {
+      directory.requireOrganization(user.organizationId);
+      const userKey = key(user.organizationId, user.userId);
+      if (directory.users.has(userKey)) throw new RemembraError("INVALID_INPUT", `duplicate user ${user.userId}`);
+      directory.users.set(userKey, { ...user });
+    }
+    for (const project of parsed.projects) {
+      directory.requireOrganization(project.organizationId);
+      const projectKey = key(project.organizationId, project.projectId);
+      if (directory.projects.has(projectKey)) throw new RemembraError("INVALID_INPUT", `duplicate project ${project.projectId}`);
+      directory.projects.set(projectKey, { ...project });
+    }
+    for (const agent of parsed.agents) {
+      directory.requireOrganization(agent.organizationId);
+      const agentKey = key(agent.organizationId, agent.agentId);
+      if (directory.agents.has(agentKey)) throw new RemembraError("INVALID_INPUT", `duplicate agent ${agent.agentId}`);
+      if (agent.userId && !directory.users.has(key(agent.organizationId, agent.userId))) {
+        throw new RemembraError("INVALID_INPUT", `agent ${agent.agentId} references an unknown user`);
+      }
+      if (agent.projectId && !directory.projects.has(key(agent.organizationId, agent.projectId))) {
+        throw new RemembraError("INVALID_INPUT", `agent ${agent.agentId} references an unknown project`);
+      }
+      directory.agents.set(agentKey, { ...agent });
+    }
+    for (const member of parsed.projectMembers) {
+      directory.requireOrganization(member.organizationId);
+      if (!directory.projects.has(key(member.organizationId, member.projectId))) {
+        throw new RemembraError("INVALID_INPUT", `membership references an unknown project`);
+      }
+      if (!directory.users.has(key(member.organizationId, member.userId))) {
+        throw new RemembraError("INVALID_INPUT", `membership references an unknown user`);
+      }
+      const memberKey = membershipKey(member.organizationId, member.projectId, member.userId);
+      if (directory.projectMembers.has(memberKey)) throw new RemembraError("INVALID_INPUT", "duplicate project membership");
+      directory.projectMembers.set(memberKey, { ...member });
+    }
+    for (const projectAgent of parsed.projectAgents) {
+      directory.requireOrganization(projectAgent.organizationId);
+      if (!directory.projects.has(key(projectAgent.organizationId, projectAgent.projectId))) {
+        throw new RemembraError("INVALID_INPUT", `project agent references an unknown project`);
+      }
+      const agent = directory.agents.get(key(projectAgent.organizationId, projectAgent.agentId));
+      if (!agent || agent.projectId !== projectAgent.projectId) {
+        throw new RemembraError("INVALID_INPUT", "project agent does not match its agent project");
+      }
+      const projectAgentKey = key(projectAgent.organizationId, projectAgent.agentId);
+      if (directory.projectAgents.has(projectAgentKey)) throw new RemembraError("INVALID_INPUT", "duplicate project agent");
+      directory.projectAgents.set(projectAgentKey, { ...projectAgent });
+    }
+    for (const agent of directory.agents.values()) {
+      if (agent.projectId && !directory.projectAgents.has(key(agent.organizationId, agent.agentId))) {
+        throw new RemembraError("INVALID_INPUT", "agent is missing its project association");
+      }
+    }
+    return directory;
+  }
 
   createOrganization(organizationId: string): void {
     assertEntityId(organizationId, "organization id");
@@ -130,6 +252,13 @@ export class InMemoryTenantDirectory implements TenantDirectory {
     for (const [k, agent] of this.projectAgents) {
       if (agent.organizationId === organizationId && agent.projectId === projectId) this.projectAgents.delete(k);
     }
+    for (const [k, agent] of this.agents) {
+      if (agent.organizationId === organizationId && agent.projectId === projectId) {
+        const unassigned = { ...agent };
+        delete unassigned.projectId;
+        this.agents.set(k, unassigned);
+      }
+    }
     this.bump(organizationId);
   }
 
@@ -146,12 +275,15 @@ export class InMemoryTenantDirectory implements TenantDirectory {
       throw new RemembraError("NOT_FOUND", `project ${agent.projectId} not found in organization`);
     }
     this.agents.set(key(agent.organizationId, agent.agentId), { ...agent });
+    const projectAgentKey = key(agent.organizationId, agent.agentId);
     if (agent.projectId) {
-      this.projectAgents.set(key(agent.organizationId, agent.agentId), {
+      this.projectAgents.set(projectAgentKey, {
         organizationId: agent.organizationId,
         projectId: agent.projectId,
         agentId: agent.agentId,
       });
+    } else {
+      this.projectAgents.delete(projectAgentKey);
     }
     this.bump(agent.organizationId);
   }
@@ -172,7 +304,7 @@ export class InMemoryTenantDirectory implements TenantDirectory {
     this.requireOrganization(organizationId);
     if (!this.projects.has(key(organizationId, projectId))) throw new RemembraError("NOT_FOUND", `project ${projectId} not found`);
     if (!this.users.has(key(organizationId, userId))) throw new RemembraError("NOT_FOUND", `user ${userId} not found`);
-    this.projectMembers.set(key(organizationId, `${projectId}:${userId}`), {
+    this.projectMembers.set(membershipKey(organizationId, projectId, userId), {
       organizationId,
       projectId,
       userId,
@@ -182,7 +314,7 @@ export class InMemoryTenantDirectory implements TenantDirectory {
   }
 
   revokeProjectMembership(organizationId: string, projectId: string, userId: string): void {
-    this.projectMembers.delete(key(organizationId, `${projectId}:${userId}`));
+    this.projectMembers.delete(membershipKey(organizationId, projectId, userId));
     this.bump(organizationId);
   }
 
@@ -208,7 +340,7 @@ export class InMemoryTenantDirectory implements TenantDirectory {
       if (!this.projects.has(key(principal.organizationId, principal.projectId))) return false;
       if (!isAdmin) {
         const userAllowed = principal.userId
-          ? this.projectMembers.has(key(principal.organizationId, `${principal.projectId}:${principal.userId}`))
+          ? this.projectMembers.has(membershipKey(principal.organizationId, principal.projectId, principal.userId))
           : false;
         const agentAllowed = principal.agentId
           ? this.projectAgents.has(key(principal.organizationId, principal.agentId)) &&
