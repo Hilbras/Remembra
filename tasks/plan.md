@@ -81,7 +81,7 @@ Prepare Remembra for large memory collections without changing existing single-m
   - Files: `docs/performance.md`, `PERF.md` if needed.
   - Scope: S.
 
-- [ ] Task 8: Prepare V4.8.0 changelog, version, tag, GitHub Release, and npm publish.
+- [x] Task 8: Prepare V4.8.0 changelog, version, tag, GitHub Release, and npm publish.
   - Acceptance: all exit criteria pass; release artifacts point to the same commit.
   - Verification: build, full tests, audit, tag/release/package checks.
   - Files: `CHANGELOG.md`, `src/version.ts`, `package.json`, `package-lock.json`.
