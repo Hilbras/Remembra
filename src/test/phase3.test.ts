@@ -393,4 +393,5 @@ test("statusFor maps codes to the documented statuses", async () => {
   assert.equal(statusFor(new RemembraError("LOCK_TIMEOUT", "x")), 423);
   assert.equal(statusFor(new RemembraError("IO_ERROR", "x")), 500);
   assert.equal(statusFor(new RemembraError("LLM_ERROR", "x")), 502);
+  assert.equal(statusFor(new RemembraError("TENANT_REQUIRED", "x")), 403);
 });

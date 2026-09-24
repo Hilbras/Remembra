@@ -134,6 +134,14 @@ explicit environment overrides; invalid configuration fails closed. Request
 payloads cannot override extraction, sensitive-data, lifecycle, retrieval, or
 provenance policy. See [v5-policy.md](v5-policy.md).
 
+## V5 tenant boundary
+
+`src/tenant.ts` defines the host-minted, immutable tenant context and
+fail-closed identifier/matching primitives. It does not yet alter the V4
+backend; the staged storage/service work is specified in
+[v5-tenant-spec.md](v5-tenant-spec.md). Strict mode will require these contexts
+at every backend and transport boundary.
+
 ## Schema versioning
 
 Every memory file carries `version: <n>` in frontmatter (`SCHEMA_VERSION` in

@@ -105,6 +105,15 @@ recovery/security/performance → release.
     migration fixtures, and no unscoped backend query paths.
   - Scope: L.
 
+Implementation slices:
+
+1. [x] Tenant principal/filter validators and opaque directory-key contract.
+2. [ ] Versioned tenant fields and explicit migration manifest.
+3. [ ] Tenant-aware `MemoryBackend` contract plus file backend enforcement.
+4. [ ] SQLite tenant columns, predicates, history/audit, and candidate SQL.
+5. [ ] Service authorization, immutable job context, and transport binding.
+6. [ ] Cross-tenant relation/import/export/maintenance hardening and matrix.
+
 ### Phase 4 — Retrieval quality and scale
 
 - [ ] Task 6: Complete the bounded hybrid retrieval/context pipeline.
@@ -178,6 +187,9 @@ contract are approved.
 | Reranking or relationship expansion becomes unbounded | High | Candidate, relation-hop, time, and output budgets with metrics |
 | Recovery writes partial state | Critical | Checksums, dry-run, atomic rename/import, interruption tests |
 | V5 breaks V4 clients | High | Preserve V4.9 contracts, additive APIs first, explicit migration guide and matrix |
+| Raw backend or pre-LIMIT candidates bypass tenant filters | Critical | Private strict-mode backend, tenant predicates in SQL/file enumeration, capability checks |
+| Global jobs, decay, caches, or CLI paths cross tenants | Critical | Immutable tenant context, partitioned state, operator capability checks |
+| Relation/reference fields leak foreign IDs | High | Tenant-aware resolution and normalized missing/not-found semantics |
 
 ## Open questions
 

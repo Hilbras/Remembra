@@ -24,7 +24,8 @@ export type ErrorCode =
   | "QUEUE_FULL" // V4.8: bounded background queue is full
   | "QUEUE_CLOSED" // V4.8: background queue is shutting down
   | "SENSITIVE_DATA" // V4.4: sensitive data detected under reject policy
-  | "INJECTION_DETECTED"; // V4.4: prompt injection pattern flagged
+  | "INJECTION_DETECTED" // V4.4: prompt injection pattern flagged
+  | "TENANT_REQUIRED"; // V5: strict mode requires a trusted tenant context
 
 export class RemembraError extends Error {
   constructor(
@@ -59,6 +60,7 @@ const HTTP_STATUS: Record<ErrorCode, number> = {
   QUEUE_CLOSED: 503, // Background worker is shutting down
   SENSITIVE_DATA: 400, // V4.4: Bad Request — sensitive data under reject policy
   INJECTION_DETECTED: 400, // V4.4: Bad Request — injection detected under strict policy
+  TENANT_REQUIRED: 403, // V5: trusted tenant context is required
 };
 
 export function statusFor(err: RemembraError): number {
