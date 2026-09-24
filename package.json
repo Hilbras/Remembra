@@ -82,7 +82,7 @@
     "bench:tenant": "npm run build && bash scripts/bench-tenant.sh",
     "release:check": "node scripts/release-gate.mjs",
     "security:check": "node --test dist/test/tenant-http.test.js dist/test/tenant-service.test.js dist/test/tenant-entities-http.test.js dist/test/foundation.test.js dist/test/v5-0-1-security.test.js dist/test/v5-0-1-startup.test.js dist/test/v5-0-1-path-security.test.js dist/test/v5-0-1-snapshot-security.test.js dist/test/v5-0-1-migration.test.js dist/test/v5-0-2-authorization.test.js",
-    "recovery:check": "node --test dist/test/recovery.test.js dist/test/snapshot-integrity.test.js dist/test/migration-state.test.js dist/test/tenant-migration-runner.test.js dist/test/sqlite-recovery.test.js",
+    "recovery:check": "node --test dist/test/recovery.test.js dist/test/snapshot-integrity.test.js dist/test/migration-state.test.js dist/test/tenant-migration-runner.test.js dist/test/sqlite-recovery.test.js dist/test/v5-0-3-recovery.test.js",
     "test": "node --test dist/test/*.test.js",
     "docs:check": "node scripts/check-docs.mjs",
     "prepublishOnly": "npm run build && npm test && npm run docs:check"

@@ -304,6 +304,7 @@ test("encryption: missing key fails loudly — reads reject, health goes 503", a
 
   const health = await new MemoryService(fresh, { embeddingProvider: "none" }).health();
   assert.equal(health.status, "unready");
+  assert.equal(health.state, "Failed");
   assert.equal(health.storage, "ENCRYPTED_NO_KEY", "readiness reports the real cause");
 });
 

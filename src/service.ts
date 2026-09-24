@@ -46,6 +46,7 @@ import {
 } from "./authorization.js";
 import { createSignedSnapshot, isSignedSnapshot, verifySignedSnapshot, type SignedSnapshot } from "./snapshot-integrity.js";
 import { JobQueue } from "./job-queue.js";
+import { transitionRecoveryState, type RecoveryState } from "./recovery-state.js";
 import type { TenantDirectory } from "./tenant-directory.js";
 import { applyTenantMigration, preflightTenantMigration, type TenantMigrationPlan } from "./tenant-migration-runner.js";
 import type { JobHandle } from "./job-queue.js";
@@ -216,6 +217,7 @@ export class MemoryService {
   private readonly policy: MemoryPolicy;
   private readonly tokenCounter: TokenCounter;
   #backend: MemoryBackend;
+  private recoveryState: RecoveryState = "Recovering";
   private readonly backendName?: "sqlite" | "file";
   private readonly backendFallback: boolean;
   private lastDecayRun = 0;
@@ -1393,6 +1395,7 @@ export class MemoryService {
   /** Readiness probe (audit Phase 7): can the backend actually be read? */
   async health(): Promise<{
     status: "ok" | "unready";
+    state: RecoveryState;
     version: string;
     uptime_s: number;
     storage: string;
@@ -1403,12 +1406,15 @@ export class MemoryService {
     let storage = "ok";
     try {
       await this.#backend.all();
+      this.recoveryState = transitionRecoveryState(this.recoveryState, "ready");
     } catch (err) {
       storage = errorLabel(err);
+      this.recoveryState = transitionRecoveryState(this.recoveryState, "failed");
     }
     const cache = this.storageStats();
     return {
       status: storage === "ok" ? "ok" : "unready",
+      state: this.recoveryState,
       version: VERSION,
       uptime_s: Math.round(process.uptime()),
       storage,

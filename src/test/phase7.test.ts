@@ -282,6 +282,7 @@ test("health: ready server reports version, uptime, storage and cache", async ()
     assert.equal(res.status, 200);
     const body = (await res.json()) as Record<string, unknown>;
     assert.equal(body.status, "ok");
+    assert.equal(body.state, "Healthy");
     assert.equal(body.version, VERSION);
     assert.equal(body.storage, "ok");
     assert.equal(typeof body.uptime_s, "number");
@@ -317,6 +318,7 @@ test("health: broken storage flips to 503 unready with the failing code", async 
     assert.equal(res.status, 503, "readiness must fail, not lie");
     const body = (await res.json()) as Record<string, unknown>;
     assert.equal(body.status, "unready");
+    assert.equal(body.state, "Failed");
     assert.equal(body.storage, "IO_ERROR");
     assert.equal(body.version, VERSION);
   } finally {
