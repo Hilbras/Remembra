@@ -14,9 +14,10 @@ REMEMBRA_BENCH_SIZES=10000,100000 REMEMBRA_BENCH_QUERIES=5 npm run bench:tenant
 
 The harness seeds two organizations into a temporary SQLite database, opens a
 strict `MemoryService` with host-minted contexts, disables FTS maintenance to
-isolate candidate-query cost, and searches only organization A. The default is
-five repeated queries per size; the benchmark runs each size in a separate
-worker so native SQLite cleanup cannot contaminate the next measurement.
+isolate candidate-query cost, and searches only organization A. Each warmup and
+measured sample runs in a fresh short-lived worker so the known
+better-sqlite3 11/Node 24 cumulative-query cleanup failure cannot contaminate
+measurements or the next sample.
 
 ## Regression ceilings
 
@@ -50,8 +51,8 @@ A fresh strict-tenant gate run after the recovery/retrieval changes recorded:
 
 | Corpus | Seed ms | Search p50 ms | Search p95 ms | Heap MB |
 |---|---:|---:|---:|---:|
-| 10,000 | 914.19 | 31.86 | 33.61 | 12.26 |
-| 100,000 | 8,415.93 | 381.43 | 425.95 | 12.27 |
+| 10,000 | 904 | 51.18 | 53.93 | 10.62 |
+| 100,000 | 9,708 | 416.11 | 610.18 | 10.62 |
 
 Both remain below the documented p95, heap, and seed ceilings. The scale
 harness also completed its 10K/50K bounded-candidate runs; its FTS5-unavailable

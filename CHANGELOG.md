@@ -54,9 +54,12 @@ V5 work is additive until the tenant/schema migration contract is approved.
   reject symlink/oversized/tampered inputs, and are used by keyed CLI
   export/import. Snapshot restore also has a no-write `previewSnapshot` and
   `import --dry-run` preflight path.
+- **V5 release gates** are reproducible through `npm run release:check`,
+  including dedicated tenant-security and recovery matrices before build/docs,
+  audit, package, and benchmark publication gates.
 - **SQLite recovery** adds verified online backups, `integrity_check` and
-  schema validation, and same-directory atomic restore publication with
-  symlink/active-sidecar rejection.
+  schema validation, same-directory atomic restore publication, retained
+  pre-restore rollback, and symlink/active-sidecar rejection.
 - **Strict HTTP ingress hardening** rejects tenant-bearing headers, query
   parameters, and request fields (while allowing signed snapshot records) so
   public callers cannot select an organization.

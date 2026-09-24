@@ -11,16 +11,8 @@
  * path includes tenant predicates before candidate limits/counts.
  */
 import { promises as fs } from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { SqliteBackend } from "../dist/sqlite-backend.js";
-import { MemoryService } from "../dist/service.js";
-import { createTenantContext } from "../dist/tenant.js";
 
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const workerMode = process.env.REMEMBRA_BENCH_WORKER === "1";
 const resultFile = process.env.REMEMBRA_BENCH_RESULT;
 
@@ -37,7 +29,7 @@ if (sizes.length === 0 || !Number.isFinite(queryCount)) {
   process.exit(2);
 }
 
-function context(organizationId) {
+function context(createTenantContext, organizationId) {
   return createTenantContext({
     organizationId,
     membershipVersion: "bench-membership-v1",
@@ -55,33 +47,20 @@ function round(value) {
   return Math.round(value * 100) / 100;
 }
 
-function seedInChild(root, size) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      process.execPath,
-      [path.join(SCRIPT_DIR, "seed-tenant-scale.mjs"), root, String(size)],
-      { stdio: "inherit" },
-    );
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
-      if (code === 0) resolve();
-      else reject(new Error(`tenant seed failed (${signal ?? `exit ${code}`})`));
-    });
-  });
-}
-
-async function runSize(size) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-tenant-bench-"));
+async function runSize(root, size, seedMs) {
   let store;
+  let service;
   try {
-    const seedStarted = performance.now();
-    await seedInChild(root, size);
-    const seedMs = round(performance.now() - seedStarted);
+    const [{ SqliteBackend }, { MemoryService }, { createTenantContext }] = await Promise.all([
+      import("../dist/sqlite-backend.js"),
+      import("../dist/service.js"),
+      import("../dist/tenant.js"),
+    ]);
     store = new SqliteBackend({ root, ftsEnabled: false });
     await store.migrate();
-    const tenantA = context("org-a");
+    const tenantA = context(createTenantContext, "org-a");
     store.touch = async () => {};
-    const service = new MemoryService(store, {
+    service = new MemoryService(store, {
       tenantMode: "strict",
       embeddingProvider: "none",
       decayIntervalMs: Number.MAX_SAFE_INTEGER,
@@ -113,58 +92,24 @@ async function runSize(size) {
       heap_mb_after: round(process.memoryUsage().heapUsed / 1024 / 1024),
     };
   } finally {
-    // better-sqlite3 11.x can abort during Node 24 cleanup after a large
-    // number of dynamically shaped tenant statements. The benchmark process
-    // owns this temporary connection; remove the tree and let the OS reclaim
-    // it after the JSON result is emitted rather than turning a measurement
-    // into a native-cleanup crash.
-    await fs.rm(root, { recursive: true, force: true });
+    // Release background work and native statement wrappers before removing
+    // the temporary tree. This is required for better-sqlite3 11.x under
+    // Node 24, whose cleanup hook asserts if work is still active at exit.
+    await service?.shutdownBackgroundJobs();
+    store?.close();
   }
 }
 
 async function runWorker() {
-  if (sizes.length !== 1 || !resultFile) throw new Error("tenant benchmark worker requires one size and a result file");
-  const result = await runSize(sizes[0]);
+  const root = process.env.REMEMBRA_BENCH_ROOT;
+  const seedMs = Number(process.env.REMEMBRA_BENCH_SEED_MS ?? 0);
+  if (sizes.length !== 1 || !resultFile || !root) throw new Error("tenant benchmark worker requires one size, root, and result file");
+  const result = await runSize(root, sizes[0], round(seedMs));
   await fs.writeFile(resultFile, JSON.stringify(result), "utf8");
-  process.exit(0);
 }
 
-async function runParent() {
-  const resultDir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-tenant-bench-results-"));
-  const results = [];
-  try {
-    for (const [index, size] of sizes.entries()) {
-      const resultPath = path.join(resultDir, `${index}.json`);
-      await new Promise((resolve, reject) => {
-        const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
-          stdio: "ignore",
-          env: {
-            ...process.env,
-            REMEMBRA_BENCH_WORKER: "1",
-            REMEMBRA_BENCH_SIZES: String(size),
-            REMEMBRA_BENCH_RESULT: resultPath,
-          },
-        });
-        child.once("error", reject);
-        child.once("exit", (code, signal) => {
-          if (code === 0) resolve();
-          else reject(new Error(`tenant benchmark worker failed (${signal ?? `exit ${code}`})`));
-        });
-      });
-      results.push(JSON.parse(await fs.readFile(resultPath, "utf8")));
-    }
-  } finally {
-    await fs.rm(resultDir, { recursive: true, force: true });
-  }
-  console.log(JSON.stringify({
-    benchmark: "tenant-scale-search",
-    backend: "sqlite",
-    mode: "strict-bounded-candidates",
-    organizations: 2,
-    results,
-  }, null, 2));
-  process.exit(0);
+if (!workerMode) {
+  console.error("This module is a benchmark worker; run `npm run bench:tenant`.");
+  process.exit(2);
 }
-
-if (workerMode) await runWorker();
-else await runParent();
+await runWorker();

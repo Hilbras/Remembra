@@ -10,11 +10,20 @@ export interface SqliteRecoveryOptions {
   maxBytes?: number;
   /** Permit replacement of an existing regular target. */
   overwrite?: boolean;
+  /** Retain the replaced target at rollbackPath for explicit rollback. */
+  keepPrevious?: boolean;
+  rollbackPath?: string;
 }
 
 interface SqliteVerification {
   schemaVersion: number;
   integrity: "ok";
+}
+
+export interface SqliteRestoreResult {
+  path: string;
+  schemaVersion: number;
+  rollbackPath?: string;
 }
 
 function invalid(message: string): never {
@@ -42,6 +51,16 @@ async function assertTarget(filePath: string, overwrite: boolean): Promise<void>
     if (!overwrite) invalid("target already exists");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+async function regularFileExists(filePath: string): Promise<boolean> {
+  try {
+    await inspectPath(filePath, "SQLite target");
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
   }
 }
 
@@ -122,11 +141,12 @@ export async function restoreSqliteBackup(
   backupPath: string,
   targetPath: string,
   options: SqliteRecoveryOptions = {},
-): Promise<{ path: string; schemaVersion: number }> {
+): Promise<SqliteRestoreResult> {
   const source = path.resolve(backupPath);
   const target = path.resolve(targetPath);
   resolvedDifferent(source, target, "backup and target paths");
   const verification = await verifySqliteBackup(source, { maxBytes: options.maxBytes });
+  const targetExists = await regularFileExists(target);
   await assertTarget(target, options.overwrite ?? false);
   for (const suffix of ["-wal", "-shm", "-journal"]) {
     const sidecar = `${target}${suffix}`;
@@ -138,7 +158,15 @@ export async function restoreSqliteBackup(
       throw error;
     }
   }
+  const rollbackPath = options.keepPrevious && targetExists
+    ? path.resolve(options.rollbackPath ?? `${target}.pre-restore`)
+    : undefined;
+  if (rollbackPath) {
+    resolvedDifferent(target, rollbackPath, "target and rollback paths");
+    await assertTarget(rollbackPath, options.overwrite ?? false);
+  }
   const temp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`);
+  let previousMoved = false;
   try {
     await fs.copyFile(source, temp);
     await fs.chmod(temp, 0o600);
@@ -149,10 +177,31 @@ export async function restoreSqliteBackup(
     } finally {
       await handle.close();
     }
+    if (rollbackPath) {
+      await fs.rename(target, rollbackPath);
+      previousMoved = true;
+    }
     await fs.rename(temp, target);
-    return { path: target, schemaVersion: verification.schemaVersion };
+    return { path: target, schemaVersion: verification.schemaVersion, ...(rollbackPath ? { rollbackPath } : {}) };
   } catch (error) {
     await fs.unlink(temp).catch(() => {});
+    if (previousMoved) {
+      const targetStillExists = await regularFileExists(target);
+      if (!targetStillExists) await fs.rename(rollbackPath!, target).catch(() => {});
+    }
     throw error;
   }
+}
+
+/** Restore a retained pre-restore SQLite file after a failed/undesired publication. */
+export async function rollbackSqliteBackup(
+  rollbackPath: string,
+  targetPath: string,
+  options: Pick<SqliteRecoveryOptions, "maxBytes" | "overwrite"> = {},
+): Promise<SqliteRestoreResult> {
+  return restoreSqliteBackup(rollbackPath, targetPath, {
+    ...options,
+    overwrite: options.overwrite ?? true,
+    keepPrevious: false,
+  });
 }

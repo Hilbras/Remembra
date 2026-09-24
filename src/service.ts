@@ -201,6 +201,7 @@ export class MemoryService {
   private readonly backend: MemoryBackend;
   private lastDecayRun = 0;
   private decayRunning = false;
+  private decayPromise: Promise<unknown> | null = null;
 
   constructor(db: MemoryBackend, deps: ServiceDeps = {}) {
     this.backend = db;
@@ -340,7 +341,7 @@ export class MemoryService {
   }
 
   async shutdownBackgroundJobs(): Promise<void> {
-    await this.jobs.shutdown();
+    await Promise.all([this.jobs.shutdown(), this.decayPromise ?? Promise.resolve()]);
   }
 
   /** Transport hook for administrative/non-data routes such as metrics. */
@@ -1976,7 +1977,7 @@ export class MemoryService {
     if (Date.now() - this.lastDecayRun < this.decayIntervalMs) return;
     this.lastDecayRun = Date.now();
     this.decayRunning = true;
-    this.decayPass(options)
+    const task = this.decayPass(options)
       .catch((err) =>
         logEvent(
           "warn",
@@ -1987,7 +1988,9 @@ export class MemoryService {
       )
       .finally(() => {
         this.decayRunning = false;
+        if (this.decayPromise === task) this.decayPromise = null;
       });
+    this.decayPromise = task;
   }
 
   /** Pick the most similar stored memory of the same type+scope for merge comparison. */

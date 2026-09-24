@@ -163,8 +163,9 @@ contains no snapshot key and is not a substitute for the signed manifest.
 `MemoryService.previewSnapshot` and `remembra import <file> --dry-run` perform
 the complete snapshot/tenant/reference preflight without writing. Trusted local
 recovery code can import `@hilbras/remembra/sqlite-recovery` for verified
-standalone SQLite backups and same-directory atomic restore; the live service
-must be closed and active SQLite sidecars are rejected.
+standalone SQLite backups, same-directory atomic restore, and explicit
+rollback of a retained pre-restore database; the live service must be closed
+and active SQLite sidecars are rejected.
 
 ### Batches
 

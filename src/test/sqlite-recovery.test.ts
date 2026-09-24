@@ -7,6 +7,7 @@ import { SqliteBackend } from "../sqlite-backend.js";
 import {
   backupSqlite,
   restoreSqliteBackup,
+  rollbackSqliteBackup,
   verifySqliteBackup,
 } from "../sqlite-recovery.js";
 import { StoreInput } from "../types.js";
@@ -28,11 +29,24 @@ test("SQLite recovery creates a verified backup and atomically restores a closed
 
   const targetPath = path.join(root, "target", "data.sqlite");
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  const restored = await restoreSqliteBackup(backupPath, targetPath);
+  const oldStore = new SqliteBackend({ dbPath: targetPath });
+  const oldStored = await oldStore.store(StoreInput.parse({ type: "fact", content: "previous sqlite memory" }));
+  oldStore.close();
+  const rollbackPath = `${targetPath}.pre-restore`;
+  const restored = await restoreSqliteBackup(backupPath, targetPath, {
+    overwrite: true,
+    keepPrevious: true,
+    rollbackPath,
+  });
   assert.equal(restored.schemaVersion, 3);
+  assert.equal(restored.rollbackPath, rollbackPath);
   const reopened = new SqliteBackend({ dbPath: targetPath });
   assert.equal((await reopened.get(stored.id, tenant))?.content, "durable sqlite memory");
   reopened.close();
+  await rollbackSqliteBackup(rollbackPath, targetPath);
+  const rolledBack = new SqliteBackend({ dbPath: targetPath });
+  assert.equal((await rolledBack.get(oldStored.id))?.content, "previous sqlite memory");
+  rolledBack.close();
   await fs.rm(root, { recursive: true, force: true });
 });
 

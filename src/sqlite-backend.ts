@@ -226,16 +226,16 @@ export class SqliteBackend implements MemoryBackend {
    * retaining the statements avoids a better-sqlite3/Node 24 native cleanup
    * assertion when a large result set is read repeatedly.
    */
-  private readonly allActiveStatement: Database.Statement;
-  private readonly allIncludingArchivedStatement: Database.Statement;
-  private readonly insertMemoryStatement: Database.Statement;
-  private readonly lastInsertRowidStatement: Database.Statement;
-  private readonly insertFtsStatement: Database.Statement | null;
-  private readonly deleteFtsStatement: Database.Statement | null;
-  private readonly auditStatement: Database.Statement;
-  private readonly candidateMatchStatement: Database.Statement;
-  private readonly candidateZeroStatement: Database.Statement;
-  private readonly candidateCountStatement: Database.Statement;
+  private allActiveStatement: Database.Statement | undefined;
+  private allIncludingArchivedStatement: Database.Statement | undefined;
+  private insertMemoryStatement: Database.Statement | undefined;
+  private lastInsertRowidStatement: Database.Statement | undefined;
+  private insertFtsStatement: Database.Statement | null | undefined;
+  private deleteFtsStatement: Database.Statement | null | undefined;
+  private auditStatement: Database.Statement | undefined;
+  private candidateMatchStatement: Database.Statement | undefined;
+  private candidateZeroStatement: Database.Statement | undefined;
+  private candidateCountStatement: Database.Statement | undefined;
   /** In-process FIFO so mutations are serialized within this instance. */
   private queue: Promise<void> = Promise.resolve();
   private migrationPromise: Promise<void> | null = null;
@@ -511,8 +511,8 @@ export class SqliteBackend implements MemoryBackend {
     let rows: Record<string, unknown>[];
     if (!tenant) {
       const statement = includeArchived
-        ? this.allIncludingArchivedStatement
-        : this.allActiveStatement;
+        ? this.allIncludingArchivedStatement!
+        : this.allActiveStatement!;
       rows = statement.all() as Record<string, unknown>[];
     } else {
       const scoped = tenantWhere("m", tenant);
@@ -565,7 +565,7 @@ export class SqliteBackend implements MemoryBackend {
     const termsJson = JSON.stringify(request.terms);
 
     try {
-      const matchRows = this.candidateMatchStatement.all(
+      const matchRows = this.candidateMatchStatement!.all(
         ...candidateParams,
         termsJson,
         maxCandidates + 1,
@@ -575,7 +575,7 @@ export class SqliteBackend implements MemoryBackend {
 
       const zeroLimit = Math.max(0, maxCandidates - matchRows.length);
       const zeroRows = zeroLimit > 0
-        ? this.candidateZeroStatement.all(
+        ? this.candidateZeroStatement!.all(
             ...candidateParams,
             termsJson,
             request.temporalBoost ? 1 : 0,
@@ -596,7 +596,7 @@ export class SqliteBackend implements MemoryBackend {
       }
       if (byId.size > maxCandidates) return partial();
 
-      const countRow = this.candidateCountStatement.get(...eligibleParams, ...tenantParams) as { count: number };
+      const countRow = this.candidateCountStatement!.get(...eligibleParams, ...tenantParams) as { count: number };
       return {
         memories: [...byId.values()],
         coverage: "complete",
@@ -859,8 +859,19 @@ export class SqliteBackend implements MemoryBackend {
     }));
   }
 
-  /** Close the database connection. Called on shutdown. */
+  /** Close the database connection and release statement wrappers before shutdown. */
   close(): void {
+    this.statementCache.clear();
+    this.allActiveStatement = undefined;
+    this.allIncludingArchivedStatement = undefined;
+    this.insertMemoryStatement = undefined;
+    this.lastInsertRowidStatement = undefined;
+    this.insertFtsStatement = undefined;
+    this.deleteFtsStatement = undefined;
+    this.auditStatement = undefined;
+    this.candidateMatchStatement = undefined;
+    this.candidateZeroStatement = undefined;
+    this.candidateCountStatement = undefined;
     try {
       this.db.close();
     } catch {
@@ -883,7 +894,7 @@ export class SqliteBackend implements MemoryBackend {
   // -------------------------------------------------------------------------
 
   private insertRow(m: Memory): void {
-    this.insertMemoryStatement.run(
+    this.insertMemoryStatement!.run(
       m.id,
       m.type,
       m.content,
@@ -914,7 +925,7 @@ export class SqliteBackend implements MemoryBackend {
       embedToBlob(m.embedding),
     );
     if (this.insertFtsStatement) {
-      const rowId = this.lastInsertRowidStatement.get() as { rowid: number };
+      const rowId = this.lastInsertRowidStatement!.get() as { rowid: number };
       this.insertFtsStatement.run(rowId.rowid, m.content);
     }
   }
@@ -964,7 +975,7 @@ export class SqliteBackend implements MemoryBackend {
           },
         }
       : {};
-    this.auditStatement.run(
+    this.auditStatement!.run(
       memoryId,
       tenant?.organizationId ?? null,
       tenant?.projectId ?? null,

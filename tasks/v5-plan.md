@@ -139,9 +139,9 @@ Implementation slices:
     path silently scans the full database.
   - Verification: reproducible benchmark harness, resource telemetry, and
     documented hardware/dataset assumptions.
-  - Current evidence: `npm run bench:tenant` covers strict 10K/100K candidate
-    search, p50/p95 latency, seed time, and heap ceilings in
-    [v5-performance.md](../docs/v5-performance.md).
+  - Current evidence: `npm run release:check` now runs the build, full tests,
+    docs, audit, package dry-run, and both benchmark suites as one fail-closed
+    release gate. See [v5-release-gates.md](../docs/v5-release-gates.md).
   - Scope: M/L.
 
 ### Phase 5 — Recovery and security
@@ -155,8 +155,9 @@ Implementation slices:
   - Current evidence: signed atomic snapshot files, migration checksum/reference
     preflight, idempotent application, atomic state checkpoints, verified
     resume, failure records, explicit publication markers, no-write
-    snapshot/CLI dry-runs, and verified SQLite backup/restore are tested.
-    Database-level atomic swap/rollback and cross-backend disaster fixtures remain.
+    snapshot/CLI dry-runs, verified SQLite backup/restore, and explicit
+    retained-previous rollback are tested.
+    Cross-backend atomic swap/rollback and disaster fixtures remain.
   - Scope: M/L.
 
 Implementation slices:

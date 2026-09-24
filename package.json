@@ -79,7 +79,10 @@
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "bench:scale": "npm run build && node scripts/bench-scale.mjs",
-    "bench:tenant": "npm run build && node scripts/bench-tenant.mjs",
+    "bench:tenant": "npm run build && bash scripts/bench-tenant.sh",
+    "release:check": "node scripts/release-gate.mjs",
+    "security:check": "node --test dist/test/tenant-http.test.js dist/test/tenant-service.test.js dist/test/tenant-entities-http.test.js dist/test/foundation.test.js",
+    "recovery:check": "node --test dist/test/recovery.test.js dist/test/snapshot-integrity.test.js dist/test/migration-state.test.js dist/test/tenant-migration-runner.test.js dist/test/sqlite-recovery.test.js",
     "test": "node --test dist/test/*.test.js",
     "docs:check": "node scripts/check-docs.mjs",
     "prepublishOnly": "npm run build && npm test && npm run docs:check"
