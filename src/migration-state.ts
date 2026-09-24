@@ -150,6 +150,8 @@ export interface DurableMigrationOptions {
   stateStore: MigrationStateStore;
   /** Persist every N successfully processed records (default 100). */
   checkpointEvery?: number;
+  /** Trusted destination filter applied during preflight and every write. */
+  destinationFilter?: TenantFilter;
 }
 
 export interface DurableMigrationResult {
@@ -186,7 +188,7 @@ export async function runDurableTenantMigration(
   key: Buffer | Uint8Array,
   options: DurableMigrationOptions,
 ): Promise<DurableMigrationResult> {
-  const manifest = preflightTenantMigration(plan, destination, key);
+  const manifest = preflightTenantMigration(plan, destination, key, options.destinationFilter);
   const planId = migrationPlanId(manifest);
   const requestedCheckpoint = Number(options.checkpointEvery ?? 100);
   if (!Number.isInteger(requestedCheckpoint) || requestedCheckpoint < 1) {
@@ -231,6 +233,7 @@ export async function runDurableTenantMigration(
   try {
     const result = await applyTenantMigration(plan, destination, key, {
       startAt: resumeAt,
+      destinationFilter: options.destinationFilter,
       onProgress: async (progress) => {
         if (progress.completed % checkpointEvery !== 0 && progress.completed !== progress.total) return;
         latest = stateFor(planId, "applying", {

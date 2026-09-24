@@ -22,6 +22,7 @@ import {
 import { tenantFilterFromContext } from "./tenant.js";
 import { readSignedSnapshotFile, writeSignedSnapshotFile } from "./recovery.js";
 import { backupSqlite, restoreSqliteBackup, verifySqliteBackup } from "./sqlite-recovery.js";
+import { FileMigrationStateStore, publishTenantMigration, runDurableTenantMigration } from "./migration-state.js";
 import {
   MemoryType,
   TrustLevel,
@@ -265,11 +266,32 @@ if (argv[0] === "export") {
       const snapshot = JSON.parse(await fs.readFile(input, "utf8"));
       const planValue = JSON.parse(await fs.readFile(planPath, "utf8"));
       const plan = verifyTenantSnapshotPlan(planValue, snapshot, operatorSnapshotKey);
-      const result = await service.migrateSnapshot(snapshot, plan, operatorSnapshotKey, {
-        tenant: operatorTenant,
-        dryRun: argv.includes("--dry-run"),
-      });
-      console.log(JSON.stringify(result, null, 2));
+      if (argv.includes("--dry-run")) {
+        const result = await service.migrateSnapshot(snapshot, plan, operatorSnapshotKey, {
+          tenant: operatorTenant,
+          dryRun: true,
+        });
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        const stateStore = new FileMigrationStateStore(path.join(validatedRoot, ".tenant-migration-state.json"));
+        const result = await runDurableTenantMigration(plan, store, operatorSnapshotKey, {
+          stateStore,
+          destinationFilter: operatorFilter,
+        });
+        const wasAlreadyPublished = result.state.status === "published";
+        const published = wasAlreadyPublished
+          ? result.state
+          : await publishTenantMigration(result.state.planId, stateStore);
+        console.log(JSON.stringify({
+          total: plan.records.length,
+          planned: plan.records.length,
+          imported: wasAlreadyPublished ? 0 : result.imported,
+          skipped: wasAlreadyPublished ? plan.records.length : result.skipped,
+          dryRun: false,
+          durable: true,
+          state: published.status,
+        }, null, 2));
+      }
       process.exit(0);
     } catch (err) {
       console.error(`migrate apply failed: ${err instanceof Error ? err.message : err}`);
