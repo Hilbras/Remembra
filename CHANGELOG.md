@@ -14,6 +14,42 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   offline operation, versioned API domains, migration gates, and release
   discipline. No V6 implementation is implied by this design document.
 
+## [5.0.2] — 2026-09-24
+
+### Security
+
+- Added a centralized authorization decision layer with explicit operation and
+  capability mappings, exact organization/project/user/agent visibility, and
+  non-informative cross-tenant lookup behavior.
+- Enforced tenant dimensions across file/SQLite candidate queries, counts,
+  history, audit, entities, batches, snapshots, and scoped migration.
+- Rechecked configured tenant membership before ordinary service work, provider
+  calls, and mutations; required the separate `tenant:export` capability for
+  full and selected exports.
+- Normalized reserved identity ingress across HTTP, MCP, and SDK surfaces and
+  sanitized provider/IO errors returned through public tool boundaries.
+- Applied configured sensitive-data redaction to store, update, and import paths.
+
+### Changed
+
+- Documented the exact file-backend, SQLite, snapshot, backup, and transport
+  encryption boundaries; strict mode refuses legacy global Markdown/encryption
+  commands.
+- Finalized the V5 threat model and added a versioned V5.0.2 authorization
+  contract with permanent `SEC-AUTH-*`, `SEC-SENS-001`, and `SEC-DOC-001`
+  regressions.
+- Preserved V4.9/V5 compatibility and deferred all V6 implementation.
+
+### Verification
+
+- Node 18.20.8 and Node 24.21.0 complete release gates passed at 5.0.2.
+- Full suite: 431 passed, 0 failed; security matrix: 64 passed; recovery matrix:
+  13 passed.
+- Documentation check passed (36 files), dependency audit found 0
+  vulnerabilities, and package dry-run included 207 files (422.7 kB).
+- Tenant benchmarks completed at 10K/100K records and the bounded scale
+  benchmark completed at 10K/50K records under both runtimes.
+
 ## [5.0.1] — 2026-09-24
 
 ### Security

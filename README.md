@@ -3,14 +3,14 @@
 > External memory for AI assistants that remains useful after the context window ends.
 
 [![npm](https://img.shields.io/npm/v/%40hilbras/remembra.svg)](https://www.npmjs.com/package/@hilbras/remembra)
-[![Release](https://img.shields.io/github/v/release/Hilbras/Remembra)](https://github.com/Hilbras/Remembra/releases/tag/v5.0.0)
+[![Release](https://img.shields.io/github/v/release/Hilbras/Remembra)](https://github.com/Hilbras/Remembra/releases/tag/v5.0.2)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.14.1-5fa3e6)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-compatible-brightgreen.svg)](https://modelcontextprotocol.io)
 
 Remembra stores facts, decisions, preferences, roles, constraints, relationships, and project history outside a model context window. It then retrieves only the authorized, relevant subset for the current session. The same memory service is available through MCP, HTTP, a TypeScript SDK, and a web dashboard.
 
-**Current release:** [`@hilbras/remembra@5.0.1`](https://www.npmjs.com/package/@hilbras/remembra/v/5.0.1) · [V5.0.1 release notes](https://github.com/Hilbras/Remembra/releases/tag/v5.0.1)
+**Current release:** [`@hilbras/remembra@5.0.2`](https://www.npmjs.com/package/@hilbras/remembra/v/5.0.2) · [V5.0.2 release notes](https://github.com/Hilbras/Remembra/releases/tag/v5.0.2)
 
 ---
 
