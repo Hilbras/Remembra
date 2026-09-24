@@ -64,8 +64,10 @@ opaque tenant contract is available from `@hilbras/remembra/tenant`.
 
 All methods return typed decoded JSON. Non-2xx responses throw
 `RemembraApiError`, which exposes `status`, machine-readable `code`, and the
-decoded response `body`. If a legacy-compatible response has no machine-readable
-`code`, the SDK uses `HTTP_<status>` as a fallback while retaining the raw body.
+decoded response `body`. Unexpected transport failures throw
+`RemembraNetworkError`; caller aborts and configured timeouts remain distinct.
+If a legacy-compatible response has no machine-readable `code`, the SDK uses
+`HTTP_<status>` as a fallback while retaining the raw body.
 
 ```ts
 try {

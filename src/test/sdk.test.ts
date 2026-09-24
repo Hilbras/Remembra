@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Remembra, RemembraApiError, RemembraTimeoutError, type FetchLike } from "../sdk.js";
+import { Remembra, RemembraApiError, RemembraNetworkError, RemembraTimeoutError, type FetchLike } from "../sdk.js";
 import { MemoryStore } from "../store.js";
 import { MemoryService } from "../service.js";
 import { createHttpServer } from "../http.js";
@@ -155,6 +155,24 @@ test("SDK preserves structured API errors", async () => {
       assert.equal(error.status, 404);
       assert.equal(error.code, "NOT_FOUND");
       assert.equal(error.message, "No memory with id missing");
+      return true;
+    },
+  );
+});
+
+test("SDK normalizes unexpected network failures", async () => {
+  const client = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async () => {
+      throw new Error("socket closed");
+    },
+  });
+  await assert.rejects(
+    () => client.search({}),
+    (error: unknown) => {
+      assert.ok(error instanceof RemembraNetworkError);
+      assert.equal(error.code, "NETWORK_ERROR");
+      assert.match(error.message, /network request failed/);
       return true;
     },
   );

@@ -157,6 +157,18 @@ export class RemembraTimeoutError extends Error {
   }
 }
 
+/** A transport failure that is neither an HTTP response nor a caller abort. */
+export class RemembraNetworkError extends Error {
+  readonly code = "NETWORK_ERROR" as const;
+  readonly cause: unknown;
+
+  constructor(cause: unknown) {
+    super("Remembra network request failed");
+    this.name = "RemembraNetworkError";
+    this.cause = cause;
+  }
+}
+
 export interface StoreResponse {
   id: string;
   message: string;
@@ -550,7 +562,11 @@ export class Remembra {
       return parsed as T;
     } catch (error) {
       if (timedOut && timeoutMs !== undefined) throw new RemembraTimeoutError(timeoutMs);
-      throw error;
+      if (options.signal?.aborted) throw error;
+      if (error instanceof RemembraApiError || error instanceof RemembraTimeoutError || error instanceof RemembraNetworkError) {
+        throw error;
+      }
+      throw new RemembraNetworkError(error);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       if (controller) options.signal?.removeEventListener("abort", onAbort);
