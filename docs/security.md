@@ -51,6 +51,24 @@ to be **followed**, not merely recalled. That is the feature — and the risk:
 Retrieved memories should be treated as **data with provenance**, not commands
 — but Remembra cannot enforce how the consuming model interprets them.
 
+## V5.0.1 hardening
+
+V5.0.1 treats rate limiting, logging, storage selection, history paths, and
+tenant snapshot import as security boundaries:
+
+- authentication occurs before protected rate-limit consumption; rate identities
+  are opaque and never contain raw API keys;
+- centralized log redaction covers nested headers, credentials, debug queries,
+  and provider diagnostics; public provider errors are generic;
+- SQLite initialization and migration readiness fail closed; file fallback is
+  explicit, warned, and visible in health;
+- file history IDs/paths are validated and contained, with symlink rejection;
+- ordinary strict restore rejects tenantless snapshots; tenantless migration
+  requires a signed target-bound plan and explicit dry-run/apply workflow.
+
+See the [V5.0.1 security and migration guide](v5.0.1-security-and-migration.md)
+for commands and permanent regression IDs.
+
 ## Enforced protections (3.1.0)
 
 | Protection | Mechanism |

@@ -130,6 +130,11 @@ test("SEC-SNAPSHOT-001: migrate plan/apply CLI is explicit, target-bound, and dr
     );
     assert.equal(planned.code, 0, planned.stderr);
     assert.equal(await fs.stat(planPath).then(() => true, () => false), true);
+    const originalPlan = JSON.parse(await fs.readFile(planPath, "utf8")) as Record<string, unknown>;
+    await fs.writeFile(planPath, JSON.stringify({ ...originalPlan, targetOrganizationId: "org-b" }), { mode: 0o600 });
+    const tampered = await runMigrationCli(["migrate", "apply", input, "--plan", planPath], env);
+    assert.notEqual(tampered.code, 0, "tampered plans must be rejected");
+    await fs.writeFile(planPath, JSON.stringify(originalPlan), { mode: 0o600 });
 
     const dryRun = await runMigrationCli(
       ["migrate", "apply", input, "--plan", planPath, "--dry-run"],
@@ -144,6 +149,10 @@ test("SEC-SNAPSHOT-001: migrate plan/apply CLI is explicit, target-bound, and dr
     );
     assert.equal(applied.code, 0, applied.stderr);
     assert.equal((JSON.parse(applied.stdout) as { imported: number }).imported, 1);
+    const retry = await runMigrationCli(["migrate", "apply", input, "--plan", planPath], env);
+    assert.equal(retry.code, 0, retry.stderr);
+    assert.equal((JSON.parse(retry.stdout) as { imported: number; skipped: number }).imported, 0);
+    assert.equal((JSON.parse(retry.stdout) as { skipped: number }).skipped, 1);
 
     const exported = await runMigrationCli(["export", exportPath], env);
     assert.equal(exported.code, 0, exported.stderr);

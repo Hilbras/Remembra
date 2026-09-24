@@ -18,6 +18,21 @@ Terminate TLS at the proxy and forward only to the loopback interface. Keep
 `/health` available to the platform probe; protect all data routes with the
 API key. Prefer a secret manager over shell history or checked-in `.env` files.
 
+## Backend startup and fallback
+
+SQLite is the default backend and SQLite initialization/migration failures are
+fail-closed. A file backend is available only as an explicit compatibility
+fallback:
+
+```bash
+export REMEMBRA_ALLOW_FILE_FALLBACK=1
+remembra --http
+```
+
+The fallback emits a warning and appears in `/health` as
+`{"backend":"file","fallback":true}`. Do not use it to conceal corruption or
+permission failures. See the [V5.0.1 security and migration guide](v5.0.1-security-and-migration.md).
+
 ## Storage and backups
 
 The default SQLite backend stores data under `REMEMBRA_HOME`. The CLI snapshot

@@ -391,7 +391,7 @@ remembra import backup.json --dry-run
 remembra import backup.json
 ```
 
-In strict mode, exports and imports use a canonical HMAC envelope and require `REMEMBRA_SNAPSHOT_KEY`. The complete snapshot/reference preflight happens before any write. Tenant migration adds a signed manifest, checksum preflight, durable checkpoints, verified resume, failure records, and an explicit publication marker.
+In strict mode, exports and imports use a canonical HMAC envelope and require `REMEMBRA_SNAPSHOT_KEY`. The complete snapshot/reference preflight happens before any write. Tenant migration adds a signed manifest, checksum preflight, durable checkpoints, verified resume, failure records, and an explicit publication marker. For the V5.0.1 analyze/plan/apply commands, see the [security and migration guide](docs/v5.0.1-security-and-migration.md).
 
 SQLite operators can use the verified recovery helpers from `@hilbras/remembra/sqlite-recovery` for online backup, integrity/schema checks, atomic restore, and retained-previous rollback. Close the live service before restoring and reject active SQLite sidecars.
 
@@ -550,7 +550,7 @@ The release gate includes build, tests, security/recovery matrices, documentatio
 | Clients and MCP setup | [Clients](docs/clients.md) · [Tools](docs/tools.md) |
 | HTTP and SDK | [Public API](docs/public-api.md) · [SDK](docs/sdk.md) |
 | V5 context | [Context contract](docs/v5-context-spec.md) · [Policy](docs/v5-policy.md) |
-| Tenants and migration | [Tenant contract](docs/v5-tenant-spec.md) · [V4.9 migration](docs/migration-v4.9.md) |
+| Tenants and migration | [Tenant contract](docs/v5-tenant-spec.md) · [V4.9 migration](docs/migration-v4.9.md) · [V5.0.1 migration guide](docs/v5.0.1-security-and-migration.md) |
 | Security | [Security model](docs/security.md) · [Threat model](docs/v5-threat-model.md) |
 | Storage and recovery | [Storage](docs/storage.md) · [Architecture](docs/architecture.md) |
 | Providers | [Providers](docs/providers.md) |

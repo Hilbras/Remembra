@@ -9,6 +9,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Security
+
+- V5.0.1 hardens authentication-before-rate-limiting, opaque rate identities,
+  centralized secret redaction, HTTP provider-error sanitization, file-history
+  path containment, and fail-closed SQLite startup.
+- Strict restore now rejects tenantless snapshots; explicit signed,
+  target-bound migration supports analyze, plan, dry-run, apply, and retry.
+
 - Added the draft [V6 architecture specification](docs/v6-architecture-spec.md),
   covering first-class trust/sensitivity/expiration policy, provider-independent
   offline operation, versioned API domains, migration gates, and release

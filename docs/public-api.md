@@ -160,6 +160,10 @@ before writes, resumes only after checking prior records, and records failures.
 `publishTenantMigration` is an explicit operator-confirmed marker; callers are
 responsible for any backend-specific atomic swap and rollback. The state file
 contains no snapshot key and is not a substitute for the signed manifest.
+The V5.0.1 CLI exposes read-only `migrate analyze`, signed `migrate plan`, and
+explicit `migrate apply --dry-run`/apply commands. Ordinary snapshot import
+never assigns a tenantless record; tenantless data requires the signed,
+target-bound plan workflow described in [v5.0.1-security-and-migration.md](v5.0.1-security-and-migration.md).
 `MemoryService.previewSnapshot` and `remembra import <file> --dry-run` perform
 the complete snapshot/tenant/reference preflight without writing. Trusted local
 recovery code can import `@hilbras/remembra/sqlite-recovery` for verified
