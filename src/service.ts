@@ -1407,6 +1407,7 @@ export class MemoryService {
     try {
       await this.#backend.all();
       this.recoveryState = transitionRecoveryState(this.recoveryState, "ready");
+      if (this.backendFallback) this.recoveryState = transitionRecoveryState(this.recoveryState, "degraded");
     } catch (err) {
       storage = errorLabel(err);
       this.recoveryState = transitionRecoveryState(this.recoveryState, "failed");

@@ -49,6 +49,7 @@ test("SEC-STORAGE-001: file fallback requires explicit opt-in and is observable"
     }).health();
     assert.equal(health.backend, "file");
     assert.equal(health.fallback, true);
+    assert.equal(health.state, "Degraded");
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

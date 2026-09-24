@@ -10,7 +10,8 @@ import { render } from "./store.js";
 import { MemoryService } from "./service.js";
 import { createHttpServer } from "./http.js";
 import { startMcp } from "./mcp.js";
-import { createOperatorTenantContext, snapshotKeyFromEnv, tenantModeFromEnv } from "./operator.js";
+import { createOperatorTenantContext, tenantModeFromEnv } from "./operator.js";
+import { validateStartupConfiguration, validateStorageRoot } from "./startup-validation.js";
 import { selectInitialBackend } from "./backend-selection.js";
 import {
   analyzeTenantSnapshot,
@@ -33,17 +34,26 @@ import {
 } from "./types.js";
 
 const root = MemoryStore.defaultRoot();
-const backendSelection = await selectInitialBackend(root);
-const store = backendSelection.store;
 const tenantMode = tenantModeFromEnv();
 const operatorTenant = tenantMode === "strict" ? createOperatorTenantContext() : undefined;
 const operatorOptions = operatorTenant ? { tenant: operatorTenant } : {};
 const operatorFilter = operatorTenant ? tenantFilterFromContext(operatorTenant) : undefined;
-const operatorSnapshotKey = snapshotKeyFromEnv();
+const startup = validateStartupConfiguration({
+  env: process.env,
+  tenantMode,
+  tenant: operatorTenant,
+});
+const validatedRoot = await validateStorageRoot(root);
+const backendSelection = await selectInitialBackend(validatedRoot);
+const store = backendSelection.store;
+const operatorSnapshotKey = startup.snapshotKey;
 const service = new MemoryService(store, {
   tenantMode,
   backend: backendSelection.backend,
   backendFallback: backendSelection.fallback,
+  policy: startup.policy,
+  embeddingProvider: startup.embeddingProvider,
+  llmProvider: startup.llmProvider,
   ...(operatorSnapshotKey ? { snapshotKey: operatorSnapshotKey } : {}),
 });
 
