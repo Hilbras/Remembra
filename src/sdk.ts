@@ -1,3 +1,5 @@
+import { API_PREFIX, API_VERSION, type ApiCapabilitiesResponse } from "./api-contract.js";
+export type { ApiCapabilitiesResponse } from "./api-contract.js";
 import type { ContextResult } from "./context.js";
 import type { TenantEntity, TenantEntityKind, TenantEntityPage, TenantMembershipPage } from "./tenant-entities.js";
 export type { TenantEntity, TenantEntityKind, TenantEntityPage, TenantMembershipPage } from "./tenant-entities.js";
@@ -246,7 +248,7 @@ export type BatchResponse =
  */
 export class Remembra {
   readonly endpoint: string;
-  readonly apiVersion = "v1" as const;
+  readonly apiVersion = API_VERSION;
   private readonly baseEndpoint: string;
   private readonly apiKey?: string;
   private readonly fetchImpl: FetchLike;
@@ -258,13 +260,17 @@ export class Remembra {
     }
     const trimmed = options.endpoint.replace(/\/+$/, "");
     this.endpoint = trimmed;
-    this.baseEndpoint = trimmed.endsWith("/api/v1")
-      ? trimmed.slice(0, -"/api/v1".length)
+    this.baseEndpoint = trimmed.endsWith(API_PREFIX)
+      ? trimmed.slice(0, -API_PREFIX.length)
       : trimmed;
     this.apiKey = options.apiKey;
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.defaultHeaders = { ...options.headers };
     if (!this.fetchImpl) throw new TypeError("No fetch implementation is available");
+  }
+
+  capabilities(options?: RequestOptions): Promise<ApiCapabilitiesResponse> {
+    return this.request("GET", "/capabilities", undefined, options);
   }
 
   store(input: SdkStoreInput, options?: RequestOptions): Promise<StoreResponse> {
@@ -431,7 +437,7 @@ export class Remembra {
     body?: unknown,
     options: RequestOptions & { query?: Record<string, unknown> } = {},
   ): Promise<T> {
-    const url = new URL(`${this.baseEndpoint}/api/v1${path}`);
+    const url = new URL(`${this.baseEndpoint}${API_PREFIX}${path}`);
     for (const [key, value] of Object.entries(options.query ?? {})) {
       if (value === undefined || value === null) continue;
       if (Array.isArray(value)) {

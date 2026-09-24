@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { timingSafeEqual, createHash } from "node:crypto";
 import { MemoryService } from "./service.js";
+import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION, API_VERSION_HEADER } from "./api-contract.js";
 import { DigestInput } from "./types.js";
 import { isRemembraError, statusFor, errorLabel, publicErrorMessage, RemembraError } from "./errors.js";
 import { logEvent } from "./log.js";
@@ -54,7 +55,6 @@ const normalizeIdentityKey = (key: string): string => key.replace(/[-_]/g, "").t
 const RESERVED_TENANT_HEADER = /^(?:x-)?(?:remembra-)?(?:tenant|tenant-id|organization|organization-id|user|user-id|project|project-id|agent|agent-id)$/i;
 
 const DEFAULT_MAX_BODY = 10 * 1024 * 1024; // transcripts can be large — 10 MiB
-const API_V1_PREFIX = "/api/v1";
 
 /** Web UI root: dist/ui (TS from src/ui + HTML/CSS copied by scripts/copy-ui.mjs). */
 const UI_ROOT = path.resolve(fileURLToPath(new URL("./ui/", import.meta.url)));
@@ -136,6 +136,7 @@ export function resolveListen(
  *
  * Routes:
  *   GET    /health              → liveness + readiness (no auth): 200 ok / 503 unready
+ *   GET    /api/v1/capabilities → authenticated bounded API discovery
  *   GET    /metrics             → Prometheus text format (auth when keyed)
  *   GET    / , /ui/*            → web dashboard shell + static assets (no auth, v4)
  *   POST   /memories            → store a memory
@@ -199,7 +200,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
     if (allowHeaders) {
       res.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
       res.setHeader("access-control-allow-headers", "Content-Type, Authorization, x-api-key");
-      res.setHeader("access-control-expose-headers", "X-Remembra-API-Version, Retry-After");
+      res.setHeader("access-control-expose-headers", `${API_VERSION_HEADER}, Retry-After`);
       res.setHeader("access-control-max-age", "86400");
     }
   }
@@ -214,11 +215,11 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
     try {
       requestUrl = new URL(req.url ?? "/", "http://localhost");
       rawPath = requestUrl.pathname.replace(/\/+$/, "") || "/";
-      isApiV1 = rawPath === API_V1_PREFIX || rawPath.startsWith(`${API_V1_PREFIX}/`);
+      isApiV1 = rawPath === API_PREFIX || rawPath.startsWith(`${API_PREFIX}/`);
     } catch {
       // The normal handler will turn malformed URLs into a controlled error.
     }
-    if (isApiV1) res.setHeader("X-Remembra-API-Version", "v1");
+    if (isApiV1) res.setHeader(API_VERSION_HEADER, API_VERSION);
 
     // V4.4: concurrency accounting.
     if (concurrent >= maxConcurrent) {
@@ -230,7 +231,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 
     try {
       const url = requestUrl ?? new URL(req.url ?? "/", "http://localhost");
-      const path = isApiV1 ? rawPath.slice(API_V1_PREFIX.length) || "/" : rawPath;
+      const path = isApiV1 ? rawPath.slice(API_PREFIX.length) || "/" : rawPath;
 
       // Request instrumentation (audit Phase 7) — low-cardinality route label,
       // counted on finish so the real status code is visible.
@@ -343,6 +344,12 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       }
 
       const agentOptions = { agent, tenant };
+
+      if (req.method === "GET" && path === "/capabilities") {
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, 200, API_CAPABILITY_MANIFEST);
+      }
 
       const requireEntityTenant = (): TenantContext => {
         if (!tenant) throw new RemembraError("TENANT_REQUIRED", "trusted tenant context required");
@@ -739,6 +746,8 @@ function routeLabelInternal(p: string): string {
       return "health";
     case "/metrics":
       return "metrics";
+    case "/capabilities":
+      return "capabilities";
     case "/audit":
       return "audit";
     case "/quality":

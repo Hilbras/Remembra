@@ -71,6 +71,7 @@ content-free liveness check.
 |--------|-------|---------|
 | GET | `/` · `/ui/*` | dashboard shell + assets (static, no auth) |
 | GET | `/health` | liveness/readiness (no auth) |
+| GET | `/api/v1/capabilities` | authenticated bounded API capability discovery |
 | GET | `/metrics` | Prometheus text (auth when keyed) |
 | GET | `/audit` | bounded audit-event listing |
 | GET | `/quality` | memory quality/health summary |
@@ -107,7 +108,13 @@ X-Remembra-API-Version: v1
 ```
 
 `/api/v1/health` is intentionally public, matching `/health`; all other v1
-routes retain the legacy auth requirements. The UI is not served below the v1
+routes retain the legacy auth requirements. `/api/v1/capabilities` is an
+authenticated, content-free discovery response containing the bounded v1
+capability manifest. The established `/api/v1` prefix is the compatibility
+authority; the roadmap's illustrative `/v1/...` spelling is not a second alias.
+Future breaking changes require a separately documented major namespace.
+
+The UI is not served below the v1
 prefix. When CORS is enabled, the version and `Retry-After` headers are exposed
 to browser clients.
 

@@ -7,6 +7,7 @@ import { Remembra, RemembraApiError, type FetchLike } from "../sdk.js";
 import { MemoryStore } from "../store.js";
 import { MemoryService } from "../service.js";
 import { createHttpServer } from "../http.js";
+import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION } from "../api-contract.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -43,6 +44,22 @@ test("SDK uses the v1 namespace, API key, typed paths, and query encoding", asyn
   assert.equal(new Headers(calls[0].init?.headers).get("x-api-key"), "secret");
   assert.equal(calls[1].url, "https://memory.example.test/api/v1/memories/search?query=hello+world&limit=5");
   assert.equal(calls[2].url, "https://memory.example.test/api/v1/memories?offset=20&limit=10");
+});
+
+test("SDK exposes the shared v1 capabilities contract", async () => {
+  const calls: string[] = [];
+  const client = new Remembra({
+    endpoint: "https://memory.example.test",
+    apiKey: "secret",
+    fetch: async (input) => {
+      calls.push(String(input));
+      return jsonResponse(API_CAPABILITY_MANIFEST);
+    },
+  });
+  const capabilities = await client.capabilities();
+  assert.deepEqual(capabilities, API_CAPABILITY_MANIFEST);
+  assert.equal(client.apiVersion, API_VERSION);
+  assert.equal(calls[0], `https://memory.example.test${API_PREFIX}/capabilities`);
 });
 
 test("SDK exposes typed tenant entity methods without tenant identity fields", async () => {
@@ -177,6 +194,7 @@ test("SDK completes an authenticated store/search/get/forget round trip", async 
 
 test("published SDK and tenant subpaths resolve without starting the CLI", async () => {
   const packageSdk = await import("@hilbras/remembra/sdk");
+  const packageContract = await import("@hilbras/remembra/api-contract");
   const packageTenant = await import("@hilbras/remembra/tenant");
   const packageDirectory = await import("@hilbras/remembra/tenant-directory");
   const packageDirectoryFile = await import("@hilbras/remembra/tenant-directory-file");
@@ -186,6 +204,7 @@ test("published SDK and tenant subpaths resolve without starting the CLI", async
   const packageRecovery = await import("@hilbras/remembra/recovery");
   const packageSqliteRecovery = await import("@hilbras/remembra/sqlite-recovery");
   assert.equal(typeof packageSdk.Remembra, "function");
+  assert.equal(packageContract.API_VERSION, API_VERSION);
   assert.equal(typeof packageTenant.createTenantContext, "function");
   assert.equal(typeof packageDirectory.InMemoryTenantDirectory, "function");
   assert.equal(typeof packageDirectoryFile.FileTenantDirectory, "function");

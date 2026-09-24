@@ -19,6 +19,11 @@
       "import": "./dist/sdk.js",
       "default": "./dist/sdk.js"
     },
+    "./api-contract": {
+      "types": "./dist/api-contract.d.ts",
+      "import": "./dist/api-contract.js",
+      "default": "./dist/api-contract.js"
+    },
     "./providers": {
       "types": "./dist/provider-adapters.d.ts",
       "import": "./dist/provider-adapters.js",

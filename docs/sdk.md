@@ -45,6 +45,7 @@ opaque tenant contract is available from `@hilbras/remembra/tenant`.
 
 ## Methods
 
+- `capabilities()` — fetch the bounded authenticated v1 capability manifest
 - `store(input)`
 - `search(params)`
 - `context({ query, scope, maxTokens })` — deterministic token-bounded context (V5)
@@ -87,6 +88,8 @@ await pending;
 
 ## API version
 
-Requests are sent under `/api/v1`. Legacy unversioned HTTP routes remain
-available on the server for compatibility, but new integrations should use the
-versioned namespace.
+Requests are sent under `/api/v1`. The shared contract also exposes
+`memory.apiVersion` and `memory.capabilities()`; the response is bounded and
+content-free. Legacy unversioned HTTP routes remain available on the server
+for compatibility, but new integrations should use the versioned namespace. A
+future breaking release will use a separately documented major namespace.

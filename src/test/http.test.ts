@@ -7,6 +7,7 @@ import type http from "node:http";
 import { MemoryStore } from "../store.js";
 import { MemoryService } from "../service.js";
 import { createHttpServer } from "../http.js";
+import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION } from "../api-contract.js";
 
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-http-"));
 const service = new MemoryService(new MemoryStore(dir));
@@ -94,6 +95,34 @@ test("v1 API namespace preserves auth, headers, and legacy handler behavior", as
   assert.equal(legacyInvalid.status, 400);
   assert.equal(legacyInvalid.headers.get("x-remembra-api-version"), null);
   assert.deepEqual(await legacyInvalid.json(), invalidBody);
+});
+
+test("v1 capabilities discovery is authenticated, versioned, and bounded", async () => {
+  const unauthorized = await fetch(`${base}/api/v1/capabilities`);
+  assert.equal(unauthorized.status, 401);
+
+  const response = await fetch(`${base}${API_PREFIX}/capabilities`, {
+    headers: { "x-api-key": "test-key" },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-remembra-api-version"), API_VERSION);
+  const body = await response.json() as {
+    apiVersion: string;
+    basePath: string;
+    capabilities: string[];
+    compatibility: { legacyRoutes: boolean; versionHeader: string };
+  };
+  assert.deepEqual(body, API_CAPABILITY_MANIFEST);
+  assert.equal(body.apiVersion, API_VERSION);
+  assert.equal(body.basePath, API_PREFIX);
+  assert.ok(body.capabilities.length <= 32);
+  assert.ok(body.capabilities.every((capability) => typeof capability === "string"));
+
+  const unsupported = await fetch(`${base}/api/v2/capabilities`, {
+    headers: { "x-api-key": "test-key" },
+  });
+  assert.equal(unsupported.status, 404);
+  assert.equal(unsupported.headers.get("x-remembra-api-version"), null);
 });
 
 test("v1 version header is present on concurrency-limit responses", async () => {
