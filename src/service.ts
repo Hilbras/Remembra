@@ -368,6 +368,22 @@ export class MemoryService {
     await Promise.all([this.jobs.shutdown(), this.decayPromise ?? Promise.resolve()]);
   }
 
+  /** Enter explicit read-only recovery mode; all service writes fail closed. */
+  enterReadOnly(): void {
+    this.recoveryState = transitionRecoveryState(this.recoveryState, "read_only");
+  }
+
+  /** Clear read-only mode only after an explicit recovery verification. */
+  verifyRecovery(): void {
+    this.recoveryState = transitionRecoveryState(this.recoveryState, "verified");
+  }
+
+  private assertWritable(): void {
+    if (this.recoveryState === "ReadOnly") {
+      throw new RemembraError("SERVICE_UNAVAILABLE", "storage is read-only");
+    }
+  }
+
   /** Transport hook for administrative/non-data routes such as metrics. */
   assertTenantCapability(options: AgentReadOptions, capability: "read" | "write" | "admin"): void {
     this.tenantFilter(options, capability);
@@ -378,6 +394,7 @@ export class MemoryService {
     capability: "read" | "write" | "admin" = "read",
     operation?: AuthorizationOperation,
   ): TenantFilter | undefined {
+    if (capability === "write") this.assertWritable();
     if (this.tenantMode === "strict") assertTenantContext(options.tenant);
     if (!options.tenant) return undefined;
     assertTenantContext(options.tenant);
@@ -1411,7 +1428,9 @@ export class MemoryService {
       if (this.backendFallback) this.recoveryState = transitionRecoveryState(this.recoveryState, "degraded");
     } catch (err) {
       storage = errorLabel(err);
-      this.recoveryState = transitionRecoveryState(this.recoveryState, "failed");
+      this.recoveryState = this.recoveryState === "ReadOnly"
+        ? transitionRecoveryState(this.recoveryState, "storage_error")
+        : transitionRecoveryState(this.recoveryState, "failed");
     }
     const cache = this.storageStats();
     return {
