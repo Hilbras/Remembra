@@ -44,8 +44,9 @@ V5 work is additive until the tenant/schema migration contract is approved.
   snapshots during migration.
 - **V5 tenant migration runner** preflights explicit organization/entity/ACL
   mappings, signs and verifies manifests, validates source/reference checksums,
-  and applies records idempotently to tenant-capable backends. Durable crash
-  publication remains a follow-up.
+  and applies records idempotently to tenant-capable backends. Durable
+  checkpoint/resume state and an explicit publication marker are now included;
+  backend-specific atomic swap/rollback remains deployment work.
 - **Atomic recovery files** write signed snapshots through fsync + rename,
   reject symlink/oversized/tampered inputs, and are used by keyed CLI
   export/import.

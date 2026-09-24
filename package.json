@@ -39,6 +39,11 @@
       "import": "./dist/tenant-migration-runner.js",
       "default": "./dist/tenant-migration-runner.js"
     },
+    "./migration-state": {
+      "types": "./dist/migration-state.d.ts",
+      "import": "./dist/migration-state.js",
+      "default": "./dist/migration-state.js"
+    },
     "./recovery": {
       "types": "./dist/recovery.d.ts",
       "import": "./dist/recovery.js",

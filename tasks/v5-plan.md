@@ -151,6 +151,10 @@ Implementation slices:
     and tested for file and SQLite backends.
   - Verification: corruption, interrupted restore, downgrade, and disaster
     recovery fixtures.
+  - Current evidence: signed atomic snapshot files, migration checksum/reference
+    preflight, idempotent application, atomic state checkpoints, verified
+    resume, failure records, and explicit publication markers are tested.
+    Database-level atomic swap/rollback and SQLite restore fixtures remain.
   - Scope: M/L.
 
 Implementation slices:
@@ -158,11 +162,13 @@ Implementation slices:
 1. [x] Canonical signed snapshot envelope, strict verification, and operator key
    configuration.
 2. [x] Tenant reference sanitization and pre-write reference validation.
-3. [x] Signed, preflighted, idempotent tenant migration runner (durable
-   crash-recovery/publication state remains).
+3. [x] Signed, preflighted, idempotent tenant migration runner with durable
+   crash-state checkpoint/resume and explicit publication marker.
 4. [x] Atomic signed snapshot file writer/reader with fsync + rename,
    symlink/size/tamper checks, and keyed CLI integration.
-5. [ ] Durable crash-state publication and database-level restore fixtures.
+5. [x] Durable migration state checkpoints, verified resume, failure records,
+   and explicit publication marker (database-level atomic swap/rollback and
+   SQLite restore fixtures remain).
 
 - [ ] Task 9: Complete the V5 security baseline.
   - Acceptance: authenticated API, authorization, rate limits, request limits,

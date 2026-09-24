@@ -172,12 +172,26 @@ export interface TenantMigrationApplyResult {
   skipped: number;
 }
 
-/** Verify and apply a plan; duplicate destination IDs are safely skipped on retry. */
-export async function applyTenantMigration(
+export interface TenantMigrationProgress {
+  completed: number;
+  total: number;
+  imported: number;
+  skipped: number;
+  id: string;
+}
+
+export interface TenantMigrationApplyOptions {
+  onProgress?: (progress: TenantMigrationProgress) => void | Promise<void>;
+  /** Number of already-verified records to skip (used by durable retries). */
+  startAt?: number;
+}
+
+/** Verify the signature, source checksums, mappings, and destination capability. */
+export function preflightTenantMigration(
   plan: TenantMigrationPlan,
   destination: MemoryBackend,
   key: Buffer | Uint8Array,
-): Promise<TenantMigrationApplyResult> {
+): TenantMigrationManifest {
   const manifest = verifyTenantMigrationManifest(plan.manifest, key);
   if (destination.tenantCapable !== true) {
     throw new RemembraError("SERVICE_UNAVAILABLE", "tenant migration requires a tenant-capable destination backend");
@@ -197,11 +211,35 @@ export async function applyTenantMigration(
       invalid(`destination organization mismatch for ${record.source.id}`);
     }
   }
+  return manifest;
+}
+
+/** Verify and apply a plan; duplicate destination IDs are safely skipped on retry. */
+export async function applyTenantMigration(
+  plan: TenantMigrationPlan,
+  destination: MemoryBackend,
+  key: Buffer | Uint8Array,
+  options: TenantMigrationApplyOptions = {},
+): Promise<TenantMigrationApplyResult> {
+  const manifest = preflightTenantMigration(plan, destination, key);
+  const requestedStart = Number(options.startAt ?? 0);
+  if (!Number.isInteger(requestedStart) || requestedStart < 0) {
+    invalid("startAt must be a non-negative integer");
+  }
+  const startAt = Math.min(requestedStart, plan.records.length);
   let imported = 0;
   let skipped = 0;
-  for (const record of plan.records) {
+  for (const [index, record] of plan.records.entries()) {
+    if (index < startAt) continue;
     if (await destination.importMemory(record.destination, filterFor(record.destination))) imported++;
     else skipped++;
+    await options.onProgress?.({
+      completed: index + 1,
+      total: manifest.records.length,
+      imported,
+      skipped,
+      id: record.destination.id,
+    });
   }
   return { imported, skipped };
 }

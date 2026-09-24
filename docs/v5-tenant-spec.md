@@ -364,8 +364,12 @@ The operation has:
 7. a retained rollback source until the operator confirms success.
 
 The shipped migration runner performs steps 1–5 in memory and applies records
-idempotently to a tenant-capable backend. Durable crash-state publication and
-atomic rollback are still required before strict rollout.
+idempotently to a tenant-capable backend. Its durable state layer atomically
+checkpoints progress, verifies prior records before resuming, records failures,
+and exposes an explicit publication marker after destination verification.
+Checkpoints default to every 100 records (configurable by the operator), so a
+crash replays at most the bounded uncheckpointed tail. Backend-specific atomic
+swap and rollback remain required before strict rollout.
 
 A failed or partial migration never switches the service into strict mode.
 Legacy defaults for owner/access are not tenant ownership: migration must assign

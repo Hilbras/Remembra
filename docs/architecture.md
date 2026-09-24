@@ -146,8 +146,10 @@ re-authorize queued work; its in-memory implementation is a reference adapter
 for hosts, not a replacement for the host's durable identity store.
 `src/tenant-migration.ts` defines the canonical HMAC-signed migration manifest;
 `src/tenant-migration-runner.ts` preflights and idempotently applies a mapped
-plan to a tenant-capable backend. Durable crash-state publication remains a
-separate recovery step.
+plan to a tenant-capable backend. `src/migration-state.ts` adds an atomic,
+bounded, checkpointed state file, verified resume points, explicit failure
+state, and an operator-confirmed publication marker. A backend-specific atomic
+swap/publication hook remains a separate deployment concern.
 The file and SQLite backends now
 accept optional tenant filters, hide tenant rows from unscoped legacy reads,
 and apply tenant predicates to point/candidate/history/audit paths. The strict

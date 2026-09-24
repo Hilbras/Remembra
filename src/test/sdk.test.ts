@@ -139,11 +139,13 @@ test("published SDK and tenant subpaths resolve without starting the CLI", async
   const packageTenant = await import("@hilbras/remembra/tenant");
   const packageDirectory = await import("@hilbras/remembra/tenant-directory");
   const packageMigration = await import("@hilbras/remembra/tenant-migration");
+  const packageMigrationState = await import("@hilbras/remembra/migration-state");
   const packageRecovery = await import("@hilbras/remembra/recovery");
   assert.equal(typeof packageSdk.Remembra, "function");
   assert.equal(typeof packageTenant.createTenantContext, "function");
   assert.equal(typeof packageDirectory.InMemoryTenantDirectory, "function");
   assert.equal(typeof packageMigration.planTenantMigration, "function");
+  assert.equal(typeof packageMigrationState.runDurableTenantMigration, "function");
   assert.equal(typeof packageRecovery.writeSignedSnapshotFile, "function");
 });
 
