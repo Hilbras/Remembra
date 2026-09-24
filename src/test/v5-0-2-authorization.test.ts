@@ -156,7 +156,7 @@ test("SEC-AUTH-002: the central evaluator default-denies and maps capabilities t
   assert.deepEqual(evaluateAuthorization(admin, "tenant.manage"), { allowed: true });
 });
 
-test("SEC-AUTH-002: default sensitive-data redaction is applied by service store and update paths", async () => {
+test("SEC-SENS-001: default sensitive-data redaction is applied by service store and update paths", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v502-redaction-"));
   const policy = defaultMemoryPolicy();
   policy.sensitiveData.action = "redact";
