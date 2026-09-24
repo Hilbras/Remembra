@@ -36,15 +36,32 @@ test("HTTP resolves tenant only through the trusted callback and ignores public 
   try {
     const stored = await fetch(`${base}/api/v1/memories`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-api-key": "tenant-key", "x-remembra-tenant": "org-b" },
+      headers: { "content-type": "application/json", "x-api-key": "tenant-key" },
       body: JSON.stringify({ type: "fact", content: "HTTP tenant memory", scope: "global" }),
     });
     assert.equal(stored.status, 201);
     const storedBody = await stored.json() as { memory: { tenantId: string } };
     assert.equal(storedBody.memory.tenantId, "org-a");
 
+    const forged = await fetch(`${base}/api/v1/memories`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "tenant-key", "x-remembra-tenant": "org-b" },
+      body: JSON.stringify({ type: "fact", content: "forged header" }),
+    });
+    assert.equal(forged.status, 400);
+    const forgedBody = await fetch(`${base}/api/v1/memories`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "tenant-key" },
+      body: JSON.stringify({ type: "fact", content: "forged body", tenantId: "org-b" }),
+    });
+    assert.equal(forgedBody.status, 400);
+    const forgedQuery = await fetch(`${base}/api/v1/memories/search?query=tenant&organizationId=org-b`, {
+      headers: { "x-api-key": "tenant-key" },
+    });
+    assert.equal(forgedQuery.status, 400);
+
     const found = await fetch(`${base}/api/v1/memories/search?query=tenant`, {
-      headers: { "x-api-key": "tenant-key", "x-remembra-tenant": "org-b" },
+      headers: { "x-api-key": "tenant-key" },
     });
     assert.equal(found.status, 200);
     const foundBody = await found.json() as { results: Array<{ tenantId: string }> };

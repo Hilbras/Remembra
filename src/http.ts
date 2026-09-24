@@ -34,6 +34,18 @@ export interface HttpOptions {
   ) => TenantContext | undefined | Promise<TenantContext | undefined>;
 }
 
+const RESERVED_TENANT_KEYS = new Set([
+  "tenant",
+  "tenantid",
+  "organizationid",
+  "userid",
+  "projectid",
+  "agentid",
+  "membershipversion",
+]);
+const normalizeIdentityKey = (key: string): string => key.replace(/[-_]/g, "").toLowerCase();
+const RESERVED_TENANT_HEADER = /^(?:x-)?(?:remembra-)?(?:tenant|tenant-id|organization|organization-id|user|user-id|project|project-id|agent|agent-id)$/i;
+
 const DEFAULT_MAX_BODY = 10 * 1024 * 1024; // transcripts can be large — 10 MiB
 const API_V1_PREFIX = "/api/v1";
 
@@ -270,6 +282,8 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return send(res, 401, { error: "Unauthorized: missing or invalid API key" });
       }
 
+      assertNoReservedTenantIngress(req, url, service.isTenantStrict);
+
       // Identity is established by the embedding application only after the
       // transport authentication above. Never infer it from request JSON or an
       // unverified public header.
@@ -325,7 +339,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 
       // POST /context — bounded, read-only context assembly.
       if (req.method === "POST" && path === "/context") {
-        const body = await readBody(req, maxBody);
+        const body = await readBody(req, maxBody, service.isTenantStrict);
         const result = await service.context(body, agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
@@ -334,7 +348,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 
       // POST /memories/digest — must be checked before /memories/:id DELETE patterns
       if (req.method === "POST" && path === "/memories/digest") {
-        const body = await readBody(req, maxBody);
+        const body = await readBody(req, maxBody, service.isTenantStrict);
         // Cancellation (§3.7): a client that disconnects mid-digest aborts the
         // in-flight provider calls instead of letting them run to completion.
         const ac = new AbortController();
@@ -349,7 +363,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 
       // POST /memories/batch — bounded operation-dispatched batch.
       if (req.method === "POST" && path === "/memories/batch") {
-        const body = await readBody(req, maxBody);
+        const body = await readBody(req, maxBody, service.isTenantStrict);
         const result = await service.batch(body, agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
@@ -360,7 +374,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 
       // POST /memories
       if (req.method === "POST" && path === "/memories") {
-        const body = await readBody(req, maxBody);
+        const body = await readBody(req, maxBody, service.isTenantStrict);
         const result = await service.store(body, agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
@@ -408,7 +422,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 
       // POST /memories/compress — V4.5: trigger consolidation compression.
       if (req.method === "POST" && path === "/memories/compress") {
-        const body = await readBody(req, maxBody);
+        const body = await readBody(req, maxBody, service.isTenantStrict);
         const result = await service.compress(body, agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
@@ -427,7 +441,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // Write routes (v4): PUT patch, archive/revive.
       const singleWrite = path.match(/^\/memories\/([^/]+)$/);
       if (req.method === "PUT" && singleWrite) {
-        const body = await readBody(req, maxBody);
+        const body = await readBody(req, maxBody, service.isTenantStrict);
         const result = await service.update(decodeURIComponent(singleWrite[1]), body, agentOptions);
         applySecureHeaders(res);
         applyCorsHeaders(res);
@@ -444,7 +458,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return send(res, 200, result);
       }
       if (sub && req.method === "POST" && sub[2] === "relate") {
-        const body = (await readBody(req, maxBody)) as Record<string, unknown>;
+        const body = (await readBody(req, maxBody, service.isTenantStrict)) as Record<string, unknown>;
         const result = await service.relate({ ...body, id: decodeURIComponent(sub[1]) }, agentOptions); // path id wins
         applySecureHeaders(res);
         applyCorsHeaders(res);
@@ -476,7 +490,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return send(res, 200, await service.exportSnapshot(agentOptions));
       }
       if (path === "/import" && req.method === "POST") {
-        const body = await readBody(req, maxBody);
+        const body = await readBody(req, maxBody, service.isTenantStrict);
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 200, await service.importSnapshot(body, agentOptions));
@@ -714,7 +728,45 @@ function sendListLike(
   res.end();
 }
 
-function readBody(req: http.IncomingMessage, maxBytes: number): Promise<any> {
+function assertNoReservedTenantIngress(
+  req: http.IncomingMessage,
+  url: URL,
+  strict: boolean,
+): void {
+  if (!strict) return;
+  for (const key of url.searchParams.keys()) {
+    if (RESERVED_TENANT_KEYS.has(normalizeIdentityKey(key))) {
+      const error = new Error(`query parameter ${key} is server-managed`);
+      error.name = "BadRequestError";
+      throw error;
+    }
+  }
+  for (const key of Object.keys(req.headers)) {
+    if (RESERVED_TENANT_HEADER.test(key)) {
+      const error = new Error(`header ${key} is server-managed`);
+      error.name = "BadRequestError";
+      throw error;
+    }
+  }
+}
+
+function assertNoReservedTenantBody(value: unknown, path = "body", allowSnapshotRecords = false): void {
+  if (value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoReservedTenantBody(item, `${path}[${index}]`, allowSnapshotRecords));
+    return;
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (RESERVED_TENANT_KEYS.has(normalizeIdentityKey(key)) && !(allowSnapshotRecords && path.includes("memories"))) {
+      const error = new Error(`${path}.${key} is server-managed`);
+      error.name = "BadRequestError";
+      throw error;
+    }
+    assertNoReservedTenantBody(child, `${path}.${key}`, allowSnapshotRecords);
+  }
+}
+
+function readBody(req: http.IncomingMessage, maxBytes: number, strictTenant = false): Promise<any> {
   return new Promise((resolve, reject) => {
     const declared = Number(req.headers["content-length"] ?? 0);
     if (Number.isFinite(declared) && declared > maxBytes) {
@@ -740,7 +792,14 @@ function readBody(req: http.IncomingMessage, maxBytes: number): Promise<any> {
       const raw = Buffer.concat(chunks).toString("utf8");
       if (!raw) return resolve({});
       try {
-        resolve(JSON.parse(raw));
+        const parsed = JSON.parse(raw);
+        if (strictTenant) {
+          const isSignedSnapshot = Boolean(
+            parsed && typeof parsed === "object" && parsed.format === "remembra-export" && parsed.integrity,
+          );
+          assertNoReservedTenantBody(parsed, "body", isSignedSnapshot);
+        }
+        resolve(parsed);
       } catch {
         const e = new Error("Invalid JSON body");
         e.name = "BadRequestError";

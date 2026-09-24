@@ -271,6 +271,10 @@ export class MemoryService {
     );
   }
 
+  get isTenantStrict(): boolean {
+    return this.tenantMode === "strict";
+  }
+
   /** V4 compatibility accessor; strict V5 mode never exposes the raw backend. */
   get db(): MemoryBackend {
     if (this.tenantMode === "strict") {
