@@ -34,7 +34,7 @@ async function strictService() {
   };
 }
 
-test("strict service requires opaque context and isolates core memory operations", async () => {
+test("SEC-TENANT-001: strict service requires opaque context and isolates core memory operations", async () => {
   const { root, service } = await strictService();
   const tenantA = context("org-a", "p1");
   const tenantB = context("org-b", "p1");
