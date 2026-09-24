@@ -29,6 +29,11 @@
       "import": "./dist/tenant.js",
       "default": "./dist/tenant.js"
     },
+    "./tenant-directory": {
+      "types": "./dist/tenant-directory.d.ts",
+      "import": "./dist/tenant-directory.js",
+      "default": "./dist/tenant-directory.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

@@ -114,7 +114,8 @@ Implementation slices:
 4. [x] SQLite tenant columns, predicates, history/audit, and candidate SQL.
 5. [ ] Service authorization, immutable job context, and transport binding
    (strict service/HTTP/MCP/SDK core, job membership recheck, cache partitions,
-   and local operator binding are complete; derived-cache invalidation remains).
+   local operator binding, and the versioned directory reference are complete;
+   durable entity CRUD and derived-cache invalidation remain).
 6. [ ] Cross-tenant relation/import/export/maintenance hardening and matrix.
 
 ### Phase 4 — Retrieval quality and scale

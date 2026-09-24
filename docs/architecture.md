@@ -140,8 +140,12 @@ provenance policy. See [v5-policy.md](v5-policy.md).
 ## V5 tenant boundary
 
 `src/tenant.ts` defines the host-minted, immutable tenant context and
-fail-closed identifier/matching primitives. `src/tenant-migration.ts` defines
-the canonical HMAC-signed migration manifest. The file and SQLite backends now
+fail-closed identifier/matching primitives. `src/tenant-directory.ts` defines
+the versioned organization/user/project/agent membership authority used to
+re-authorize queued work; its in-memory implementation is a reference adapter
+for hosts, not a replacement for the host's durable identity store.
+`src/tenant-migration.ts` defines the canonical HMAC-signed migration manifest.
+The file and SQLite backends now
 accept optional tenant filters, hide tenant rows from unscoped legacy reads,
 and apply tenant predicates to point/candidate/history/audit paths. The strict
 service path now requires opaque contexts, and HTTP/MCP transports bind them

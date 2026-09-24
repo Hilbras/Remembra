@@ -184,11 +184,15 @@ identifiers are organization-scoped and use composite foreign keys wherever a
 relationship is stored. Membership changes are versioned and audited.
 
 Creating, listing, updating, deleting, or changing membership for any of these
-entities is a separate authorized operation. It is outside the memory-only
-compatibility surface and is disabled until its tenant predicate, pagination,
-lifecycle, and cross-tenant tests are implemented. A principal used for a
-memory operation must be resolved against the current organization membership
-version; stale or revoked membership fails closed, including queued work.
+entities is a separate authorized operation. The V5 service can consume a
+host `TenantDirectory` for versioned membership re-authorization; the shipped
+`InMemoryTenantDirectory` is a deterministic reference adapter, while a
+production host should implement the same contract in its durable identity
+store. Entity CRUD/pagination remains disabled in the memory API until its
+tenant predicate, lifecycle, and cross-tenant tests are implemented. A
+principal used for a memory operation must be resolved against the current
+organization membership version; stale or revoked membership fails closed,
+including queued work.
 
 ## Storage contract
 

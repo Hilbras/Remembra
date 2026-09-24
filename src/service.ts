@@ -42,6 +42,7 @@ import {
 } from "./tenant.js";
 import { createSignedSnapshot, isSignedSnapshot, verifySignedSnapshot } from "./snapshot-integrity.js";
 import { JobQueue } from "./job-queue.js";
+import type { TenantDirectory } from "./tenant-directory.js";
 import type { JobHandle } from "./job-queue.js";
 
 export interface DigestResult {
@@ -101,6 +102,8 @@ export interface ServiceDeps {
   tenantMode?: TenantMode;
   /** Optional host membership recheck for queued/background work. */
   verifyTenantContext?: (context: TenantContext) => boolean | Promise<boolean>;
+  /** Host-side organization/user/project/agent membership authority. */
+  tenantDirectory?: TenantDirectory;
   /** HMAC key used to sign/verify V5 snapshot envelopes. */
   snapshotKey?: Buffer | Uint8Array;
   /** Strict tenant mode defaults to requiring signed snapshots. */
@@ -222,7 +225,8 @@ export class MemoryService {
     this.redactOn = deps.redact ?? redactionEnabled();
     this.agentMode = deps.agentMode ?? process.env.REMEMBRA_AGENT_MODE === "1";
     this.tenantMode = deps.tenantMode ?? "legacy";
-    this.verifyTenantContext = deps.verifyTenantContext;
+    this.verifyTenantContext = deps.verifyTenantContext ??
+      (deps.tenantDirectory ? (context) => deps.tenantDirectory!.verifyContext(context) : undefined);
     this.snapshotKey = deps.snapshotKey ? Buffer.from(deps.snapshotKey) : undefined;
     this.requireSignedSnapshots = deps.requireSignedSnapshots ?? this.tenantMode === "strict";
     if (this.tenantMode === "strict" && this.backend.tenantCapable !== true) {
