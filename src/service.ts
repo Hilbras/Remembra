@@ -120,6 +120,10 @@ export interface ServiceDeps {
   snapshotKey?: Buffer | Uint8Array;
   /** Strict tenant mode defaults to requiring signed snapshots. */
   requireSignedSnapshots?: boolean;
+  /** Selected durable backend for operational health reporting. */
+  backend?: "sqlite" | "file";
+  /** Whether the selected backend was explicitly allowed as a fallback. */
+  backendFallback?: boolean;
 }
 
 export interface AgentReadOptions {
@@ -199,12 +203,16 @@ export class MemoryService {
   private readonly policy: MemoryPolicy;
   private readonly tokenCounter: TokenCounter;
   private readonly backend: MemoryBackend;
+  private readonly backendName?: "sqlite" | "file";
+  private readonly backendFallback: boolean;
   private lastDecayRun = 0;
   private decayRunning = false;
   private decayPromise: Promise<unknown> | null = null;
 
   constructor(db: MemoryBackend, deps: ServiceDeps = {}) {
     this.backend = db;
+    this.backendName = deps.backend;
+    this.backendFallback = deps.backendFallback ?? false;
     const emb = deps.embeddingProvider ?? resolveEmbeddingProvider();
     const llm = deps.llmProvider ?? resolveLlmProvider();
     const embeddingAdapter = deps.embeddingAdapter;
@@ -1320,6 +1328,8 @@ export class MemoryService {
     version: string;
     uptime_s: number;
     storage: string;
+    backend?: "sqlite" | "file";
+    fallback?: boolean;
     cache?: { size: number; capacity: number };
   }> {
     let storage = "ok";
@@ -1334,6 +1344,8 @@ export class MemoryService {
       version: VERSION,
       uptime_s: Math.round(process.uptime()),
       storage,
+      ...(this.backendName ? { backend: this.backendName } : {}),
+      ...(this.backendName ? { fallback: this.backendFallback } : {}),
       ...(cache ? { cache } : {}),
     };
   }

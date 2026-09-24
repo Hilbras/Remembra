@@ -11,6 +11,7 @@ import { MemoryService } from "./service.js";
 import { createHttpServer } from "./http.js";
 import { startMcp } from "./mcp.js";
 import { createOperatorTenantContext, snapshotKeyFromEnv, tenantModeFromEnv } from "./operator.js";
+import { selectInitialBackend } from "./backend-selection.js";
 import { tenantFilterFromContext } from "./tenant.js";
 import { readSignedSnapshotFile, writeSignedSnapshotFile } from "./recovery.js";
 import { backupSqlite, restoreSqliteBackup, verifySqliteBackup } from "./sqlite-recovery.js";
@@ -26,13 +27,8 @@ import {
 } from "./types.js";
 
 const root = MemoryStore.defaultRoot();
-// Use SQLite backend (V4.3.0) if available; fall back to file backend.
-let store: MemoryStore | SqliteBackend;
-try {
-  store = new SqliteBackend({ root });
-} catch {
-  store = new MemoryStore(root);
-}
+const backendSelection = await selectInitialBackend(root);
+const store = backendSelection.store;
 const tenantMode = tenantModeFromEnv();
 const operatorTenant = tenantMode === "strict" ? createOperatorTenantContext() : undefined;
 const operatorOptions = operatorTenant ? { tenant: operatorTenant } : {};
@@ -40,6 +36,8 @@ const operatorFilter = operatorTenant ? tenantFilterFromContext(operatorTenant) 
 const operatorSnapshotKey = snapshotKeyFromEnv();
 const service = new MemoryService(store, {
   tenantMode,
+  backend: backendSelection.backend,
+  backendFallback: backendSelection.fallback,
   ...(operatorSnapshotKey ? { snapshotKey: operatorSnapshotKey } : {}),
 });
 
