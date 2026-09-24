@@ -1817,12 +1817,7 @@ export class MemoryService {
     return snapshot;
   }
 
-  /**
-   * Restore from a snapshot (audit #8). All-or-nothing validation: the whole
-   * file is Zod-parsed before anything is written, so a corrupt/tampered
-   * snapshot can never half-import. Existing ids and exact duplicates are
-   * skipped, making re-import idempotent.
-   */
+  /** Shared snapshot preflight: validate and normalize every record before writes. */
   private async prepareSnapshotImport(
     data: unknown,
     options: AgentReadOptions = {},
@@ -1925,11 +1920,12 @@ export class MemoryService {
   async importSnapshot(data: unknown, options: AgentReadOptions = {}): Promise<{ imported: number; skipped: number }> {
     const prepared = await this.prepareSnapshotImport(data, options);
     let imported = 0;
+    let skipped = prepared.skipped;
     for (const memory of prepared.prepared) {
       if (await this.backend.importMemory(memory, prepared.tenant)) imported++;
-      else prepared.skipped++;
+      else skipped++;
     }
-    return { imported, skipped: prepared.skipped };
+    return { imported, skipped };
   }
 
   /** Decay lifecycle: unused actives → archived → auto-deleted past TTL. */
