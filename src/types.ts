@@ -468,10 +468,16 @@ export interface BatchFailure {
 
 export type BatchOutcome<T = unknown> = BatchSuccess<T> | BatchFailure;
 
+export interface BatchExecutionMetadata {
+  transactionPolicy: "per-item" | "read-only";
+  idempotency: "unsupported" | "read-only";
+}
+
 export interface BatchMutationResult {
   operation: "store" | "update" | "delete";
   summary: BatchSummary;
   results: BatchOutcome[];
+  execution: BatchExecutionMetadata;
 }
 
 export interface BatchExportResult {
@@ -482,6 +488,7 @@ export interface BatchExportResult {
   memories: Memory[];
   summary: BatchSummary;
   results: BatchOutcome<{ id: string }>[];
+  execution: BatchExecutionMetadata;
 }
 
 
