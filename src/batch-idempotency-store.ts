@@ -24,8 +24,13 @@ export type BatchIdempotencyClaim =
   | { status: "replay"; response: unknown };
 
 export interface BatchIdempotencyStore {
+  readonly restorePending?: boolean;
   claim(input: BatchIdempotencyInput): Promise<BatchIdempotencyClaim>;
   complete(input: BatchIdempotencyInput & { response: unknown }): Promise<void>;
+  /** Create a durable gate before a data restore begins. */
+  beginRestore?(): Promise<void>;
+  /** Invalidate claims and clear the restore gate after publication succeeds. */
+  completeRestore?(): Promise<void>;
   /** Invalidate all claims after a data rollback/restore or operator reset. */
   invalidate(): Promise<void>;
   close?(): void;
@@ -34,8 +39,6 @@ export interface BatchIdempotencyStore {
 export interface FileBatchIdempotencyStoreOptions {
   /** Maximum serialized response accepted for one claim. */
   maxBytes?: number;
-  /** Completed claims older than this are eligible for removal. */
-  maxAgeMs?: number;
   /** Maximum total claims retained; capacity exhaustion fails closed. */
   maxEntries?: number;
   /** Maximum claims retained for one scope. */
@@ -113,12 +116,9 @@ function ensureSafeDirectorySync(directory: string): void {
     if (stat.isSymbolicLink()) invalid("claim directory must not contain symlinks");
     if (!stat.isDirectory()) invalid("claim path is not a directory");
     const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-    if (current === resolved && uid !== undefined && stat.uid !== uid) invalid("claim directory is not owned by the current user");
-  }
-  try {
-    fs.chmodSync(resolved, 0o700);
-  } catch {
-    invalid("claim directory permissions could not be restricted");
+    if (current === resolved && ((stat.mode & 0o077) !== 0 || (uid !== undefined && stat.uid !== uid))) {
+      invalid("claim directory must be owner-only and owned by the current user");
+    }
   }
 }
 
@@ -161,6 +161,10 @@ function loadIntegrityKeySync(root: string, supplied?: Buffer): Buffer {
   const key = fs.readFileSync(keyPath);
   if (key.length < 32 || key.length > 128) invalid("integrity key has an invalid length");
   return key;
+}
+
+function metaMac(key: Buffer, generation: number, restorePending: boolean): string {
+  return createHmac("sha256", key).update(`generation:${generation}:restore:${restorePending ? 1 : 0}`, "utf8").digest("base64url");
 }
 
 function recordMac(key: Buffer, row: Omit<ClaimRow, "mac">): string {
@@ -207,6 +211,9 @@ function parseRow(value: unknown, integrityKey: Buffer): ClaimRow {
   if (row.state === "completed" && (row.completedAt === null || !Number.isSafeInteger(row.completedAt) || row.response === null || row.responseBytes < 0)) {
     invalid("completed claim is incomplete");
   }
+  if (row.state === "completed" && Buffer.byteLength(row.response ?? "", "utf8") !== row.responseBytes) {
+    invalid("claim response byte accounting is invalid");
+  }
   if (!Number.isSafeInteger(row.responseBytes) || row.responseBytes < 0 || !Number.isSafeInteger(row.reservedBytes) || row.reservedBytes < 0) {
     invalid("claim row has invalid byte accounting");
   }
@@ -230,10 +237,10 @@ function parseResponse(row: ClaimRow): unknown {
  */
 export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
   readonly databasePath: string;
+  private readonly restoreMarkerPath: string;
   private readonly db: Database.Database;
   private readonly integrityKey: Buffer;
   private readonly maxBytes: number;
-  private readonly maxAgeMs: number;
   private readonly maxEntries: number;
   private readonly maxEntriesPerScope: number;
   private readonly maxTotalBytes: number;
@@ -243,20 +250,22 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
   constructor(root: string, options: FileBatchIdempotencyStoreOptions = {}) {
     const resolvedRoot = path.resolve(root);
     ensureSafeDirectorySync(resolvedRoot);
-    if (fs.readdirSync(resolvedRoot).some((name) => name.endsWith(".json"))) {
+    const entries = fs.readdirSync(resolvedRoot);
+    if (entries.some((name) => name.endsWith(".json"))) {
       invalid("legacy JSON claim files require explicit operator migration");
     }
+    const allowedEntries = /^(claims\.sqlite(?:-journal|-wal|-shm)?|claims\.key|restore\.pending)$/;
+    if (entries.some((name) => !allowedEntries.test(name))) {
+      invalid("claim directory contains unrelated files");
+    }
+    this.restoreMarkerPath = path.join(resolvedRoot, "restore.pending");
     this.maxBytes = options.maxBytes ?? MAX_BATCH_IDEMPOTENCY_RESPONSE_BYTES;
-    this.maxAgeMs = options.maxAgeMs ?? 24 * 60 * 60 * 1000;
     this.maxEntries = options.maxEntries ?? 10_000;
     this.maxEntriesPerScope = options.maxEntriesPerScope ?? Math.min(1_000, this.maxEntries);
     this.maxTotalBytes = options.maxTotalBytes ?? 64 * 1024 * 1024;
     this.now = options.now ?? Date.now;
     if (!Number.isInteger(this.maxBytes) || this.maxBytes < 1024 || this.maxBytes > MAX_BATCH_IDEMPOTENCY_RESPONSE_BYTES) {
       throw new RemembraError("INVALID_INPUT", `idempotency maxBytes must be between 1024 and ${MAX_BATCH_IDEMPOTENCY_RESPONSE_BYTES}`);
-    }
-    if (!Number.isInteger(this.maxAgeMs) || this.maxAgeMs < 60_000) {
-      throw new RemembraError("INVALID_INPUT", "idempotency maxAgeMs must be at least 60000");
     }
     if (!Number.isInteger(this.maxEntries) || this.maxEntries < 1 || this.maxEntries > 100_000) {
       throw new RemembraError("INVALID_INPUT", "idempotency maxEntries must be between 1 and 100000");
@@ -278,9 +287,10 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS batch_idempotency_meta (
           id INTEGER PRIMARY KEY CHECK (id = 1),
-          generation INTEGER NOT NULL
+          generation INTEGER NOT NULL,
+          restore_pending INTEGER NOT NULL DEFAULT 0 CHECK (restore_pending IN (0, 1)),
+          mac TEXT NOT NULL
         );
-        INSERT OR IGNORE INTO batch_idempotency_meta (id, generation) VALUES (1, 1);
         CREATE TABLE IF NOT EXISTS batch_idempotency_claims (
           scope_hash TEXT NOT NULL,
           key_hash TEXT NOT NULL,
@@ -289,8 +299,8 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
           created_at INTEGER NOT NULL,
           completed_at INTEGER,
           response TEXT,
-          response_bytes INTEGER NOT NULL DEFAULT 0,
-          reserved_bytes INTEGER NOT NULL DEFAULT 0,
+          response_bytes INTEGER NOT NULL DEFAULT 0 CHECK (response_bytes >= 0),
+          reserved_bytes INTEGER NOT NULL DEFAULT 0 CHECK (reserved_bytes >= 0),
           mac TEXT NOT NULL,
           generation INTEGER NOT NULL,
           PRIMARY KEY (scope_hash, key_hash)
@@ -298,18 +308,28 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
         CREATE INDEX IF NOT EXISTS idx_batch_idempotency_state_time
           ON batch_idempotency_claims(state, completed_at);
       `);
+      this.db.prepare("INSERT OR IGNORE INTO batch_idempotency_meta (id, generation, restore_pending, mac) VALUES (1, 1, 0, ?)")
+        .run(metaMac(this.integrityKey, 1, false));
+      this.currentGeneration();
       fs.chmodSync(this.databasePath, 0o600);
-      this.pruneCompleted();
     } catch (error) {
       if (error instanceof RemembraError) throw error;
       throw new RemembraError("SERVICE_UNAVAILABLE", "batch idempotency database could not be opened", { cause: error });
     }
   }
 
+  private currentMeta(): { generation: number; restorePending: boolean } {
+    const value = this.db.prepare("SELECT generation, restore_pending, mac FROM batch_idempotency_meta WHERE id = 1").get() as { generation: number; restore_pending: number; mac: string } | undefined;
+    if (!value || !Number.isSafeInteger(value.generation) || value.generation < 0 || (value.restore_pending !== 0 && value.restore_pending !== 1)) {
+      invalid("generation metadata is missing");
+    }
+    const restorePending = value.restore_pending === 1;
+    if (value.mac !== metaMac(this.integrityKey, value.generation, restorePending)) invalid("generation metadata integrity check failed");
+    return { generation: value.generation, restorePending };
+  }
+
   private currentGeneration(): number {
-    const value = this.db.prepare("SELECT generation FROM batch_idempotency_meta WHERE id = 1").get() as { generation: number } | undefined;
-    if (!value || !Number.isSafeInteger(value.generation)) invalid("generation metadata is missing");
-    return value.generation;
+    return this.currentMeta().generation;
   }
 
   private row(scopeHash: string, keyHash: string): ClaimRow | undefined {
@@ -319,16 +339,20 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
     return value === undefined ? undefined : parseRow(value, this.integrityKey);
   }
 
-  private pruneCompleted(): void {
-    const cutoff = this.now() - this.maxAgeMs;
-    this.db.prepare("DELETE FROM batch_idempotency_claims WHERE state = 'completed' AND completed_at < ?").run(cutoff);
+  private allRows(): ClaimRow[] {
+    const values = this.db.prepare(
+      "SELECT scope_hash AS scopeHash, key_hash AS keyHash, fingerprint, state, created_at AS createdAt, completed_at AS completedAt, response, response_bytes AS responseBytes, reserved_bytes AS reservedBytes, mac, generation FROM batch_idempotency_claims",
+    ).all() as unknown[];
+    return values.map((value) => parseRow(value, this.integrityKey));
   }
 
   async claim(input: BatchIdempotencyInput): Promise<BatchIdempotencyClaim> {
+    if (this.restorePending) throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
     validateInput(input);
     const scopeHash = input.scope;
     const keyHash = digest(input.key);
     const transaction = this.db.transaction(() => {
+      if (this.currentMeta().restorePending) throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
       const existing = this.row(scopeHash, keyHash);
       if (existing) {
         if (existing.scopeHash !== scopeHash || existing.keyHash !== keyHash) invalid("claim binding mismatch");
@@ -342,12 +366,10 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
         return { status: "replay" as const, response: parseResponse(existing) };
       }
 
-      this.pruneCompleted();
-      const totals = this.db.prepare(
-        "SELECT COUNT(*) AS count, COALESCE(SUM(CASE WHEN state = 'in_progress' THEN reserved_bytes ELSE response_bytes END), 0) AS bytes FROM batch_idempotency_claims",
-      ).get() as { count: number; bytes: number };
-      const scopeCount = this.db.prepare("SELECT COUNT(*) AS count FROM batch_idempotency_claims WHERE scope_hash = ?").get(scopeHash) as { count: number };
-      if (totals.count >= this.maxEntries || totals.bytes + this.maxBytes > this.maxTotalBytes || scopeCount.count >= this.maxEntriesPerScope) {
+      const rows = this.allRows();
+      const totalBytes = rows.reduce((sum, row) => sum + (row.state === "in_progress" ? row.reservedBytes : row.responseBytes), 0);
+      const scopeCount = rows.reduce((sum, row) => sum + (row.scopeHash === scopeHash ? 1 : 0), 0);
+      if (rows.length >= this.maxEntries || totalBytes + this.maxBytes > this.maxTotalBytes || scopeCount >= this.maxEntriesPerScope) {
         invalid("claim capacity is exhausted");
       }
       const createdAt = this.now();
@@ -378,6 +400,7 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
   }
 
   async complete(input: BatchIdempotencyInput & { response: unknown }): Promise<void> {
+    if (this.restorePending) throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
     validateInput(input);
     let response: string;
     try {
@@ -391,6 +414,7 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
     const scopeHash = input.scope;
     const keyHash = digest(input.key);
     const transaction = this.db.transaction(() => {
+      if (this.currentMeta().restorePending) throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
       const existing = this.row(scopeHash, keyHash);
       if (!existing) invalid("claim does not exist");
       if (existing.scopeHash !== scopeHash || existing.keyHash !== keyHash) invalid("claim binding mismatch");
@@ -420,10 +444,83 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
     }
   }
 
+  private restoreMarkerExists(): boolean {
+    try {
+      fs.lstatSync(this.restoreMarkerPath);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
+  get restorePending(): boolean {
+    if (this.restoreMarkerExists()) return true;
+    try {
+      return this.currentMeta().restorePending;
+    } catch {
+      return true;
+    }
+  }
+
+  async beginRestore(): Promise<void> {
+    const marker = `${JSON.stringify({ format: "remembra-batch-restore", version: 1, createdAt: new Date().toISOString() })}\n`;
+    let handle: number | undefined;
+    try {
+      if (!this.restoreMarkerExists()) {
+        handle = fs.openSync(this.restoreMarkerPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+        fs.writeFileSync(handle, marker, "utf8");
+        fs.fsyncSync(handle);
+        fs.closeSync(handle);
+        handle = undefined;
+        fs.chmodSync(this.restoreMarkerPath, 0o600);
+      }
+    } catch (error) {
+      if (handle !== undefined) fs.closeSync(handle);
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate could not be established", { cause: error });
+      }
+    }
+    const transaction = this.db.transaction(() => {
+      const current = this.currentMeta();
+      this.db.prepare("UPDATE batch_idempotency_meta SET restore_pending = 1, mac = ? WHERE id = 1")
+        .run(metaMac(this.integrityKey, current.generation, true));
+    });
+    try {
+      transaction.immediate();
+    } catch (error) {
+      if (error instanceof RemembraError) throw error;
+      throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate could not be published", { cause: error });
+    }
+  }
+
+  async completeRestore(): Promise<void> {
+    await this.invalidate();
+    try {
+      const stat = fs.lstatSync(this.restoreMarkerPath);
+      if (stat.isSymbolicLink() || !stat.isFile()) invalid("restore gate is unsafe");
+      fs.unlinkSync(this.restoreMarkerPath);
+      const directory = fs.openSync(path.dirname(this.restoreMarkerPath), fs.constants.O_RDONLY);
+      try {
+        fs.fsyncSync(directory);
+      } finally {
+        fs.closeSync(directory);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      if (error instanceof RemembraError) throw error;
+      throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate could not be cleared", { cause: error });
+    }
+  }
+
   async invalidate(): Promise<void> {
     const transaction = this.db.transaction(() => {
+      const current = this.currentGeneration();
+      const next = current + 1;
+      if (!Number.isSafeInteger(next)) invalid("generation overflow");
       this.db.prepare("DELETE FROM batch_idempotency_claims").run();
-      this.db.prepare("UPDATE batch_idempotency_meta SET generation = generation + 1 WHERE id = 1").run();
+      this.db.prepare("UPDATE batch_idempotency_meta SET generation = ?, restore_pending = 0, mac = ? WHERE id = 1")
+        .run(next, metaMac(this.integrityKey, next, false));
     });
     try {
       transaction.immediate();

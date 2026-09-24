@@ -51,15 +51,23 @@ const backendSelection = await selectInitialBackend(validatedRoot);
 const store = backendSelection.store;
 const operatorSnapshotKey = startup.snapshotKey;
 const argv = process.argv.slice(2);
+const isRecoveryCommand = argv[0] === "recover" && (argv[1] === "verify" || argv[1] === "read-only");
+const isRestoreCommand = argv[0] === "restore";
+const restoreMarkerPath = path.join(validatedRoot, ".idempotency", "restore.pending");
+let restoreMarkerPending = false;
+try {
+  await fs.lstat(restoreMarkerPath);
+  restoreMarkerPending = true;
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+}
 let batchIdempotencyStore: FileBatchIdempotencyStore | undefined;
 try {
   batchIdempotencyStore = new FileBatchIdempotencyStore(path.join(validatedRoot, ".idempotency"));
 } catch (error) {
-  if (backendSelection.backend === "sqlite") throw error;
-  // Idempotency is an additive keyed-batch capability; do not make the
-  // explicitly allowed file fallback unusable when the native SQLite helper
-  // is unavailable. Unkeyed batches remain available and keyed batches fail
-  // closed with SERVICE_UNAVAILABLE.
+  // Idempotency is an additive keyed-batch capability; never prevent legacy
+  // unkeyed batches or recovery commands from starting because its auxiliary
+  // ledger is unavailable. Keyed calls fail closed with SERVICE_UNAVAILABLE.
   logEvent("warn", "idempotency.unavailable", { error: String(error).slice(0, 160) }, "Batch idempotency ledger unavailable");
 }
 const service = new MemoryService(store, {
@@ -73,10 +81,12 @@ const service = new MemoryService(store, {
   recoveryStateStore: new FileRecoveryStateStore(path.join(validatedRoot, ".recovery-state.json")),
   batchIdempotencyStore,
 });
+if ((restoreMarkerPending || service.batchIdempotencyRestorePending) && !isRecoveryCommand && !isRestoreCommand) {
+  throw new Error("a data restore is pending; resolve the restore-pending gate before serving");
+}
 await service.initializeRecovery();
 const initialHealth = await service.health();
-const isRecoveryCommand = argv[0] === "recover" && (argv[1] === "verify" || argv[1] === "read-only");
-if (initialHealth.status === "unready" && !isRecoveryCommand) {
+if (initialHealth.status === "unready" && !isRecoveryCommand && !isRestoreCommand) {
   throw new Error(`initial recovery health check failed: ${initialHealth.storage}`);
 }
 
@@ -268,11 +278,12 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
     }
     const dst = (store as SqliteBackend).getDbPath();
     try {
-      // Claims from the pre-restore data generation must never replay against
-      // the restored database. Invalidate before publishing the replacement.
-      await service.invalidateBatchIdempotency();
+      // The gate survives a failed restore; claims are invalidated only after
+      // the replacement database is published successfully.
+      await service.beginBatchRestore();
       (store as SqliteBackend).close();
       await restoreSqliteBackup(inFile, dst, { overwrite: true });
+      await service.completeBatchRestore();
     } catch (err) {
       console.error(`Restore aborted: ${err instanceof Error ? err.message : err}`);
       process.exit(1);

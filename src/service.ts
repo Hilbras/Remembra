@@ -33,6 +33,7 @@ import { computeHealth, getLifecycleState, agingScorePenalty } from "./lifecycle
 import { AgentContext, canReadMemory, canUseScope, defaultAccess, defaultOwner } from "./agent.js";
 import {
   assertTenantContext,
+  createTenantContext,
   memoryBelongsToTenant,
   tenantFilterFromContext,
   type TenantContext,
@@ -287,6 +288,7 @@ function isBatchResult(value: unknown, expectedOperation?: BatchResult["operatio
   if (succeeded + failed !== requested) return false;
   if (!Array.isArray(record.results) || record.results.length !== requested) return false;
   if (!record.results.every((outcome, index) => isBatchOutcome(outcome, index, record.operation as "store" | "update" | "delete" | "export"))) return false;
+  if (record.operation !== "export" && record.results.some((outcome) => !outcome.ok)) return false;
   if (record.operation !== "export"
     && Object.keys(record).sort().join(",") !== "execution,operation,results,summary") return false;
   if (record.operation === "export") {
@@ -300,19 +302,8 @@ function isBatchResult(value: unknown, expectedOperation?: BatchResult["operatio
   return execution.transactionPolicy === "per-item" && execution.idempotency === "stored";
 }
 
-const AMBIGUOUS_BATCH_ERROR_CODES = new Set([
-  "INTERNAL",
-  "IO_ERROR",
-  "LOCK_TIMEOUT",
-  "PROVIDER_TIMEOUT",
-  "QUEUE_CLOSED",
-  "QUEUE_FULL",
-  "SERVICE_UNAVAILABLE",
-]);
-
-function batchHasAmbiguousFailure(result: BatchResult): boolean {
-  return result.operation !== "export"
-    && result.results.some((outcome) => !outcome.ok && AMBIGUOUS_BATCH_ERROR_CODES.has(outcome.error.code));
+function batchHasUnresolvedFailure(result: BatchResult): boolean {
+  return result.operation !== "export" && result.results.some((outcome) => !outcome.ok);
 }
 
 function recordBatchMetrics(operation: string, results: readonly BatchOutcome[]): void {
@@ -325,6 +316,22 @@ function recordBatchMetrics(operation: string, results: readonly BatchOutcome[])
  * Transport-agnostic handlers. Both the MCP tools and the HTTP API
  * call into this module, so behavior is guaranteed to match.
  */
+function snapshotBatchOptions(options: BatchOptions): BatchOptions {
+  const agent = options.agent
+    ? Object.freeze({
+        ...options.agent,
+        ...(options.agent.scopes ? { scopes: Object.freeze([...options.agent.scopes]) } : {}),
+      }) as unknown as AgentContext
+    : undefined;
+  const tenant = options.tenant
+    ? createTenantContext({
+        ...options.tenant.principal,
+        ...(options.tenant.principal.scopes ? { scopes: [...options.tenant.principal.scopes] } : {}),
+      })
+    : undefined;
+  return Object.freeze({ ...options, agent, tenant });
+}
+
 export class MemoryService {
   private readonly embedFn?: (text: string, opts?: EmbedCallOptions) => Promise<number[]>;
   private readonly extractFn: (transcript: string, opts?: { signal?: AbortSignal }) => Promise<ExtractedMemory[]>;
@@ -507,6 +514,23 @@ export class MemoryService {
   async shutdownBackgroundJobs(): Promise<void> {
     await Promise.all([this.jobs.shutdown(), this.decayPromise ?? Promise.resolve()]);
     this.batchIdempotencyStore?.close?.();
+  }
+
+  /** True while a durable data restore gate blocks new keyed claims. */
+  get batchIdempotencyRestorePending(): boolean {
+    return this.batchIdempotencyStore?.restorePending === true;
+  }
+
+  /** Establish a durable restore gate before replacing the data backend. */
+  async beginBatchRestore(): Promise<void> {
+    if (!this.batchIdempotencyStore?.beginRestore) throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate is unavailable");
+    await this.batchIdempotencyStore.beginRestore();
+  }
+
+  /** Invalidate claims only after restore publication succeeds, then clear the gate. */
+  async completeBatchRestore(): Promise<void> {
+    if (!this.batchIdempotencyStore?.completeRestore) throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate is unavailable");
+    await this.batchIdempotencyStore.completeRestore();
   }
 
   /** Operator hook for verified data rollback/restore before serving again. */
@@ -1095,6 +1119,7 @@ export class MemoryService {
   }
 
   async batch(input: unknown, options: BatchOptions = {}): Promise<BatchResult> {
+    options = snapshotBatchOptions(options);
     let request: ReturnType<typeof BatchRequest.parse>;
     let requestBytes = 0;
     try {
@@ -1287,8 +1312,8 @@ export class MemoryService {
     }
 
     const result = await execute();
-    if (batchHasAmbiguousFailure(result)) {
-      throw new RemembraError("SERVICE_UNAVAILABLE", "batch outcome is ambiguous; idempotency claim remains in progress");
+    if (batchHasUnresolvedFailure(result)) {
+      throw new RemembraError("SERVICE_UNAVAILABLE", "batch contains a failed item; idempotency claim remains in progress");
     }
     const stored: BatchResult = {
       ...result,

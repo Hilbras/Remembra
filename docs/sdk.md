@@ -63,6 +63,8 @@ opaque tenant contract is available from `@hilbras/remembra/tenant`.
 - `related(id, ids, { action, kind })`
 - `archive(id)` / `revive(id)`
 - `batch(request)` — SDK-friendly store/update/delete/export input types
+  (the legacy full batch type remains as a deprecated compile-time overload;
+  server-managed identity fields are still rejected at runtime)
 
 ### Replay-safe batch mutations
 

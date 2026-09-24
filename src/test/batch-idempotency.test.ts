@@ -78,6 +78,22 @@ test("batch idempotency rejects tampered claim records", async () => {
   }
 });
 
+test("batch idempotency authenticates generation metadata", async () => {
+  const root = await temporaryRoot("remembra-idempotency-generation-");
+  const store = new FileBatchIdempotencyStore(path.join(root, "claims"));
+  const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "batch-generation", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
+  try {
+    assert.deepEqual(await store.claim(input), { status: "fresh" });
+    const database = new Database(store.databasePath);
+    database.prepare("UPDATE batch_idempotency_meta SET generation = 0 WHERE id = 1").run();
+    database.close();
+    await assert.rejects(() => store.claim(input), expectCode("SERVICE_UNAVAILABLE"));
+  } finally {
+    store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("batch idempotency refuses to strand a completed mutation on oversized responses", async () => {
   const root = await temporaryRoot("remembra-idempotency-oversized-");
   const store = new FileBatchIdempotencyStore(path.join(root, "claims"), { maxBytes: 1024 });
@@ -107,6 +123,41 @@ test("batch idempotency coordinates capacity across concurrent claims", async ()
     assert.equal(results.filter((result) => result.status === "fulfilled" && result.value.status === "fresh").length, 1);
     assert.equal(results.filter((result) => result.status === "rejected").length, 7);
   } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("completed idempotency claims never expire into fresh mutations", async () => {
+  const root = await temporaryRoot("remembra-idempotency-no-expiry-");
+  let now = Date.now();
+  try {
+    const store = new FileBatchIdempotencyStore(path.join(root, "claims"), { now: () => now });
+    const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "batch-never-expires", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
+    assert.deepEqual(await store.claim(input), { status: "fresh" });
+    await store.complete({ ...input, response: { operation: "store" } });
+    store.close();
+    now += 365 * 24 * 60 * 60 * 1000;
+    const restarted = new FileBatchIdempotencyStore(path.join(root, "claims"), { now: () => now });
+    assert.deepEqual(await restarted.claim(input), { status: "replay", response: { operation: "store" } });
+    restarted.close();
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("restore gate blocks claims until successful completion", async () => {
+  const root = await temporaryRoot("remembra-idempotency-gate-");
+  const store = new FileBatchIdempotencyStore(path.join(root, "claims"));
+  const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "batch-gate", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
+  try {
+    await store.beginRestore();
+    assert.equal(store.restorePending, true);
+    await assert.rejects(() => store.claim(input), expectCode("SERVICE_UNAVAILABLE"));
+    await store.completeRestore();
+    assert.equal(store.restorePending, false);
+    assert.deepEqual(await store.claim(input), { status: "fresh" });
+  } finally {
+    store.close();
     await fs.rm(root, { recursive: true, force: true });
   }
 });
@@ -145,12 +196,12 @@ test("batch idempotency never expires an in-progress claim into a duplicate writ
   const claimRoot = path.join(root, "claims");
   try {
     let now = Date.now();
-    const store = new FileBatchIdempotencyStore(claimRoot, { maxAgeMs: 60_000, now: () => now });
+    const store = new FileBatchIdempotencyStore(claimRoot, { now: () => now });
     const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "batch-stuck", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
     assert.deepEqual(await store.claim(input), { status: "fresh" });
     now += 120_000;
 
-    const restarted = new FileBatchIdempotencyStore(claimRoot, { maxAgeMs: 60_000, now: () => now });
+    const restarted = new FileBatchIdempotencyStore(claimRoot, { now: () => now });
     await assert.rejects(() => restarted.claim(input), expectCode("SERVICE_UNAVAILABLE"));
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -251,6 +302,55 @@ test("ambiguous batch outcomes remain fail-closed instead of becoming replayable
     assert.equal((await service.list({})).memories.length, 1);
     await assert.rejects(() => service.batch(request, options), expectCode("SERVICE_UNAVAILABLE"));
     assert.equal((await service.list({})).memories.length, 1);
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("host credential scopes isolate idempotency keys without using IP addresses", async () => {
+  const root = await temporaryRoot("remembra-idempotency-credential-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  const service = new MemoryService(new MemoryStore(path.join(root, "memories")), {
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+    batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(root, "claims")),
+  });
+  const server = createHttpServer(service, {
+    port: 0,
+    resolveCredentialScope: (req) => String(req.headers["x-credential-id"] ?? "unknown"),
+  });
+  try {
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const address = server.address() as { port: number };
+    const endpoint = `http://127.0.0.1:${address.port}/api/v1/memories/batch`;
+    const body = JSON.stringify({ operation: "store", items: [{ type: "fact", content: "credential isolated" }] });
+    const first = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "same-key", "x-credential-id": "credential-a" }, body });
+    const second = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": "same-key", "x-credential-id": "credential-b" }, body });
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    assert.equal((await service.list({})).memories.length, 2);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an unavailable optional ledger preserves unkeyed batches and fails keyed calls closed", async () => {
+  const root = await temporaryRoot("remembra-idempotency-optional-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  const service = new MemoryService(new MemoryStore(path.join(root, "memories")), { embeddingProvider: "none" });
+  try {
+    const unkeyed = await service.batch({ operation: "store", items: [{ type: "fact", content: "still available" }] });
+    assert.equal(unkeyed.summary.succeeded, 1);
+    await assert.rejects(
+      () => service.batch(
+        { operation: "store", items: [{ type: "fact", content: "keyed unavailable" }] },
+        { idempotencyKey: "optional-key", idempotencyScope: batchIdempotencyScope("optional") },
+      ),
+      expectCode("SERVICE_UNAVAILABLE"),
+    );
   } finally {
     await service.shutdownBackgroundJobs();
     await fs.rm(root, { recursive: true, force: true });

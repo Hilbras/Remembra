@@ -35,6 +35,14 @@ export interface HttpOptions {
   resolveTenantContext?: (
     req: http.IncomingMessage,
   ) => TenantContext | undefined | Promise<TenantContext | undefined>;
+  /**
+   * Resolve a stable opaque credential identity after authentication. This is
+   * used only to isolate idempotency keys when host authentication has no
+   * static API key; it is never an authorization decision.
+   */
+  resolveCredentialScope?: (
+    req: http.IncomingMessage,
+  ) => string | undefined | Promise<string | undefined>;
   /** Optional trusted tenant entity service for the V5 organization API. */
   tenantEntities?: TenantEntityService;
 }
@@ -95,12 +103,18 @@ function rateIdentityPart(value: string): string {
 
 function idempotencyScopeFor(
   apiKey: string | undefined,
+  credentialScope: string | undefined,
   tenant: TenantContext | undefined,
   agent: AgentContext | undefined,
 ): string {
-  const credential = apiKey
-    ? `api-key:${createHmac("sha256", apiKey).update("remembra-idempotency-credential", "utf8").digest("hex")}`
-    : "local";
+  if (credentialScope !== undefined && (typeof credentialScope !== "string" || credentialScope.length < 1 || credentialScope.length > 512)) {
+    throw new RemembraError("INVALID_INPUT", "resolved credential scope is invalid");
+  }
+  const credential = credentialScope
+    ? `host:${batchIdempotencyScope(credentialScope)}`
+    : apiKey
+      ? `api-key:${createHmac("sha256", apiKey).update("remembra-idempotency-credential", "utf8").digest("hex")}`
+      : "local";
   const principal = tenant
     ? [
         "tenant",
@@ -591,10 +605,11 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       if (req.method === "POST" && path === "/memories/batch") {
         const body = await readBody(req, maxBody, service.isTenantStrict);
         const idempotencyKey = idempotencyKeyFor(req);
+        const credentialScope = idempotencyKey ? await opts.resolveCredentialScope?.(req) : undefined;
         const result = await service.batch(body, {
           ...agentOptions,
           idempotencyKey,
-          idempotencyScope: idempotencyScopeFor(opts.apiKey, tenant, agent),
+          idempotencyScope: idempotencyScopeFor(opts.apiKey, credentialScope, tenant, agent),
         });
         applySecureHeaders(res);
         applyCorsHeaders(res);

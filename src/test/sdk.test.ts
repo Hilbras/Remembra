@@ -97,7 +97,7 @@ test("SDK sends bounded idempotency keys for batch mutations", async () => {
       return jsonResponse({
         operation: "store",
         summary: { requested: 1, succeeded: 1, failed: 0 },
-        results: [{ index: 0, id: "m1", ok: true, result: { id: "m1" } }],
+        results: [{ index: 0, id: "m1", ok: true, result: { id: "m1", message: "stored" } }],
         execution: { transactionPolicy: "per-item", idempotency: "stored" },
       });
     },
@@ -127,6 +127,20 @@ test("SDK sends bounded idempotency keys for batch mutations", async () => {
   await assert.rejects(
     () => client.batch({ operation: "export", ids: ["m1"] }, { idempotencyKey: "export-key" }),
     /only supported for batch mutations/i,
+  );
+
+  const malformed = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async () => jsonResponse({
+      operation: "store",
+      summary: { requested: 1, succeeded: 1, failed: 0 },
+      results: [{}],
+      execution: { transactionPolicy: "per-item", idempotency: "stored" },
+    }),
+  });
+  await assert.rejects(
+    () => malformed.batch({ operation: "store", items: [{ type: "fact", content: "once" }] }),
+    /invalid batch response/i,
   );
 });
 

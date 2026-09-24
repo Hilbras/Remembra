@@ -229,21 +229,28 @@ Batch limits are 100 items and 10 MiB. HTTP mixed results use status `200`;
 top-level malformed requests use the normal `INVALID_INPUT` envelope.
 
 Mutation requests may include `Idempotency-Key` (1–128 safe ASCII
-characters). The authenticated, host-derived credential/tenant/agent scope and
+characters). Hosts that authenticate without a static API key may provide a
+trusted post-authentication `resolveCredentialScope(req)` callback so separate
+host credentials receive separate idempotency namespaces. The authenticated,
+host-derived credential/tenant/agent scope and
 canonical request body are fingerprinted with a full digest; raw keys and
 tenant identifiers are never written to the claim store. Claims are held in a
 transactional local SQLite ledger under `<REMEMBRA_HOME>/.idempotency`, with
 an integrity-protected record, atomic cross-process transactions, per-scope and
-aggregate capacity limits, and a 24-hour completed-claim retention window.
+aggregate capacity limits. Completed claims do not automatically expire: an
+old key remains replay-only until explicit ledger invalidation.
 A completed claim replays its original response, the same key with a different
 body returns `CONFLICT`, and an in-progress or ambiguous claim fails closed
-rather than risking duplicate writes. Per-item storage/provider/queue failures
-that may have happened after a side effect are not finalized as replayable
-responses; the claim remains in progress for host/operator resolution. Keyed
-requests are limited to 256 KiB so the response can be persisted safely. Capacity exhaustion returns
-`SERVICE_UNAVAILABLE`. The built-in SQLite restore command invalidates the
-ledger before replacing data; out-of-band restores must call the store's
-`invalidate()` operation before serving requests. A pre-SQLite development
+rather than risking duplicate writes. Per-item failures (including validation,
+storage, provider, and queue failures) are not finalized as replayable
+responses for a keyed batch; the claim remains in progress for host/operator
+resolution. Keyed requests are limited to 256 KiB so the response can be
+persisted safely. Capacity exhaustion returns
+`SERVICE_UNAVAILABLE`. Out-of-band restores must call the store's
+`invalidate()` operation before serving requests. The built-in restore flow
+creates a durable `restore.pending` gate before publishing the replacement;
+startup refuses normal serving while that marker exists, and a failed restore
+leaves the gate in place for explicit operator retry. A pre-SQLite development
 ledger containing legacy `.json` claim files is rejected rather than silently
 ignored; operators must migrate or invalidate it before startup. This V5.4
 implementation is single-host durable storage; distributed idempotency remains
