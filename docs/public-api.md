@@ -243,8 +243,11 @@ responses; the claim remains in progress for host/operator resolution. Keyed
 requests are limited to 256 KiB so the response can be persisted safely. Capacity exhaustion returns
 `SERVICE_UNAVAILABLE`. The built-in SQLite restore command invalidates the
 ledger before replacing data; out-of-band restores must call the store's
-`invalidate()` operation before serving requests. This V5.4 implementation is
-single-host durable storage; distributed idempotency remains a V5.2 concern.
+`invalidate()` operation before serving requests. A pre-SQLite development
+ledger containing legacy `.json` claim files is rejected rather than silently
+ignored; operators must migrate or invalidate it before startup. This V5.4
+implementation is single-host durable storage; distributed idempotency remains
+a V5.2 concern.
 
 ### Error codes → HTTP status
 

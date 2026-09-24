@@ -55,6 +55,7 @@ let batchIdempotencyStore: FileBatchIdempotencyStore | undefined;
 try {
   batchIdempotencyStore = new FileBatchIdempotencyStore(path.join(validatedRoot, ".idempotency"));
 } catch (error) {
+  if (backendSelection.backend === "sqlite") throw error;
   // Idempotency is an additive keyed-batch capability; do not make the
   // explicitly allowed file fallback unusable when the native SQLite helper
   // is unavailable. Unkeyed batches remain available and keyed batches fail

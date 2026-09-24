@@ -243,6 +243,9 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
   constructor(root: string, options: FileBatchIdempotencyStoreOptions = {}) {
     const resolvedRoot = path.resolve(root);
     ensureSafeDirectorySync(resolvedRoot);
+    if (fs.readdirSync(resolvedRoot).some((name) => name.endsWith(".json"))) {
+      invalid("legacy JSON claim files require explicit operator migration");
+    }
     this.maxBytes = options.maxBytes ?? MAX_BATCH_IDEMPOTENCY_RESPONSE_BYTES;
     this.maxAgeMs = options.maxAgeMs ?? 24 * 60 * 60 * 1000;
     this.maxEntries = options.maxEntries ?? 10_000;
