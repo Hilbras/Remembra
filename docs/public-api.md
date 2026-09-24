@@ -146,7 +146,12 @@ for the durable local directory adapter and
 migration plan. `@hilbras/remembra/migration-state` provides an atomic, bounded
 checkpoint file. `@hilbras/remembra/tenant-entities` provides the trusted,
 organization-derived CRUD/pagination service; mutations require an
-organization-admin context and emit an audit callback.
+organization-admin context and emit an audit callback. When injected into
+`createHttpServer`, the versioned routes are `GET /api/v1/tenant/organization`,
+`GET/POST/PUT/DELETE /api/v1/tenant/entities/{kind}[/{id}]`, and
+`POST/DELETE /api/v1/tenant/memberships/{projectId}/{userId}`. Entity resource
+IDs are path selectors; callers still cannot submit an authoritative tenant
+identity. The SDK exposes matching `tenant*` methods.
 `runDurableTenantMigration` verifies the manifest and destination capability
 before writes, resumes only after checking prior records, and records failures.
 `publishTenantMigration` is an explicit operator-confirmed marker; callers are

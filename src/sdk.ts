@@ -1,4 +1,6 @@
 import type { ContextResult } from "./context.js";
+import type { TenantEntity, TenantEntityKind, TenantEntityPage } from "./tenant-entities.js";
+export type { TenantEntity, TenantEntityKind, TenantEntityPage } from "./tenant-entities.js";
 export type { ContextMemory, ContextResult } from "./context.js";
 import type {
   BatchOutcome,
@@ -79,6 +81,27 @@ export interface ContextOptions {
   includeExpired?: boolean;
   includeFuture?: boolean;
   includeQuarantined?: boolean;
+}
+
+export interface TenantEntityOptions {
+  offset?: number;
+  limit?: number;
+}
+
+export interface TenantEntityWriteInput {
+  displayName?: string;
+  /** Resource references for agents; these are not authoritative identities. */
+  userRef?: string;
+  projectRef?: string;
+}
+
+export interface TenantOrganizationResponse {
+  organizationId: string;
+  membershipVersion: string;
+}
+
+export interface TenantMembershipResponse {
+  ok: boolean;
 }
 
 export interface HistoryOptions {
@@ -264,6 +287,72 @@ export class Remembra {
 
   context(input: ContextOptions, options?: RequestOptions): Promise<ContextResult> {
     return this.request("POST", "/context", input, options);
+  }
+
+  tenantOrganization(options?: RequestOptions): Promise<TenantOrganizationResponse> {
+    return this.request("GET", "/tenant/organization", undefined, options);
+  }
+
+  listTenantEntities(
+    kind: TenantEntityKind,
+    params: TenantEntityOptions = {},
+    options?: RequestOptions,
+  ): Promise<TenantEntityPage> {
+    return this.request("GET", `/tenant/entities/${encodeURIComponent(kind)}`, undefined, {
+      ...options,
+      query: params as Record<string, unknown>,
+    });
+  }
+
+  getTenantEntity(
+    kind: TenantEntityKind,
+    id: string,
+    options?: RequestOptions,
+  ): Promise<TenantEntity> {
+    return this.request("GET", `/tenant/entities/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, undefined, options);
+  }
+
+  createTenantEntity(
+    kind: TenantEntityKind,
+    id: string,
+    input: TenantEntityWriteInput = {},
+    options?: RequestOptions,
+  ): Promise<TenantEntity> {
+    return this.request("POST", `/tenant/entities/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, input, options);
+  }
+
+  updateTenantEntity(
+    kind: TenantEntityKind,
+    id: string,
+    input: TenantEntityWriteInput = {},
+    options?: RequestOptions,
+  ): Promise<TenantEntity> {
+    return this.request("PUT", `/tenant/entities/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, input, options);
+  }
+
+  deleteTenantEntity(
+    kind: TenantEntityKind,
+    id: string,
+    options?: RequestOptions,
+  ): Promise<{ ok: boolean }> {
+    return this.request("DELETE", `/tenant/entities/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, undefined, options);
+  }
+
+  grantTenantMembership(
+    projectId: string,
+    userId: string,
+    role: "member" | "manager" | "admin" = "member",
+    options?: RequestOptions,
+  ): Promise<TenantMembershipResponse> {
+    return this.request("POST", `/tenant/memberships/${encodeURIComponent(projectId)}/${encodeURIComponent(userId)}`, { role }, options);
+  }
+
+  revokeTenantMembership(
+    projectId: string,
+    userId: string,
+    options?: RequestOptions,
+  ): Promise<TenantMembershipResponse> {
+    return this.request("DELETE", `/tenant/memberships/${encodeURIComponent(projectId)}/${encodeURIComponent(userId)}`, undefined, options);
   }
 
   get(id: string, options?: RequestOptions): Promise<GetResponse> {

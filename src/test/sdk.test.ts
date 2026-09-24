@@ -45,6 +45,32 @@ test("SDK uses the v1 namespace, API key, typed paths, and query encoding", asyn
   assert.equal(calls[2].url, "https://memory.example.test/api/v1/memories?offset=20&limit=10");
 });
 
+test("SDK exposes typed tenant entity methods without tenant identity fields", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const client = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async (input, init) => {
+      calls.push({ url: String(input), init });
+      return jsonResponse({ ok: true, kind: "agent", agentId: "agent-a" });
+    },
+  });
+  await client.tenantOrganization();
+  await client.listTenantEntities("user", { offset: 2, limit: 10 });
+  await client.getTenantEntity("agent", "agent-a");
+  await client.createTenantEntity("agent", "agent-a", { userRef: "user-a", projectRef: "project-a" });
+  await client.updateTenantEntity("agent", "agent-a", { displayName: "Agent" });
+  await client.deleteTenantEntity("agent", "agent-a");
+  await client.grantTenantMembership("project-a", "user-a", "member");
+  await client.revokeTenantMembership("project-a", "user-a");
+
+  assert.match(calls[0].url, /\/api\/v1\/tenant\/organization$/);
+  assert.match(calls[1].url, /tenant\/entities\/user\?offset=2&limit=10$/);
+  assert.match(calls[3].url, /tenant\/entities\/agent\/agent-a$/);
+  assert.deepEqual(JSON.parse(String(calls[3].init?.body)), { userRef: "user-a", projectRef: "project-a" });
+  assert.match(calls[6].url, /tenant\/memberships\/project-a\/user-a$/);
+  assert.equal(new Headers(calls[6].init?.headers).get("x-api-key"), null);
+});
+
 test("SDK preserves structured API errors", async () => {
   const client = new Remembra({
     endpoint: "http://localhost:8787/api/v1",

@@ -11,6 +11,7 @@ import { metrics } from "./metrics.js";
 import { RateLimiter } from "./rate-limiter.js";
 import type { AgentContext } from "./agent.js";
 import type { TenantContext } from "./tenant.js";
+import type { TenantEntityKind, TenantEntityService } from "./tenant-entities.js";
 
 export interface HttpOptions {
   port?: number;
@@ -32,6 +33,8 @@ export interface HttpOptions {
   resolveTenantContext?: (
     req: http.IncomingMessage,
   ) => TenantContext | undefined | Promise<TenantContext | undefined>;
+  /** Optional trusted tenant entity service for the V5 organization API. */
+  tenantEntities?: TenantEntityService;
 }
 
 const RESERVED_TENANT_KEYS = new Set([
@@ -291,6 +294,123 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       const agent = resolvedAgent?.agentId?.trim() ? resolvedAgent : undefined;
       const tenant = await opts.resolveTenantContext?.(req);
       const agentOptions = { agent, tenant };
+
+      const requireEntityTenant = (): TenantContext => {
+        if (!tenant) throw new RemembraError("TENANT_REQUIRED", "trusted tenant context required");
+        return tenant;
+      };
+      const entityService = opts.tenantEntities;
+      const entityKind = (value: string): TenantEntityKind => {
+        if (value === "user" || value === "project" || value === "agent") return value;
+        const error = new Error("unsupported tenant entity kind");
+        error.name = "BadRequestError";
+        throw error;
+      };
+      const entityPageValue = (name: string): number | undefined => {
+        const raw = url.searchParams.get(name);
+        if (raw === null) return undefined;
+        if (!/^\d+$/.test(raw)) {
+          const error = new Error(`${name} must be a non-negative integer`);
+          error.name = "BadRequestError";
+          throw error;
+        }
+        return Number(raw);
+      };
+      const entityObjectBody = (body: unknown): Record<string, unknown> => {
+        if (body === null || typeof body !== "object" || Array.isArray(body)) {
+          const error = new Error("tenant entity body must be an object");
+          error.name = "BadRequestError";
+          throw error;
+        }
+        return body as Record<string, unknown>;
+      };
+
+      if (entityService && req.method === "GET" && path === "/tenant/organization") {
+        const result = await entityService.getOrganization(requireEntityTenant());
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, 200, result);
+      }
+
+      const entityList = entityService ? path.match(/^\/tenant\/entities\/(user|project|agent)$/) : null;
+      if (entityList && req.method === "GET") {
+        const result = await entityService!.list(requireEntityTenant(), entityKind(entityList[1]), {
+          offset: entityPageValue("offset"),
+          limit: entityPageValue("limit"),
+        });
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, 200, result);
+      }
+
+      const entityItem = entityService ? path.match(/^\/tenant\/entities\/(user|project|agent)\/([^/]+)$/) : null;
+      if (entityItem && req.method === "GET") {
+        const result = await entityService!.get(requireEntityTenant(), entityKind(entityItem[1]), decodeURIComponent(entityItem[2]));
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, 200, result);
+      }
+
+      if (entityItem && (req.method === "POST" || req.method === "PUT" || req.method === "DELETE")) {
+        const kind = entityKind(entityItem[1]);
+        const id = decodeURIComponent(entityItem[2]);
+        const tenantContext = requireEntityTenant();
+        if (req.method === "DELETE") {
+          if (kind === "user") await entityService!.deleteUser(tenantContext, id);
+          else if (kind === "project") await entityService!.deleteProject(tenantContext, id);
+          else await entityService!.deleteAgent(tenantContext, id);
+          applySecureHeaders(res);
+          applyCorsHeaders(res);
+          return send(res, 200, { ok: true });
+        }
+        const body = entityObjectBody(await readBody(req, maxBody, service.isTenantStrict));
+        let result;
+        if (kind === "user") {
+          const input = { ...body, userId: id };
+          result = req.method === "POST"
+            ? await entityService!.createUser(tenantContext, input as { userId: string; displayName?: string })
+            : await entityService!.updateUser(tenantContext, input as { userId: string; displayName?: string });
+        } else if (kind === "project") {
+          const input = { ...body, projectId: id };
+          result = req.method === "POST"
+            ? await entityService!.createProject(tenantContext, input as { projectId: string; displayName?: string })
+            : await entityService!.updateProject(tenantContext, input as { projectId: string; displayName?: string });
+        } else {
+          const { userRef, projectRef, ...rest } = body;
+          const input = {
+            ...rest,
+            agentId: id,
+            ...(userRef !== undefined ? { userId: userRef } : {}),
+            ...(projectRef !== undefined ? { projectId: projectRef } : {}),
+          };
+          result = req.method === "POST"
+            ? await entityService!.createAgent(tenantContext, input as { agentId: string; userId?: string; projectId?: string; displayName?: string })
+            : await entityService!.updateAgent(tenantContext, input as { agentId: string; userId?: string; projectId?: string; displayName?: string });
+        }
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, req.method === "POST" ? 201 : 200, result);
+      }
+
+      const membership = entityService ? path.match(/^\/tenant\/memberships\/([^/]+)\/([^/]+)$/) : null;
+      if (membership && (req.method === "POST" || req.method === "DELETE")) {
+        const tenantContext = requireEntityTenant();
+        const projectId = decodeURIComponent(membership[1]);
+        const userId = decodeURIComponent(membership[2]);
+        if (req.method === "DELETE") {
+          await entityService!.revokeProjectMembership(tenantContext, { projectId, userId });
+        } else {
+          const body = entityObjectBody(await readBody(req, maxBody, service.isTenantStrict));
+          await entityService!.grantProjectMembership(tenantContext, {
+            ...body,
+            projectId,
+            userId,
+          } as { projectId: string; userId: string; role?: "member" | "manager" | "admin" });
+        }
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, 200, { ok: true });
+      }
 
       // GET /metrics — Prometheus text format. After the auth check on
       // purpose: keyed (incl. public) deployments must not leak counters.
