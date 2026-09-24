@@ -455,7 +455,10 @@ export function searchQ(
   // Step 9: reranker hook point — identity is the default. The EmbedReranker
   // and full Reranker interface are exported for callers that wish to compose
   // a custom pass, but the pipeline itself preserves the fused ranking order.
-  const ranked = gated.map((e) => e.m);
+  let ranked = gated.map((e) => e.m);
+  if (policy.reranking && queryVec && queryVec.length > 0) {
+    ranked = rerankWithEmbed(queryVec, ranked);
+  }
 
   // Step 10: MMR diversity (semantic mode with multiple vectors).
   // Cap the MMR candidate pool to `limit * 10` (min 100) to keep the

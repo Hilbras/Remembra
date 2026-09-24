@@ -111,6 +111,22 @@ test("RRF gives tied-score items equal contribution (no positional bias)", () =>
   );
 });
 
+test("configured embedding reranking breaks fused ties deterministically", () => {
+  const updatedAt = "2026-01-01T00:00:00.000Z";
+  const tied = [
+    mem({ id: "a", content: "same keyword", embedding: [0, 1], updatedAt }),
+    mem({ id: "z", content: "same keyword", embedding: [1, 0], updatedAt }),
+  ];
+  const baseline = searchQ(tied, { query: "same keyword", limit: 2 }, [1, 0], { diversity: false });
+  const reranked = searchQ(tied, { query: "same keyword", limit: 2 }, [1, 0], { diversity: false, reranking: true });
+  assert.deepEqual(reranked.results.map((m) => m.id), ["z", "a"]);
+  assert.deepEqual(
+    reranked.results.map((m) => m.id),
+    searchQ(tied, { query: "same keyword", limit: 2 }, [1, 0], { diversity: false, reranking: true }).results.map((m) => m.id),
+  );
+  assert.ok(baseline.results.length === 2);
+});
+
 test("temporal: latest N surfaces most-recent memories first", () => {
   const base = Date.now();
   const store = [

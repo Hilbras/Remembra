@@ -127,6 +127,9 @@ Implementation slices:
     documented fallbacks.
   - Verification: quality regression suite, adversarial retrieval cases, and
     benchmark reports against V4.9.
+  - Current evidence: validated reranking policy now applies deterministic
+    embedding tie-breaking before bounded MMR; relationship expansion and the
+    full quality matrix remain.
   - Scope: L.
 
 - [ ] Task 7: Establish 10K/100K+ performance budgets.

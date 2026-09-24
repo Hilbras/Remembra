@@ -23,6 +23,9 @@ V5 work is additive until the tenant/schema migration contract is approved.
 - **Validated V5 policy configuration** with trusted file/env layering,
   fail-closed validation, lifecycle defaults, extraction control, retrieval
   toggles, and sensitive-data policy integration.
+- **Effective embedding reranking** now honors the validated retrieval
+  reranking policy with a deterministic cosine tie-breaker before MMR
+  selection; unsupported/vectorless cases retain the fused order.
 - **V5 tenant contract and identity primitives** with opaque host contexts,
   canonical scoped identifiers, fail-closed matching, migration boundaries,
   versioned organization/user/project/agent directory verification, and a
