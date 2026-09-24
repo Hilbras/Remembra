@@ -9,18 +9,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-### Security
-
-- V5.0.1 hardens authentication-before-rate-limiting, opaque rate identities,
-  centralized secret redaction, HTTP provider-error sanitization, file-history
-  path containment, and fail-closed SQLite startup.
-- Strict restore now rejects tenantless snapshots; explicit signed,
-  target-bound migration supports analyze, plan, dry-run, apply, and retry.
-
 - Added the draft [V6 architecture specification](docs/v6-architecture-spec.md),
   covering first-class trust/sensitivity/expiration policy, provider-independent
   offline operation, versioned API domains, migration gates, and release
   discipline. No V6 implementation is implied by this design document.
+
+## [5.0.1] — 2026-09-24
+
+### Security
+
+- Hardened authentication-before-rate-limiting with opaque rate identities and
+  separate anonymous/authenticated buckets.
+- Added centralized secret redaction for structured logs, debug queries, and
+  provider diagnostics; HTTP provider errors are sanitized.
+- Made SQLite startup and migration readiness fail closed; file fallback is
+  explicit, warned, and visible in health.
+- Contained file-history paths and rejected symlinked history storage.
+
+### Migration
+
+- Strict restore now rejects tenantless snapshots.
+- Added signed, target-bound `migrate analyze`, `migrate plan`, and
+  `migrate apply --dry-run`/apply workflows with tamper rejection and idempotent
+  retry behavior.
+
+### Verification
+
+- Node 18.20.8 and Node 24.21.0 release gates passed at 5.0.1.
+- Full suite: 414 passed, 0 failed; security matrix: 47 passed; recovery
+  matrix: 13 passed.
+- Documentation check passed (35 files), dependency audit found 0
+  vulnerabilities, and package dry-run included 203 files (410.2 kB).
 
 ## [5.0.0] — 2026-09-24
 

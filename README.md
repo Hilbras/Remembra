@@ -10,7 +10,7 @@
 
 Remembra stores facts, decisions, preferences, roles, constraints, relationships, and project history outside a model context window. It then retrieves only the authorized, relevant subset for the current session. The same memory service is available through MCP, HTTP, a TypeScript SDK, and a web dashboard.
 
-**Current release:** [`@hilbras/remembra@5.0.0`](https://www.npmjs.com/package/@hilbras/remembra/v/5.0.0) · [V5 release notes](https://github.com/Hilbras/Remembra/releases/tag/v5.0.0)
+**Current release:** [`@hilbras/remembra@5.0.1`](https://www.npmjs.com/package/@hilbras/remembra/v/5.0.1) · [V5.0.1 release notes](https://github.com/Hilbras/Remembra/releases/tag/v5.0.1)
 
 ---
 
