@@ -14,6 +14,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   offline operation, versioned API domains, migration gates, and release
   discipline. No V6 implementation is implied by this design document.
 
+## [5.0.3] — 2026-09-24
+
+### Reliability
+
+- Added deterministic startup validation for configuration, tenant context,
+  storage paths, permissions, and write readiness before backend migration.
+- Added bounded `Healthy`/`Degraded`/`Recovering`/`Failed`/`ReadOnly` health
+  states with durable, atomically replaced recovery state and explicit
+  `recover read-only`/`recover verify` controls.
+- Added snapshot semantic validation, SQLite restore journaling/reconciliation,
+  atomic SQLite batch imports, and a durable file-import rollback journal.
+- Added permanent recovery regressions for restart, corruption, symlinks,
+  SIGKILL, permission, disk, I/O, and SQLite-full failures.
+
+### Compatibility
+
+- Preserved V4.9/V5 behavior and deferred V5.1/V6 implementation.
+- Kept provider-optional operation, tenant authorization, path containment,
+  redaction, and fallback observability unchanged.
+
+### Verification
+
+- Node 18.20.8 and Node 24.21.0 complete release gates passed at 5.0.3.
+- Full suite: 466 passed, 0 failed; security matrix: 64 passed; recovery matrix:
+  48 passed on both runtimes.
+- Documentation check passed (36 files), dependency audit found 0
+  vulnerabilities, and package dry-run included 222 files (440.6 kB packed;
+  1.9 MB unpacked).
+- Tenant benchmarks completed at 10K/100K records and the bounded scale
+  benchmark completed at 10K/50K records under both runtimes.
+
 ## [5.0.2] — 2026-09-24
 
 ### Security
