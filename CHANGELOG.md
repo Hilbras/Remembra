@@ -38,7 +38,8 @@ context/retrieval, verified recovery, and release-gated operations.
   file-backed directory adapter with strict entity-reference validation, a
   bounded organization-derived entity CRUD/pagination service, default-deny
   host-authorized organization provisioning, trusted HTTP/SDK entity routes,
-  and a `TENANT_REQUIRED` error. Backend enforcement remains a staged task.
+  and a `TENANT_REQUIRED` error. Backend enforcement is active across file and
+  SQLite paths.
 - **V5 tenant schema expansion** adds optional persisted organization/project/
   user/agent metadata while keeping tenantless V4 records at schema 3 and
   tenant records at schema 4. A canonical HMAC-SHA256 migration manifest now
@@ -51,8 +52,8 @@ context/retrieval, verified recovery, and release-gated operations.
 - **V5 tenant migration runner** preflights explicit organization/entity/ACL
   mappings, signs and verifies manifests, validates source/reference checksums,
   and applies records idempotently to tenant-capable backends. Durable
-  checkpoint/resume state and an explicit publication marker are now included;
-  backend-specific atomic swap/rollback remains deployment work.
+  checkpoint/resume state and an explicit publication marker are included;
+  backend-specific publication and retained-previous rollback are explicit.
 - **Atomic recovery files** write signed snapshots through fsync + rename,
   reject symlink/oversized/tampered inputs, and are used by keyed CLI
   export/import. Snapshot restore also has a no-write `previewSnapshot` and
@@ -81,6 +82,15 @@ context/retrieval, verified recovery, and release-gated operations.
   partitions. The CLI now has an explicit `REMEMBRA_TENANT_MODE=strict` operator
   binding and refuses legacy global backup/restore/migration/encryption forms;
   remaining work is broader derived-cache invalidation.
+
+### Verification
+
+- Node 18.20.8 and Node 24.21.0 release gates passed at version 5.0.0.
+- Full tests, tenant-security and recovery matrices, documentation checks,
+  package checks, and dependency audit passed with zero audit vulnerabilities.
+- Strict tenant benchmarks passed the documented 10K/100K p95 and heap ceilings.
+- Published as `@hilbras/remembra@5.0.0` and
+  [GitHub Release v5.0.0](https://github.com/Hilbras/Remembra/releases/tag/v5.0.0).
 
 ---
 

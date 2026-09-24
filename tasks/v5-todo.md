@@ -9,7 +9,7 @@
 - [x] Task 7: Establish 10K/100K+ performance budgets.
 - [x] Task 8: Add verified backup/restore/migration workflows.
 - [x] Task 9: Complete the V5 security baseline.
-- [ ] Task 10: Run the V4→V5 compatibility and release-gate matrix.
+- [x] Task 10: Run the V4→V5 compatibility and release-gate matrix.
 
 ## Checkpoints
 
@@ -21,5 +21,8 @@
       isolation tests pass.
 - [x] Recovery/security checkpoint: corruption, restore, poisoning, secret,
       and authorization evidence is green.
-- [ ] Release checkpoint: full tests, build, audit, package, migration,
+- [x] Release checkpoint: full tests, build, audit, package, migration,
       compatibility, and 10K/100K performance gates pass before tagging.
+
+V5.0.0 is published as `@hilbras/remembra@5.0.0` and
+[GitHub Release v5.0.0](https://github.com/Hilbras/Remembra/releases/tag/v5.0.0).
