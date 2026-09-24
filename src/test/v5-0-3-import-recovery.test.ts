@@ -154,6 +154,25 @@ test("REC-CRASH-001: SIGKILL during a file import is rolled back on restart", as
   }
 });
 
+test("REC-CRASH-001: recovery never deletes two unparseable twin files", async () => {
+  const root = await temporaryRoot("remembra-v503-unparseable-twins-");
+  const id = "20000000-0000-4000-8000-000000000001";
+  const active = path.join(root, "global", `${id}.md`);
+  const archived = path.join(root, "archived", "global", `${id}.md`);
+  await fs.mkdir(path.dirname(active), { recursive: true });
+  await fs.mkdir(path.dirname(archived), { recursive: true });
+  await fs.writeFile(active, "not valid frontmatter", "utf8");
+  await fs.writeFile(archived, "not valid frontmatter", "utf8");
+  try {
+    const store = new MemoryStore(root);
+    assert.deepEqual(await store.all(true), []);
+    await fs.access(active);
+    await fs.access(archived);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("REC-CRASH-001: an out-of-root import journal fails closed", async () => {
   const root = await temporaryRoot("remembra-v503-import-root-");
   const outside = await temporaryRoot("remembra-v503-import-outside-");

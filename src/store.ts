@@ -827,12 +827,14 @@ export class MemoryStore implements MemoryBackend {
     for (const activeFile of active) {
       const twin = archivedById.get(path.basename(activeFile, ".md"));
       if (!twin) continue;
-      const [am, zm] = await Promise.all([parse(activeFile), parse(twin)]);
+      let [am, zm] = await Promise.all([parse(activeFile), parse(twin)]);
       if (!am && !zm) {
-        await fs.unlink(activeFile).catch(() => {});
-        await fs.unlink(twin).catch(() => {});
-        reconciled++;
-        continue;
+        // A concurrent writer or transient read failure must never make
+        // recovery delete both copies. Retry once, then leave the pair for
+        // explicit operator repair instead of silently discarding data.
+        await sleep(5);
+        [am, zm] = await Promise.all([parse(activeFile), parse(twin)]);
+        if (!am && !zm) continue;
       }
       // Newest updatedAt wins; ties go to the archived copy (archive writes
       // archivedAt last in the common crash window).
