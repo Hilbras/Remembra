@@ -62,12 +62,14 @@ test("SDK exposes typed tenant entity methods without tenant identity fields", a
   await client.deleteTenantEntity("agent", "agent-a");
   await client.grantTenantMembership("project-a", "user-a", "member");
   await client.revokeTenantMembership("project-a", "user-a");
+  await client.listTenantMemberships("project-a", { limit: 10 });
 
   assert.match(calls[0].url, /\/api\/v1\/tenant\/organization$/);
   assert.match(calls[1].url, /tenant\/entities\/user\?offset=2&limit=10$/);
   assert.match(calls[3].url, /tenant\/entities\/agent\/agent-a$/);
   assert.deepEqual(JSON.parse(String(calls[3].init?.body)), { userRef: "user-a", projectRef: "project-a" });
   assert.match(calls[6].url, /tenant\/memberships\/project-a\/user-a$/);
+  assert.match(calls[8].url, /tenant\/memberships\/project-a\?limit=10$/);
   assert.equal(new Headers(calls[6].init?.headers).get("x-api-key"), null);
 });
 

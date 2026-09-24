@@ -392,6 +392,18 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         return send(res, req.method === "POST" ? 201 : 200, result);
       }
 
+      const membershipList = entityService ? path.match(/^\/tenant\/memberships\/([^/]+)$/) : null;
+      if (membershipList && req.method === "GET") {
+        const result = await entityService!.listProjectMembers(
+          requireEntityTenant(),
+          decodeURIComponent(membershipList[1]),
+          { offset: entityPageValue("offset"), limit: entityPageValue("limit") },
+        );
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, 200, result);
+      }
+
       const membership = entityService ? path.match(/^\/tenant\/memberships\/([^/]+)\/([^/]+)$/) : null;
       if (membership && (req.method === "POST" || req.method === "DELETE")) {
         const tenantContext = requireEntityTenant();

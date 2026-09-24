@@ -190,7 +190,8 @@ host `TenantDirectory` for versioned membership re-authorization; the shipped
 `FileTenantDirectory` provides an atomic, permission-safe local durable
 adapter. A production host should implement the same contract in its identity
 store. The trusted `TenantEntityService` provides bounded organization-derived
-CRUD/pagination and membership changes with an audit callback. A principal
+CRUD/pagination and membership changes with an audit callback. Organization
+provisioning is a separate default-deny host authorization hook. A principal
 used for a memory operation must be resolved against the current organization
 membership version; stale or revoked membership fails closed, including queued
 work.

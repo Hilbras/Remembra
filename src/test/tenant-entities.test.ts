@@ -21,6 +21,32 @@ function context(
   });
 }
 
+test("tenant organization provisioning is default-deny and host-authorized", async () => {
+  const directory = new InMemoryTenantDirectory();
+  const events: TenantEntityAuditEvent[] = [];
+  const denied = new TenantEntityService(directory, { audit: (event) => { events.push(event); } });
+  await assert.rejects(
+    () => denied.provisionOrganization("org-a"),
+    (error: unknown) => error instanceof RemembraError && error.code === "TENANT_REQUIRED",
+  );
+  const eventsBefore = events.length;
+  const authorized = new TenantEntityService(directory, {
+    authorizeBootstrap: (organizationId) => organizationId === "org-a",
+    audit: (event) => { events.push(event); },
+  });
+  assert.deepEqual(await authorized.provisionOrganization("org-a"), { organizationId: "org-a", membershipVersion: "1" });
+  assert.equal(events.length, eventsBefore + 1);
+  assert.equal(events.at(-1)?.kind, "organization");
+  await assert.rejects(
+    () => authorized.provisionOrganization("org-a"),
+    (error: unknown) => error instanceof RemembraError && error.code === "CONFLICT",
+  );
+  await assert.rejects(
+    () => authorized.provisionOrganization("../bad"),
+    (error: unknown) => error instanceof RemembraError && error.code === "INVALID_INPUT",
+  );
+});
+
 test("tenant entity service derives organization, paginates, and audits membership CRUD", async () => {
   const directory = new InMemoryTenantDirectory();
   directory.createOrganization("org-a");
@@ -46,6 +72,8 @@ test("tenant entity service derives organization, paginates, and audits membersh
     role: "member",
   });
   version = await directory.getMembershipVersion("org-a")!;
+  const membershipPage = await service.listProjectMembers(context("org-a", version), "project-a");
+  assert.deepEqual(membershipPage.items.map((membership) => [membership.userId, membership.role]), [["user-a", "member"]]);
 
   const page = await service.list(context("org-a", version), "user", { offset: 1, limit: 2 });
   assert.equal(page.total, 3);

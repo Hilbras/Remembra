@@ -40,6 +40,20 @@ export interface TenantEntityPage {
   limit: number;
 }
 
+export interface TenantMembership {
+  organizationId: string;
+  projectId: string;
+  userId: string;
+  role: TenantMembershipRole;
+}
+
+export interface TenantMembershipPage {
+  items: TenantMembership[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
 export interface TenantEntityAuditEvent {
   action: string;
   kind: "organization" | "user" | "project" | "agent" | "membership";
@@ -69,6 +83,8 @@ export interface TenantEntityDirectory extends TenantDirectory {
 
 export interface TenantEntityServiceOptions {
   audit?: (event: TenantEntityAuditEvent) => void | Promise<void>;
+  /** Explicit host-only authorization for organization provisioning. */
+  authorizeBootstrap?: (organizationId: string) => boolean | Promise<boolean>;
 }
 
 function invalid(message: string): never {
@@ -106,6 +122,25 @@ export class TenantEntityService {
     private readonly options: TenantEntityServiceOptions = {},
   ) {}
 
+  /** Provision a new organization through an explicit host authorization hook. */
+  async provisionOrganization(organizationId: string): Promise<{ organizationId: string; membershipVersion: string }> {
+    const id = entityId(organizationId);
+    const authorized = await this.options.authorizeBootstrap?.(id);
+    if (!authorized) throw new RemembraError("TENANT_REQUIRED", "organization provisioning is not authorized");
+    await this.directory.createOrganization(id);
+    const membershipVersion = await this.directory.getMembershipVersion(id);
+    if (!membershipVersion) throw new RemembraError("NOT_FOUND", "organization not found after provisioning");
+    await this.options.audit?.({
+      action: "provision",
+      kind: "organization",
+      organizationId: id,
+      entityId: id,
+      outcome: "success",
+      membershipVersion,
+    });
+    return { organizationId: id, membershipVersion };
+  }
+
   async getOrganization(context: TenantContext): Promise<{ organizationId: string; membershipVersion: string }> {
     const principal = await this.authorize(context, "read");
     const version = await this.directory.getMembershipVersion(principal.organizationId);
@@ -130,6 +165,36 @@ export class TenantEntityService {
     return {
       items: entities.slice(offset, offset + limit),
       total: entities.length,
+      offset,
+      limit,
+    };
+  }
+
+  async listProjectMembers(
+    context: TenantContext,
+    projectId: string,
+    pageInput: { offset?: number; limit?: number } = {},
+  ): Promise<TenantMembershipPage> {
+    const principal = await this.authorize(context, "read");
+    const normalizedProjectId = entityId(projectId);
+    if (principal.projectId && principal.projectId !== normalizedProjectId) {
+      throw new RemembraError("NOT_FOUND", "project not found");
+    }
+    const page = parse(pageSchema, pageInput);
+    const snapshot = await this.directory.snapshot();
+    if (!snapshot.projects.some((project) => project.organizationId === principal.organizationId && project.projectId === normalizedProjectId)) {
+      throw new RemembraError("NOT_FOUND", "project not found");
+    }
+    const memberships = snapshot.projectMembers
+      .filter((member) => member.organizationId === principal.organizationId && member.projectId === normalizedProjectId)
+      .filter((member) => !principal.userId || member.userId === principal.userId)
+      .map((member) => ({ ...member }))
+      .sort((left, right) => left.userId.localeCompare(right.userId));
+    const offset = page.offset ?? 0;
+    const limit = page.limit ?? 50;
+    return {
+      items: memberships.slice(offset, offset + limit),
+      total: memberships.length,
       offset,
       limit,
     };

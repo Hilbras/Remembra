@@ -84,6 +84,9 @@ test("HTTP tenant entity routes use trusted context, bounded pagination, and res
     });
     assert.equal(grant.status, 200);
     await syncVersion();
+    const members = await request("/api/v1/tenant/memberships/project-a?limit=10");
+    assert.equal(members.status, 200);
+    assert.deepEqual((await members.json() as { items: Array<{ userId: string; role: string }> }).items, [{ organizationId: "org-a", projectId: "project-a", userId: "user-a", role: "member" }]);
 
     const agent = await request("/api/v1/tenant/entities/agent/agent-a", {
       method: "POST",

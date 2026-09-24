@@ -1,6 +1,6 @@
 import type { ContextResult } from "./context.js";
-import type { TenantEntity, TenantEntityKind, TenantEntityPage } from "./tenant-entities.js";
-export type { TenantEntity, TenantEntityKind, TenantEntityPage } from "./tenant-entities.js";
+import type { TenantEntity, TenantEntityKind, TenantEntityPage, TenantMembershipPage } from "./tenant-entities.js";
+export type { TenantEntity, TenantEntityKind, TenantEntityPage, TenantMembershipPage } from "./tenant-entities.js";
 export type { ContextMemory, ContextResult } from "./context.js";
 import type {
   BatchOutcome,
@@ -299,6 +299,17 @@ export class Remembra {
     options?: RequestOptions,
   ): Promise<TenantEntityPage> {
     return this.request("GET", `/tenant/entities/${encodeURIComponent(kind)}`, undefined, {
+      ...options,
+      query: params as Record<string, unknown>,
+    });
+  }
+
+  listTenantMemberships(
+    projectId: string,
+    params: TenantEntityOptions = {},
+    options?: RequestOptions,
+  ): Promise<TenantMembershipPage> {
+    return this.request("GET", `/tenant/memberships/${encodeURIComponent(projectId)}`, undefined, {
       ...options,
       query: params as Record<string, unknown>,
     });
