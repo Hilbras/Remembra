@@ -12,7 +12,12 @@ import { createHttpServer } from "./http.js";
 import { startMcp } from "./mcp.js";
 import { createOperatorTenantContext, snapshotKeyFromEnv, tenantModeFromEnv } from "./operator.js";
 import { selectInitialBackend } from "./backend-selection.js";
-import { analyzeTenantSnapshot } from "./tenant-snapshot-migration.js";
+import {
+  analyzeTenantSnapshot,
+  createTenantSnapshotPlan,
+  tenantSnapshotPlanJson,
+  verifyTenantSnapshotPlan,
+} from "./tenant-snapshot-migration.js";
 import { tenantFilterFromContext } from "./tenant.js";
 import { readSignedSnapshotFile, writeSignedSnapshotFile } from "./recovery.js";
 import { backupSqlite, restoreSqliteBackup, verifySqliteBackup } from "./sqlite-recovery.js";
@@ -47,6 +52,10 @@ const httpFlag = argv.includes("--http");
 const maintainFlag = argv.includes("maintain");
 const portArg = argv.indexOf("--port");
 const port = portArg !== -1 ? Number(argv[portArg + 1]) : undefined;
+const optionValue = (name: string): string | undefined => {
+  const index = argv.indexOf(name);
+  return index >= 0 ? argv[index + 1] : undefined;
+};
 
 if (argv[0] === "export") {
   // CLI backup: `remembra export <file.json>` — full snapshot incl. archived.
@@ -194,6 +203,60 @@ if (argv[0] === "export") {
     }
     console.log(`Restored from ${inFile}`);
     process.exit(0);
+  } else if (argv[0] === "migrate" && argv[1] === "plan") {
+    const input = argv[2];
+    const out = optionValue("--out");
+    if (!input || !out) {
+      console.error("Usage: remembra migrate plan <snapshot.json> --out <plan.json> [--source-namespace <name>]");
+      process.exit(1);
+    }
+    if (tenantMode !== "strict" || !operatorTenant || !operatorSnapshotKey) {
+      console.error("migrate plan requires strict mode, REMEMBRA_TENANT_ID, and REMEMBRA_SNAPSHOT_KEY");
+      process.exit(1);
+    }
+    try {
+      const snapshot = JSON.parse(await fs.readFile(input, "utf8"));
+      const plan = createTenantSnapshotPlan(snapshot, operatorSnapshotKey, {
+        targetOrganizationId: operatorTenant.principal.organizationId,
+        sourceNamespace: optionValue("--source-namespace") ?? "legacy-root",
+      });
+      await fs.writeFile(out, tenantSnapshotPlanJson(plan), { encoding: "utf8", mode: 0o600 });
+      console.log(JSON.stringify({
+        plan: out,
+        targetOrganizationId: plan.targetOrganizationId,
+        records: plan.records.length,
+        requiresExplicitMigration: true,
+      }, null, 2));
+      process.exit(0);
+    } catch (err) {
+      console.error(`migrate plan failed: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
+  } else if (argv[0] === "migrate" && argv[1] === "apply") {
+    const input = argv[2];
+    const planPath = optionValue("--plan");
+    if (!input || !planPath) {
+      console.error("Usage: remembra migrate apply <snapshot.json> --plan <plan.json> [--dry-run]");
+      process.exit(1);
+    }
+    if (tenantMode !== "strict" || !operatorTenant || !operatorSnapshotKey) {
+      console.error("migrate apply requires strict mode, REMEMBRA_TENANT_ID, and REMEMBRA_SNAPSHOT_KEY");
+      process.exit(1);
+    }
+    try {
+      const snapshot = JSON.parse(await fs.readFile(input, "utf8"));
+      const planValue = JSON.parse(await fs.readFile(planPath, "utf8"));
+      const plan = verifyTenantSnapshotPlan(planValue, snapshot, operatorSnapshotKey);
+      const result = await service.migrateSnapshot(snapshot, plan, operatorSnapshotKey, {
+        tenant: operatorTenant,
+        dryRun: argv.includes("--dry-run"),
+      });
+      console.log(JSON.stringify(result, null, 2));
+      process.exit(0);
+    } catch (err) {
+      console.error(`migrate apply failed: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
   } else if (argv[0] === "migrate" && argv[1] === "analyze") {
     const input = argv[2];
     if (!input) {
