@@ -378,6 +378,49 @@ export class MemoryService {
     return canReadMemory(memory, options.agent, this.agentMode);
   }
 
+  private sanitizeMemory(memory: Memory, options: AgentReadOptions, visibleIds: ReadonlySet<string>): Memory {
+    if (this.tenantMode !== "strict" && !options.tenant) return memory;
+    const relations = memory.relations?.filter((relation) => visibleIds.has(relation.id));
+    const compressedFrom = memory.meta?.compressedFrom?.filter((id) => visibleIds.has(id));
+    return {
+      ...memory,
+      ...(relations?.length ? { relations } : { relations: undefined }),
+      ...(memory.supersededBy && visibleIds.has(memory.supersededBy) ? {} : { supersededBy: undefined }),
+      ...(memory.meta
+        ? {
+            meta: {
+              ...memory.meta,
+              ...(compressedFrom?.length ? { compressedFrom } : { compressedFrom: undefined }),
+            },
+          }
+        : {}),
+    };
+  }
+
+  private async assertTenantReferences(
+    candidate: {
+      relations?: Memory["relations"];
+      supersededBy?: string;
+      meta?: Memory["meta"];
+    },
+    options: AgentReadOptions,
+    tenant: TenantFilter | undefined,
+    allowedIds?: ReadonlySet<string>,
+  ): Promise<void> {
+    if (!tenant) return;
+    const ids = new Set<string>();
+    for (const relation of candidate.relations ?? []) ids.add(relation.id);
+    if (candidate.supersededBy) ids.add(candidate.supersededBy);
+    for (const id of candidate.meta?.compressedFrom ?? []) ids.add(id);
+    for (const id of ids) {
+      if (allowedIds?.has(id)) continue;
+      const target = await this.backend.get(id, tenant);
+      if (!target || !this.canRead(target, options)) {
+        throw new RemembraError("NOT_FOUND", "reference target not found in the authorized tenant");
+      }
+    }
+  }
+
   private assertCanRead(memory: Memory | null, id: string, options: AgentReadOptions = {}): asserts memory is Memory {
     if (!memory || !this.canRead(memory, options)) {
       throw new RemembraError("NOT_FOUND", `No memory with id ${id}`);
@@ -503,6 +546,7 @@ export class MemoryService {
     parsed = this.canonicalizeAgentInput(parsed, options);
     this.assertAgentWrite(parsed, options);
     const tenant = this.tenantFilter(options, "write");
+    await this.assertTenantReferences(parsed, options, tenant);
     // PII redaction (audit Phase 8, opt-in REMEMBRA_REDACT): before embed,
     // before disk, before export — raw patterns never leave this process.
     if (this.redactOn) parsed = this.applyRedaction(parsed);
@@ -637,6 +681,8 @@ export class MemoryService {
         reranking: this.policy.retrieval.reranking,
       },
     );
+    const visibleIds = new Set(pool.map((memory) => memory.id));
+    const publicRanked = ranked.map((memory) => this.sanitizeMemory(memory, q, visibleIds));
     const durationMs = performance.now() - t0;
 
     // Observability (audit Phase 7): counters + hygiene-first query logging —
@@ -670,13 +716,13 @@ export class MemoryService {
     const text =
       ranked.length === 0
         ? "No matching memories."
-        : ranked
+        : publicRanked
             .map(
               (m) =>
                 `[${m.id}] ${m.type.toUpperCase()} (scope: ${m.scope}, importance: ${m.importance}, ${m.updatedAt.slice(0, 10)})\n${m.content}`,
             )
             .join("\n\n");
-    return { text, results: ranked, ...(explanations ? { explanations } : {}) };
+    return { text, results: publicRanked, ...(explanations ? { explanations } : {}) };
   }
 
   /** Build a deterministic, token-bounded context from the ranked search path. */
@@ -839,10 +885,7 @@ export class MemoryService {
       results.push({ index, id, ok: true, result: { id } });
     }
     const selectedIds = new Set(selected.map((memory) => memory.id));
-    const memories = selected.map((memory) => {
-      const relations = memory.relations?.filter((relation) => selectedIds.has(relation.id));
-      return { ...memory, ...(relations?.length ? { relations } : { relations: undefined }) };
-    });
+    const memories = selected.map((memory) => this.sanitizeMemory(memory, options, selectedIds));
     const snapshot = {
       format: SNAPSHOT_FORMAT,
       version: tenant ? TENANT_SCHEMA_VERSION : SCHEMA_VERSION,
@@ -888,6 +931,8 @@ export class MemoryService {
     });
     if (q.scope) memories = memories.filter((m) => m.scope === q.scope || m.scope === "global");
     if (q.type) memories = memories.filter((m) => m.type === q.type);
+    const visibleIds = new Set(memories.map((memory) => memory.id));
+    memories = memories.map((memory) => this.sanitizeMemory(memory, q, visibleIds));
     memories.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const total = memories.length;
 
@@ -990,6 +1035,8 @@ export class MemoryService {
     const memory = await this.backend.get(id, tenant);
     this.assertCanRead(memory, id, options);
     const all = await this.backend.all(true, tenant);
+    const visibleIds = new Set(all.filter((candidate) => this.canRead(candidate, options)).map((candidate) => candidate.id));
+    const safeMemory = this.sanitizeMemory(memory, options, visibleIds);
     const brief = (m: Memory) => ({
       id: m.id,
       type: m.type,
@@ -1004,7 +1051,7 @@ export class MemoryService {
       scope?: string;
       content?: string;
       missing?: true;
-    }> = (memory.relations ?? []).flatMap((r): Array<{
+    }> = (safeMemory.relations ?? []).flatMap((r): Array<{
       id: string;
       kind: string;
       type?: string;
@@ -1025,15 +1072,15 @@ export class MemoryService {
       }));
 
     const meta =
-      `${memory.type} (scope: ${memory.scope}, importance: ${memory.importance}, ` +
-      `confidence: ${memory.confidence}, trust: ${memory.trust})`;
+      `${safeMemory.type} (scope: ${safeMemory.scope}, importance: ${safeMemory.importance}, ` +
+      `confidence: ${safeMemory.confidence}, trust: ${safeMemory.trust})`;
     const relLabel = (r: { id: string; kind?: string }) =>
       r.kind && r.kind !== "related" ? `${r.id} (${r.kind})` : r.id;
     const text =
-      `[${memory.id}] ${meta}\n${memory.content}` +
+      `[${safeMemory.id}] ${meta}\n${safeMemory.content}` +
       (related.length ? `\n\nRelated: ${related.map(relLabel).join(", ")}` : "") +
       (backlinks.length ? `\nReferenced by: ${backlinks.map(relLabel).join(", ")}` : "");
-    return { memory, related, backlinks, text };
+    return { memory: safeMemory, related, backlinks, text };
   }
 
   /**
@@ -1140,6 +1187,7 @@ export class MemoryService {
     const memory = await this.backend.get(parsed.id, tenant);
     this.assertCanRead(memory, parsed.id, options);
     const entries = (await this.backend.history?.(parsed.id, tenant)) ?? [];
+    const safeMemory = this.sanitizeMemory(memory, options, new Set([memory.id]));
     const kept = entries.slice(0, parsed.limit ?? entries.length);
 
     type VersionBase = {
@@ -1151,7 +1199,7 @@ export class MemoryService {
       supersededAt?: string;
     };
     const chain: { base: VersionBase; content: string }[] = [
-      { base: { current: true, at: memory.updatedAt }, content: memory.content },
+      { base: { current: true, at: safeMemory.updatedAt }, content: safeMemory.content },
       ...kept.map((e) => ({
         base: {
           file: e.file,
@@ -1704,10 +1752,7 @@ export class MemoryService {
     const tenant = this.tenantFilter(options, "read");
     const visible = (await this.backend.all(true, tenant)).filter((m) => this.canRead(m, options));
     const visibleIds = new Set(visible.map((m) => m.id));
-    const memories = visible.map((m) => {
-      const relations = m.relations?.filter((r) => visibleIds.has(r.id));
-      return { ...m, ...(relations?.length ? { relations } : { relations: undefined }) };
-    });
+    const memories = visible.map((m) => this.sanitizeMemory(m, options, visibleIds));
     return {
       format: SNAPSHOT_FORMAT,
       version: tenant ? TENANT_SCHEMA_VERSION : SCHEMA_VERSION,
@@ -1786,6 +1831,11 @@ export class MemoryService {
       prepared.push(m);
       ids.add(m.id);
       keys.add(key);
+    }
+
+    const importReferenceIds = new Set([...existing.map((m) => m.id), ...prepared.map((m) => m.id)]);
+    for (const m of prepared) {
+      await this.assertTenantReferences(m, options, tenant, importReferenceIds);
     }
 
     for (const m of prepared) {

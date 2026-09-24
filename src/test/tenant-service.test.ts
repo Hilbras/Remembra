@@ -33,6 +33,10 @@ test("strict service requires opaque context and isolates core memory operations
   const b = await service.store({ type: "fact", content: "Tenant B private fact", scope: "project/p1" }, { tenant: tenantB });
   assert.equal(a.memory.tenantId, "org-a");
   assert.equal(b.memory.tenantId, "org-b");
+  await assert.rejects(
+    () => service.store({ type: "fact", content: "foreign reference", meta: { compressedFrom: [b.id] } }, { tenant: tenantA }),
+    (error: unknown) => error instanceof RemembraError && error.code === "NOT_FOUND",
+  );
 
   await assert.rejects(
     () => service.search({ query: "fact" }),
@@ -69,6 +73,19 @@ test("strict service requires opaque context and isolates core memory operations
   await assert.rejects(
     () => service.importSnapshot(snapshot, { tenant: tenantB }),
     (error: unknown) => error instanceof RemembraError && error.code === "SNAPSHOT_INVALID",
+  );
+  await assert.rejects(
+    () => service.importSnapshot({
+      format: snapshot.format,
+      version: snapshot.version,
+      exportedAt: snapshot.exportedAt,
+      memories: [{
+        ...a.memory,
+        id: "42345678-1234-4234-8234-123456789abc",
+        relations: [{ id: b.id, kind: "related" }],
+      }],
+    }, { tenant: tenantA }),
+    (error: unknown) => error instanceof RemembraError && error.code === "NOT_FOUND",
   );
   assert.throws(() => service.db, (error: unknown) => error instanceof RemembraError && error.code === "TENANT_REQUIRED");
   await fs.rm(root, { recursive: true, force: true });
