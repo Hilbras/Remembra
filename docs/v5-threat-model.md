@@ -27,8 +27,8 @@
 | Secret leakage in context | Ingest redaction/sensitive-data policy; bounded provider handling; no raw secrets in logs/metadata | Secret fixtures and log review |
 | Context-budget bypass | Hard integer limit, bounded candidate list, counter-aware selection, no implicit expansion | Boundary/property tests |
 | Denial of service through large context | Request/body/candidate/output limits, rate limits, provider and queue budgets | Load/resource tests |
-| Unbounded relationship expansion | No implicit relation expansion in the first slice; future hop/output budgets required | Retrieval cost tests |
-| Storage corruption or partial recovery | Atomic writes, locks, checksums, verified restore/import | Interruption/corruption fixtures |
+| Unbounded relationship expansion | Relationship expansion is opt-in, pool-local, one-hop by default, and hard-capped at 32 edges | Retrieval cost and cycle tests |
+| Storage corruption or partial recovery | Atomic writes, locks, checksums, verified restore/import, SQLite integrity checks, and closed-target sidecar rejection | Interruption/corruption fixtures |
 | Stale or malicious provider output | Treat provider responses as untrusted data; schema validation and fail-open/fail-closed policy per operation | Malformed provider tests |
 | Audit repudiation | Structured low-cardinality events without content/secrets; preserve actor and outcome | Audit event assertions |
 

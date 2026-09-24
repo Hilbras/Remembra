@@ -54,6 +54,11 @@
       "import": "./dist/recovery.js",
       "default": "./dist/recovery.js"
     },
+    "./sqlite-recovery": {
+      "types": "./dist/sqlite-recovery.d.ts",
+      "import": "./dist/sqlite-recovery.js",
+      "default": "./dist/sqlite-recovery.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

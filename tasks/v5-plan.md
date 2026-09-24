@@ -153,9 +153,9 @@ Implementation slices:
     recovery fixtures.
   - Current evidence: signed atomic snapshot files, migration checksum/reference
     preflight, idempotent application, atomic state checkpoints, verified
-    resume, failure records, explicit publication markers, and no-write
-    snapshot/CLI dry-runs are tested.
-    Database-level atomic swap/rollback and SQLite restore fixtures remain.
+    resume, failure records, explicit publication markers, no-write
+    snapshot/CLI dry-runs, and verified SQLite backup/restore are tested.
+    Database-level atomic swap/rollback and cross-backend disaster fixtures remain.
   - Scope: M/L.
 
 Implementation slices:

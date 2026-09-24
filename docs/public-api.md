@@ -151,7 +151,10 @@ before writes, resumes only after checking prior records, and records failures.
 responsible for any backend-specific atomic swap and rollback. The state file
 contains no snapshot key and is not a substitute for the signed manifest.
 `MemoryService.previewSnapshot` and `remembra import <file> --dry-run` perform
-the complete snapshot/tenant/reference preflight without writing.
+the complete snapshot/tenant/reference preflight without writing. Trusted local
+recovery code can import `@hilbras/remembra/sqlite-recovery` for verified
+standalone SQLite backups and same-directory atomic restore; the live service
+must be closed and active SQLite sidecars are rejected.
 
 ### Batches
 
