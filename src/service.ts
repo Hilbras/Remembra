@@ -48,6 +48,7 @@ import { createSignedSnapshot, isSignedSnapshot, verifySignedSnapshot, type Sign
 import { validateSnapshotSemantics } from "./snapshot-validation.js";
 import { JobQueue } from "./job-queue.js";
 import { transitionRecoveryState, type RecoveryState } from "./recovery-state.js";
+import type { RecoveryStateStore } from "./recovery-state-store.js";
 import type { TenantDirectory } from "./tenant-directory.js";
 import { applyTenantMigration, preflightTenantMigration, type TenantMigrationPlan } from "./tenant-migration-runner.js";
 import type { JobHandle } from "./job-queue.js";
@@ -139,6 +140,8 @@ export interface ServiceDeps {
   backend?: "sqlite" | "file";
   /** Whether the selected backend was explicitly allowed as a fallback. */
   backendFallback?: boolean;
+  /** Optional durable state store for restart-safe recovery transitions. */
+  recoveryStateStore?: RecoveryStateStore;
 }
 
 export interface AgentReadOptions {
@@ -219,6 +222,8 @@ export class MemoryService {
   private readonly tokenCounter: TokenCounter;
   #backend: MemoryBackend;
   private recoveryState: RecoveryState = "Recovering";
+  private readonly recoveryStateStore?: RecoveryStateStore;
+  private recoveryStateInitialized: boolean;
   private readonly backendName?: "sqlite" | "file";
   private readonly backendFallback: boolean;
   private lastDecayRun = 0;
@@ -227,6 +232,8 @@ export class MemoryService {
 
   constructor(db: MemoryBackend, deps: ServiceDeps = {}) {
     this.#backend = db;
+    this.recoveryStateStore = deps.recoveryStateStore;
+    this.recoveryStateInitialized = !deps.recoveryStateStore;
     this.backendName = deps.backend;
     this.backendFallback = deps.backendFallback ?? false;
     const emb = deps.embeddingProvider ?? resolveEmbeddingProvider();
@@ -368,19 +375,81 @@ export class MemoryService {
     await Promise.all([this.jobs.shutdown(), this.decayPromise ?? Promise.resolve()]);
   }
 
+  /** Load the durable recovery state before serving or mutating data. */
+  async initializeRecovery(): Promise<void> {
+    if (this.recoveryStateInitialized) return;
+    try {
+      const persisted = await this.recoveryStateStore!.read();
+      if (persisted) this.recoveryState = persisted;
+      this.recoveryStateInitialized = true;
+    } catch (error) {
+      this.recoveryState = "Failed";
+      this.recoveryStateInitialized = true;
+      if (error instanceof RemembraError) throw error;
+      throw new RemembraError("SERVICE_UNAVAILABLE", "recovery state could not be loaded", { cause: error });
+    }
+  }
+
+  private async ensureRecoveryInitialized(): Promise<void> {
+    if (!this.recoveryStateInitialized) await this.initializeRecovery();
+  }
+
+  private async applyRecoveryEvent(event: Parameters<typeof transitionRecoveryState>[1]): Promise<void> {
+    const next = transitionRecoveryState(this.recoveryState, event);
+    if (next === this.recoveryState) return;
+    if (this.recoveryStateStore) await this.recoveryStateStore.write(next, event);
+    this.recoveryState = next;
+  }
+
   /** Enter explicit read-only recovery mode; all service writes fail closed. */
-  enterReadOnly(): void {
-    this.recoveryState = transitionRecoveryState(this.recoveryState, "read_only");
+  async enterReadOnly(): Promise<void> {
+    await this.ensureRecoveryInitialized();
+    const next = transitionRecoveryState(this.recoveryState, "read_only");
+    if (!this.recoveryStateStore) {
+      this.recoveryState = next;
+      return;
+    }
+    // Apply the restrictive state before persistence so a failed write still
+    // fails closed; the durable error is surfaced to the operator.
+    this.recoveryState = next;
+    try {
+      await this.recoveryStateStore.write(next, "read_only");
+    } catch (error) {
+      this.recoveryState = "Failed";
+      throw error instanceof RemembraError
+        ? error
+        : new RemembraError("SERVICE_UNAVAILABLE", "recovery state could not be written", { cause: error });
+    }
   }
 
-  /** Clear read-only mode only after an explicit recovery verification. */
-  verifyRecovery(): void {
-    this.recoveryState = transitionRecoveryState(this.recoveryState, "verified");
+  /** Clear read-only mode only after an explicit, successful storage verification. */
+  async verifyRecovery(): Promise<void> {
+    await this.ensureRecoveryInitialized();
+    try {
+      await this.#backend.all();
+    } catch (error) {
+      this.recoveryState = "Failed";
+      if (this.recoveryStateStore) {
+        await this.recoveryStateStore.write("Failed", "failed").catch(() => {});
+      }
+      throw new RemembraError("SERVICE_UNAVAILABLE", "recovery verification failed", { cause: error });
+    }
+    const next = transitionRecoveryState(this.recoveryState, "verified");
+    if (this.recoveryStateStore) await this.recoveryStateStore.write(next, "verified");
+    this.recoveryState = next;
   }
 
-  private assertWritable(): void {
-    if (this.recoveryState === "ReadOnly") {
-      throw new RemembraError("SERVICE_UNAVAILABLE", "storage is read-only");
+  /** Reject a direct service/CLI mutation while recovery is restrictive. */
+  assertWritable(): void {
+    if (!this.recoveryStateInitialized) {
+      throw new RemembraError("SERVICE_UNAVAILABLE", "recovery state is not initialized");
+    }
+    if (
+      this.recoveryState === "ReadOnly" ||
+      this.recoveryState === "Failed" ||
+      (this.recoveryStateStore && this.recoveryState === "Recovering")
+    ) {
+      throw new RemembraError("SERVICE_UNAVAILABLE", "storage is not writable");
     }
   }
 
@@ -1423,9 +1492,10 @@ export class MemoryService {
   }> {
     let storage = "ok";
     try {
+      await this.ensureRecoveryInitialized();
       await this.#backend.all();
-      this.recoveryState = transitionRecoveryState(this.recoveryState, "ready");
-      if (this.backendFallback) this.recoveryState = transitionRecoveryState(this.recoveryState, "degraded");
+      await this.applyRecoveryEvent("ready");
+      if (this.backendFallback) await this.applyRecoveryEvent("degraded");
     } catch (err) {
       storage = errorLabel(err);
       this.recoveryState = this.recoveryState === "ReadOnly"
@@ -1434,7 +1504,7 @@ export class MemoryService {
     }
     const cache = this.storageStats();
     return {
-      status: storage === "ok" ? "ok" : "unready",
+      status: storage === "ok" && this.recoveryState !== "Failed" ? "ok" : "unready",
       state: this.recoveryState,
       version: VERSION,
       uptime_s: Math.round(process.uptime()),

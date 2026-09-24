@@ -12,6 +12,7 @@ import { createHttpServer } from "./http.js";
 import { startMcp } from "./mcp.js";
 import { createOperatorTenantContext, tenantModeFromEnv } from "./operator.js";
 import { validateStartupConfiguration, validateStorageRoot } from "./startup-validation.js";
+import { FileRecoveryStateStore } from "./recovery-state-store.js";
 import { selectInitialBackend } from "./backend-selection.js";
 import {
   analyzeTenantSnapshot,
@@ -48,6 +49,7 @@ const validatedRoot = await validateStorageRoot(root);
 const backendSelection = await selectInitialBackend(validatedRoot);
 const store = backendSelection.store;
 const operatorSnapshotKey = startup.snapshotKey;
+const argv = process.argv.slice(2);
 const service = new MemoryService(store, {
   tenantMode,
   backend: backendSelection.backend,
@@ -56,9 +58,15 @@ const service = new MemoryService(store, {
   embeddingProvider: startup.embeddingProvider,
   llmProvider: startup.llmProvider,
   ...(operatorSnapshotKey ? { snapshotKey: operatorSnapshotKey } : {}),
+  recoveryStateStore: new FileRecoveryStateStore(path.join(validatedRoot, ".recovery-state.json")),
 });
+await service.initializeRecovery();
+const initialHealth = await service.health();
+const isRecoveryCommand = argv[0] === "recover" && (argv[1] === "verify" || argv[1] === "read-only");
+if (initialHealth.status === "unready" && !isRecoveryCommand) {
+  throw new Error(`initial recovery health check failed: ${initialHealth.storage}`);
+}
 
-const argv = process.argv.slice(2);
 const httpFlag = argv.includes("--http");
 const maintainFlag = argv.includes("maintain");
 const portArg = argv.indexOf("--port");
@@ -68,7 +76,25 @@ const optionValue = (name: string): string | undefined => {
   return index >= 0 ? argv[index + 1] : undefined;
 };
 
-if (argv[0] === "export") {
+if (argv[0] === "recover" && argv[1] === "read-only") {
+  try {
+    await service.enterReadOnly();
+    console.log(JSON.stringify({ state: "ReadOnly", durable: true }));
+    process.exit(0);
+  } catch (err) {
+    console.error(`Read-only transition failed: ${err instanceof Error ? err.message : err}`);
+    process.exit(1);
+  }
+} else if (argv[0] === "recover" && argv[1] === "verify") {
+  try {
+    await service.verifyRecovery();
+    console.log(JSON.stringify({ state: "Healthy", verified: true, durable: true }));
+    process.exit(0);
+  } catch (err) {
+    console.error(`Recovery verification failed: ${err instanceof Error ? err.message : err}`);
+    process.exit(1);
+  }
+} else if (argv[0] === "export") {
   // CLI backup: `remembra export <file.json>` — full snapshot incl. archived.
   const out = argv[1];
   if (!out) {
@@ -145,6 +171,7 @@ if (argv[0] === "export") {
       console.error("Usage: remembra import-markdown <directory>");
       process.exit(1);
     }
+    service.assertWritable();
     const files = await globMdFiles(inDir);
     let imported = 0, skipped = 0;
     for (const file of files) {
@@ -325,6 +352,7 @@ if (argv[0] === "export") {
       console.error("migrate requires SQLite backend");
       process.exit(1);
     }
+    service.assertWritable();
     try {
       const result = await (store as SqliteBackend).migrate();
       console.log(JSON.stringify(result, null, 2));
@@ -358,6 +386,7 @@ if (argv[0] === "export") {
   // under the storage lock. Requires REMEMBRA_ENCRYPT_KEY either way.
   //   remembra encrypt   → plain files become AES-256-GCM ciphertext
   //   remembra decrypt   → ciphertext becomes plain markdown again
+  service.assertWritable();
   try {
     if ("migrateEncryption" in store) {
       const result = await store.migrateEncryption(argv[0]);

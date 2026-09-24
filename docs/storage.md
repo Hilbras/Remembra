@@ -20,6 +20,7 @@ crash-recovery mechanics, the backend interface) live in
 ├── .history/<id>/<epochMs>-<seq>.md   version snapshots (raw pre-images)
 ├── .history/<id>/reasons.json         why each snapshot was superseded (4.1.0)
 ├── .remembra.lock                  advisory cross-process lock (transient)
+├── .recovery-state.json            durable recovery state (V5.0.3; 0600)
 └── <id>.<rand>.tmp                 atomic-write staging files (transient;
                                     orphans are deleted by the recovery pass)
 ```
@@ -107,6 +108,23 @@ SQLite pages, exports, or transport.
 
 **Writes are atomic**: temp file in the same directory + `rename()` — a crash
 mid-write can never leave a half-written memory.
+
+## Recovery state and staged operations
+
+V5.0.3 stores the bounded recovery vocabulary (`Healthy`, `Degraded`,
+`Recovering`, `Failed`, `ReadOnly`) in `.recovery-state.json`. Each transition
+is written through a same-directory temporary file, `fsync`, and `rename`; the
+reader rejects symlinks, malformed records, and oversized files. A normal
+health probe cannot clear `Failed` or `ReadOnly`. `remembra recover read-only`
+intentionally blocks service and CLI mutations, and `remembra recover verify`
+performs a backend read before explicitly returning to `Healthy`.
+
+SQLite restore additionally uses a `data.sqlite.restore-journal.json` state
+file. Startup reconciliation verifies and publishes a staged database, keeps a
+verified target, or restores the retained pre-restore database before the
+backend is served. Snapshot imports use a SQLite transaction; file-backend
+batch imports remove files written by the failed operation. Neither path
+reports an operational failure as a successful import.
 
 ## Read validation (4.0.1, plan §3.4)
 

@@ -89,7 +89,7 @@ content-free liveness check.
 | POST | `/api/v1/context` | V5 deterministic token-bounded context assembly |
 | POST | `/maintain` | decay sweep + backfill |
 | GET | `/snapshot` | full export |
-| POST | `/import` | preflighted, idempotent import; per-record operational failures can leave a partial application |
+| POST | `/import` | preflighted, idempotent import; SQLite uses a transaction and file batches roll back operational failures |
 | DELETE | `/memories/:id` | forget |
 
 ### Versioned API
@@ -176,6 +176,18 @@ standalone SQLite backups, same-directory atomic restore, and explicit
 rollback of a retained pre-restore database; the live service must be closed
 and active SQLite sidecars are rejected.
 
+### Durable recovery state
+
+V5.0.3 persists the last recovery transition in
+`<REMEMBRA_HOME>/.recovery-state.json`. The file contains only a bounded state,
+event, and timestamp; it is replaced atomically and is never a source of memory
+content. `Healthy`, `Degraded`, `Recovering`, `Failed`, and `ReadOnly` are the
+only states. Ordinary health probes cannot clear `Failed` or `ReadOnly`.
+`ReadOnly` blocks service and direct legacy CLI mutations. Use
+`remembra recover read-only` to enter it and `remembra recover verify` after
+repairing and verifying the backend. A malformed or unsafe state file prevents
+startup rather than silently resetting the state.
+
 ### Batches
 
 `POST /memories/batch` accepts one discriminated `operation`:
@@ -252,9 +264,10 @@ Envelope written by `remembra export` and `GET /snapshot`:
   UUIDv7); ≤ 100 000 memories per file.
 - Pre-4.1.0 snapshots (string `provenance`, untyped `related: […]`, no
   `trust`) import cleanly — those shapes are normalized on read/import.
-- Import validates the **whole file before the first write** and preserves ids;
-  writes are sequential/idempotent, so a later operational failure can leave a
-  partial application. Restore from a verified backup or rerun idempotently.
+- Import validates the **whole file before the first write** and preserves ids.
+  SQLite imports run in one transaction; file-backend batch imports roll back
+  files written by an operational failure. Re-running remains idempotent after
+  an interrupted process.
 - Strict tenant services add an `integrity` object with an HMAC-SHA256 value
   over the canonical envelope. This authenticates plaintext content; it does
   not encrypt it or provide anti-replay freshness. Unsigned, tampered, or
@@ -276,8 +289,10 @@ Envelope written by `remembra export` and `GET /snapshot`:
 | `remembra` | MCP server on stdio (default) |
 | `remembra --http [--port N]` | HTTP API + dashboard |
 | `remembra export <file>` | write a snapshot; a filename is required |
-| `remembra import <file>` | preflighted, idempotent import; later per-record failures can be partial |
+| `remembra import <file>` | preflighted, idempotent import; SQLite transaction or file-batch rollback |
 | `remembra maintain` | one-shot decay sweep + backfill, prints JSON |
+| `remembra recover read-only` | durably enter read-only recovery; reads remain available, mutations fail closed |
+| `remembra recover verify` | verify the backend, then durably return to `Healthy` |
 | `remembra encrypt` / `remembra decrypt` | legacy/non-tenant file-root conversion (needs `REMEMBRA_ENCRYPT_KEY`; strict mode refuses it) |
 | `remembra migrate` | manually trigger file → SQLite migration (V4.3.0; strict mode uses signed tenant migration) |
 | `remembra export-markdown <dir>` | legacy file-backend Markdown export; strict mode refuses it |

@@ -27,7 +27,9 @@ The runner executes:
 1. TypeScript build and UI copy.
 2. Full Node test suite.
 3. Tenant/security adversarial matrix, including `SEC-AUTH-001` through `SEC-AUTH-005`, `SEC-SENS-001`, and `SEC-DOC-001`.
-4. Recovery/corruption/migration matrix.
+4. Recovery/corruption/migration matrix, including durable restart state,
+   read-only enforcement, staged restore reconciliation, and injected import
+   failures.
 5. Documentation-link check.
 6. High-severity dependency audit.
 7. Package dry-run and export-surface check.

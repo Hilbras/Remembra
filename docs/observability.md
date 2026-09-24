@@ -92,12 +92,31 @@ scrape_configs:
 
 ## Health — `GET /health`
 
-No auth (readiness probes carry no key). Liveness **and** readiness in one:
+No auth (readiness probes carry no key). Liveness **and** readiness in one.
+The legacy `status` field remains `ok`/`unready`; the additional `state` field
+is the canonical recovery state:
 
-- `200 {"status":"ok", "version", "uptime_s", "storage":"ok", "cache":{...}}`
-  when a full store read succeeds.
-- `503 {"status":"unready", "storage":"<ERROR_CODE>", ...}` when storage cannot
-  be read — the probe **fails instead of lying**.
+- `Healthy`: the backend read succeeded and no restrictive recovery state is active.
+- `Degraded`: the explicitly allowed file fallback is serving; the response includes
+  `backend: "file"` and `fallback: true`.
+- `Recovering`: startup or a recovery transition is still being verified.
+- `Failed`: the primary store or durable recovery state could not be verified;
+  mutations fail closed until explicit recovery verification.
+- `ReadOnly`: reads may succeed, but service and CLI mutations fail with
+  `SERVICE_UNAVAILABLE` until explicit verification.
+
+Ordinary probes never clear `Failed` or `ReadOnly`. The server persists the
+last transition in `<REMEMBRA_HOME>/.recovery-state.json` using a temporary file,
+fsync, and same-directory rename. A malformed, oversized, or symlinked state file
+fails startup closed. Operators can inspect or transition the state with:
+
+```bash
+remembra recover read-only
+remembra recover verify
+```
+
+`recover verify` performs a backend read before publishing `Healthy`; it is not
+an automatic consequence of a health request.
 
 ## Alerting
 

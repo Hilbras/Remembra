@@ -24,7 +24,9 @@ test("REC-STATE-001: recovery transitions are deterministic and do not erase ter
   assert.equal(transitionRecoveryState("Healthy", "degraded"), "Degraded");
   assert.equal(transitionRecoveryState("Degraded", "storage_error"), "Degraded");
   assert.equal(transitionRecoveryState("ReadOnly", "storage_error"), "ReadOnly");
+  assert.equal(transitionRecoveryState("ReadOnly", "degraded"), "ReadOnly");
   assert.equal(transitionRecoveryState("Failed", "storage_error"), "Failed");
+  assert.equal(transitionRecoveryState("Failed", "degraded"), "Failed");
   assert.equal(transitionRecoveryState("Healthy", "not_an_event" as RecoveryEvent), "Healthy");
 });
 
@@ -32,13 +34,13 @@ test("REC-STATE-001: read-only mode blocks writes until explicit verification", 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v503-readonly-"));
   const service = new MemoryService(new MemoryStore(root), { embeddingProvider: "none" });
   try {
-    service.enterReadOnly();
+    await service.enterReadOnly();
     assert.equal((await service.health()).state, "ReadOnly");
     await assert.rejects(
       () => service.store({ type: "fact", content: "must be blocked" }),
       (error: unknown) => (error as { code?: string }).code === "SERVICE_UNAVAILABLE",
     );
-    service.verifyRecovery();
+    await service.verifyRecovery();
     assert.equal((await service.health()).state, "Healthy");
     await service.store({ type: "fact", content: "write after verification" });
   } finally {
@@ -52,7 +54,7 @@ test("REC-STATE-001: a failing probe does not clear read-only state", async () =
   const backend = new MemoryStore(root);
   const service = new MemoryService(backend, { embeddingProvider: "none" });
   try {
-    service.enterReadOnly();
+    await service.enterReadOnly();
     (backend as unknown as { all: () => Promise<unknown> }).all = async () => {
       throw new Error("injected read failure");
     };

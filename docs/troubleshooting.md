@@ -39,6 +39,17 @@ Export a snapshot before changing versions. Import rejects an invalid entire
 snapshot rather than partially writing it. Compare the snapshot `format` and
 `version`, then consult [migration-v4.9](migration-v4.9.md).
 
+## Health reports `ReadOnly`, `Failed`, or `Recovering`
+
+These are deliberate recovery states, not a provider outage. `ReadOnly` permits
+reads but rejects service and CLI mutations; `Failed` and an unresolved
+`Recovering` state fail closed. Check `<REMEMBRA_HOME>/.recovery-state.json`,
+the SQLite restore journal, permissions, and available disk space. Do not delete
+state or journal files to force startup. After correcting the underlying issue,
+run `remembra recover verify`; it verifies the backend before making the state
+`Healthy`. See [storage](storage.md#recovery-state-and-staged-operations) and
+[observability](observability.md#health--get-health).
+
 ## Package import fails in TypeScript
 
 Use the explicit subpath:

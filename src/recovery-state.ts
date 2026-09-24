@@ -14,7 +14,7 @@ export function transitionRecoveryState(current: RecoveryState, event: RecoveryE
     case "verified":
       return "Healthy";
     case "degraded":
-      return "Degraded";
+      return current === "Failed" || current === "ReadOnly" ? current : "Degraded";
     case "storage_error":
       return current === "Failed" || current === "ReadOnly" ? current : "Degraded";
     case "recovery_started":
