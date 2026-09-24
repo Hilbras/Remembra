@@ -255,7 +255,7 @@ npm test        # run tests
 - **v4.1** — 11 semantic types, provenance + trust gate, typed relations, retention modes, optimistic concurrency ✅
 - **v4.2** — multi-stage retrieval pipeline (RRF fusion, MMR diversity, temporal parsing, explainable scores, embedding cache) ✅
 - **v4.8** — performance/scalability: bounded retrieval, batch operations, background jobs ✅
-- **v4.9** *(current)* — API/SDK compatibility stabilization 🚧
+- **v4.9** — API/SDK compatibility stabilization ✅
 
 > Package versions match milestones: `3.0.0` = v3, `4.0.0` = v4.
 

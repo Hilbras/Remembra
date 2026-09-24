@@ -7,11 +7,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
-## [Unreleased] — V4.9.0 development
+## [4.9.0] — 2026-09-24
 
 **API, SDK & Compatibility Stabilization** — plan §12 of the Master
-Development Plan. This section remains unreleased until the compatibility
-matrix, Node 18 check, package audit, and release review are complete.
+Development Plan.
 
 ### Added
 - **Versioned HTTP namespace**: additive `/api/v1/*` aliases for the existing
@@ -50,8 +49,8 @@ matrix, Node 18 check, package audit, and release review are complete.
 - 10K/50K V4.8 scale benchmark remains the retrieval baseline; V4.9 does not
   change candidate planning or storage formats.
 
-The release is prepared as a candidate and is not tagged or published until the
-maintainer review gate is approved.
+Published as `@hilbras/remembra@4.9.0` and
+[GitHub Release v4.9.0](https://github.com/Hilbras/Remembra/releases/tag/v4.9.0).
 
 ---
 
