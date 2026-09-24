@@ -32,6 +32,7 @@ import {
   defaultTrust,
   RelationKind,
   SCHEMA_VERSION,
+  isValidTenantId,
   MemoryAccess,
   MemoryOwner,
 } from "./types.js";
@@ -111,6 +112,10 @@ CREATE TABLE IF NOT EXISTS memories (
                     )),
   content           TEXT NOT NULL,
   scope             TEXT NOT NULL DEFAULT 'global',
+  tenant_id         TEXT,
+  project_id        TEXT,
+  user_id           TEXT,
+  agent_id          TEXT,
   tags              TEXT NOT NULL DEFAULT '[]',
   importance        INTEGER NOT NULL DEFAULT 3 CHECK (importance BETWEEN 1 AND 5),
   confidence        REAL NOT NULL DEFAULT 1.0 CHECK (confidence BETWEEN 0 AND 1),
@@ -142,6 +147,8 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scope       ON memories(scope);
+CREATE INDEX IF NOT EXISTS idx_tenant      ON memories(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_tenant_scope ON memories(tenant_id, scope);
 CREATE INDEX IF NOT EXISTS idx_type        ON memories(type);
 CREATE INDEX IF NOT EXISTS idx_archived    ON memories(archived_at);
 CREATE INDEX IF NOT EXISTS idx_updated     ON memories(updated_at DESC);
@@ -246,11 +253,11 @@ export class SqliteBackend implements MemoryBackend {
     // better-sqlite3 under Node 24 when the collection is large.
     this.insertMemoryStatement = this.db.prepare(`
       INSERT INTO memories (
-        id, type, content, scope, tags, importance, confidence, trust,
+        id, type, content, scope, tenant_id, project_id, user_id, agent_id, tags, importance, confidence, trust,
         provenance, owner, access, valid_from, valid_until, observed_at, superseded_by, meta,
         retention, relations, version, created_at, updated_at,
         last_seen, archived_at, embedding
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.lastInsertRowidStatement = this.db.prepare("SELECT last_insert_rowid() AS rowid");
     this.insertFtsStatement = this.ftsEnabled
@@ -371,6 +378,10 @@ export class SqliteBackend implements MemoryBackend {
       ["observed_at", "TEXT"],
       ["superseded_by", "TEXT"],
       ["meta", "TEXT"],
+      ["tenant_id", "TEXT"],
+      ["project_id", "TEXT"],
+      ["user_id", "TEXT"],
+      ["agent_id", "TEXT"],
     ] as const) {
       if (!names.has(name)) this.db.exec(`ALTER TABLE memories ADD COLUMN ${name} ${definition}`);
     }
@@ -566,7 +577,7 @@ export class SqliteBackend implements MemoryBackend {
       this.db
         .prepare(`
           UPDATE memories SET
-            type = ?, content = ?, scope = ?, tags = ?, importance = ?,
+            type = ?, content = ?, scope = ?, tenant_id = ?, project_id = ?, user_id = ?, agent_id = ?, tags = ?, importance = ?,
             confidence = ?, trust = ?, provenance = ?, owner = ?, access = ?,
             valid_from = ?, valid_until = ?, observed_at = ?, superseded_by = ?, meta = ?, retention = ?,
             relations = ?, version = ?, created_at = ?, updated_at = ?,
@@ -577,6 +588,10 @@ export class SqliteBackend implements MemoryBackend {
           updated.type,
           updated.content,
           updated.scope,
+          updated.tenantId ?? null,
+          updated.projectId ?? null,
+          updated.userId ?? null,
+          updated.agentId ?? null,
           jsonStr(updated.tags),
           updated.importance,
           updated.confidence,
@@ -784,6 +799,10 @@ export class SqliteBackend implements MemoryBackend {
       m.type,
       m.content,
       m.scope,
+      m.tenantId ?? null,
+      m.projectId ?? null,
+      m.userId ?? null,
+      m.agentId ?? null,
       jsonStr(m.tags),
       m.importance,
       m.confidence,
@@ -1044,6 +1063,17 @@ function rowToMemory(row: Record<string, unknown>): Memory | null {
   const scope = asStr(row.scope) ?? "global";
   try { assertScope(scope); } catch { return null; }
 
+  const tenantId = asStr(row.tenant_id);
+  const projectId = asStr(row.project_id);
+  const userId = asStr(row.user_id);
+  const agentId = asStr(row.agent_id);
+  if (
+    (tenantId !== undefined && !isValidTenantId(tenantId)) ||
+    (projectId !== undefined && !isValidTenantId(projectId)) ||
+    (userId !== undefined && !isValidTenantId(userId)) ||
+    (agentId !== undefined && !isValidTenantId(agentId))
+  ) return null;
+
   const content = asStr(row.content);
   if (!content) return null;
 
@@ -1099,6 +1129,10 @@ function rowToMemory(row: Record<string, unknown>): Memory | null {
     type: type as MemoryType,
     content,
     scope,
+    ...(tenantId ? { tenantId } : {}),
+    ...(projectId ? { projectId } : {}),
+    ...(userId ? { userId } : {}),
+    ...(agentId ? { agentId } : {}),
     tags,
     importance,
     confidence,
@@ -1152,6 +1186,16 @@ async function parseLegacyFile(file: string): Promise<Memory | null> {
 
   const scope = (meta.scope ? String(meta.scope) : "global") as string;
   if (!scope || /\.\./.test(scope) || scope.includes("\\")) return null;
+  const tenantId = meta.tenantId ? String(meta.tenantId) : undefined;
+  const projectId = meta.projectId ? String(meta.projectId) : undefined;
+  const userId = meta.userId ? String(meta.userId) : undefined;
+  const agentId = meta.agentId ? String(meta.agentId) : undefined;
+  if (
+    (tenantId !== undefined && !isValidTenantId(tenantId)) ||
+    (projectId !== undefined && !isValidTenantId(projectId)) ||
+    (userId !== undefined && !isValidTenantId(userId)) ||
+    (agentId !== undefined && !isValidTenantId(agentId))
+  ) return null;
 
   const content = match[2].trim();
   if (!content) return null;
@@ -1242,6 +1286,10 @@ async function parseLegacyFile(file: string): Promise<Memory | null> {
     type,
     content,
     scope,
+    ...(tenantId ? { tenantId } : {}),
+    ...(projectId ? { projectId } : {}),
+    ...(userId ? { userId } : {}),
+    ...(agentId ? { agentId } : {}),
     tags,
     importance,
     confidence,

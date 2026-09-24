@@ -108,7 +108,8 @@ recovery/security/performance → release.
 Implementation slices:
 
 1. [x] Tenant principal/filter validators and opaque directory-key contract.
-2. [ ] Versioned tenant fields and explicit migration manifest.
+2. [x] Versioned tenant fields and explicit signed migration manifest (the
+   migration executor and readiness gate remain part of slice 6).
 3. [ ] Tenant-aware `MemoryBackend` contract plus file backend enforcement.
 4. [ ] SQLite tenant columns, predicates, history/audit, and candidate SQL.
 5. [ ] Service authorization, immutable job context, and transport binding.

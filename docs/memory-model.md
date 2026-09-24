@@ -317,10 +317,10 @@ provenance:
 The API rate limit is 100 requests/minute.
 ```
 
-`version` is the **schema** guard (currently `3`); `revision` is the memory's
-own write counter — exposed as `version` in JSON. The full field reference,
-validation rules and downgrade contract live in
-[storage.md](storage.md).
+`version` is the **schema** guard: tenantless V4 records use `3`, while V5
+records carrying `tenantId` use `4`. `revision` is the memory's own write
+counter — exposed as `version` in JSON. The full field reference, validation
+rules and downgrade contract live in [storage.md](storage.md).
 
 Layout:
 

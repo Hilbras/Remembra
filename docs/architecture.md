@@ -137,26 +137,29 @@ provenance policy. See [v5-policy.md](v5-policy.md).
 ## V5 tenant boundary
 
 `src/tenant.ts` defines the host-minted, immutable tenant context and
-fail-closed identifier/matching primitives. It does not yet alter the V4
-backend; the staged storage/service work is specified in
+fail-closed identifier/matching primitives. `src/tenant-migration.ts` defines
+the canonical HMAC-signed migration manifest. Neither module yet alters the
+V4 backend; the staged storage/service work is specified in
 [v5-tenant-spec.md](v5-tenant-spec.md). Strict mode will require these contexts
 at every backend and transport boundary.
 
 ## Schema versioning
 
-Every memory file carries `version: <n>` in frontmatter (`SCHEMA_VERSION` in
-`types.ts`, currently **3** — bumped by 4.7.0). Files without the field
-(v1–v3.1) parse as v1. Two different numbers, deliberately:
+Every memory file carries `version: <n>` in frontmatter. Tenantless V4
+records use `SCHEMA_VERSION = 3`; V5 records with an organization boundary use
+`TENANT_SCHEMA_VERSION = 4`. Files without the field (v1–v3.1) parse through
+the legacy path. Two different numbers, deliberately:
 
-- frontmatter `version` is the **schema guard** — readers refuse
-  `version > SCHEMA_VERSION` (older readers likewise skip `version: 3`
-  files: logged, never deleted, so downgrades neither lose data nor silently
-  bypass the trust gate);
+- frontmatter `version` is the **schema guard** — readers refuse versions
+  above `MAX_SCHEMA_VERSION`; older V4 readers skip V5 tenant files (logged,
+  never deleted), while legacy records remain round-trippable;
 - frontmatter `revision` is the memory's own **write counter** — exposed as
   JSON `version` and compared by `expectedVersion` (§3.5).
 
-To change the format: bump the constant, add a migration branch in
-`parse()`, and cover it with a fixture test.
+To change the format: bump the relevant constant, add a migration branch in
+`parse()`, and cover it with a fixture test. SQLite expands nullable tenant
+columns before strict mode; the strict database migration is a later rollout
+step described in [v5-tenant-spec.md](v5-tenant-spec.md).
 
 Ids are **UUIDv7** since 4.1.0 (plan §3.6): time-ordered, unique from
 entropy alone, so allocation needs no collision scan (legacy 8–32 hex ids

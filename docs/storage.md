@@ -14,6 +14,7 @@ crash-recovery mechanics, the backend interface) live in
 │                                   (scope chars outside [A-Za-z0-9._/-] → "_")
 ├── archived/global/<id>.md         archived (removed from default list/search)
 ├── archived/scopes/<scope>/...     archived scoped memories
+├── tenants/<tenant-key>/...        V5 tenant namespaces (staged; encoded key)
 ├── .history/<id>/<epochMs>-<seq>.md   version snapshots (raw pre-images)
 ├── .history/<id>/reasons.json         why each snapshot was superseded (4.1.0)
 ├── .remembra.lock                  advisory cross-process lock (transient)
@@ -71,10 +72,14 @@ so scopes/tags/sources containing YAML-ambiguous characters round-trip.
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `id` | hex8–32 or UUIDv7 | ✅ | equals the filename (path is the source of truth); UUIDv7 since 4.1.0 |
-| `version` | int | ✅ on new files | **schema** version (`SCHEMA_VERSION = 3`); missing on legacy files (treated as 1); readers refuse anything higher |
+| `version` | int | ✅ on new files | Legacy records use `SCHEMA_VERSION = 3`; V5 tenant records use `TENANT_SCHEMA_VERSION = 4`. Readers accept up to `MAX_SCHEMA_VERSION`; V4 readers skip V5 tenant records. |
 | `revision` | int | ✅ on new files | this memory's write counter — the JSON `version` used for optimistic concurrency (§3.5); missing on legacy files → 1 |
 | `type` | 11 semantic types | ✅ | `fact · preference · decision · constraint · instruction · role · entity · relationship · event · history · observation` — see [memory-model.md](memory-model.md) |
-| `scope` | string | ✅ | `global` or a project path/id; no `..` segments |
+| `scope` | string | ✅ | `global` or a project path/id; no `..` segments; V5 project authorization uses `projectId` |
+| `tenantId` | string | V5 tenant records | organization boundary; server-derived, never a public request field |
+| `projectId` | string | — | explicit V5 project dimension; cannot widen access beyond `scope` |
+| `userId` | string | — | V5 creator/user dimension |
+| `agentId` | string | — | V5 authorization-bearing agent; distinct from provenance |
 | `tags` | YAML list | ✅ | one `- item` per line |
 | `importance` | int 1–5 | ✅ | ranking weight |
 | `confidence` | 0–1 | ✅ | trust in the claim; displayed, not ranked |
@@ -112,16 +117,18 @@ from `get`/`all`/`search`, **left untouched on disk**, and logged once as
 | Reason | Trigger |
 |--------|---------|
 | missing/invalid frontmatter | no well-formed `---` block |
-| invalid/unsupported schema version | non-numeric, or `version > SCHEMA_VERSION` (data from a newer Remembra) |
+| invalid/unsupported schema version | non-numeric, or `version > MAX_SCHEMA_VERSION` (data from a newer Remembra) |
 | invalid id | fails `[A-Za-z0-9._-]+` |
 | invalid type | not one of the eleven memory types |
 | invalid scope | empty, `..` segment, or backslash |
 | empty content | nothing after the frontmatter |
 
-**Downgrade contract (4.7.0):** files are written with `version: 3`.
-Older readers **skip** those files — logged, never deleted — because they
-cannot honor agent access policy. Upgrading again restores them untouched.
-Readers accept pre-4.7 versions and normalize legacy shapes.
+**Downgrade contract:** tenantless V4 records remain `version: 3`, so a
+V4.9 reader can round-trip the legacy namespace during migration. V5 records
+with `tenantId` are `version: 4`; V4 readers **skip** those files — logged,
+never deleted — because they cannot enforce organization isolation. Upgrading
+again restores them untouched. Readers accept earlier versions and normalize
+legacy shapes.
 
 **Normalized** — recoverable value problems are fixed at read time and logged
 once as `memory_normalized`, so the memory is still served and ranking math

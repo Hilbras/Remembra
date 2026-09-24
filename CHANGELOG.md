@@ -26,6 +26,11 @@ V5 work is additive until the tenant/schema migration contract is approved.
 - **V5 tenant contract and identity primitives** with opaque host contexts,
   canonical scoped identifiers, fail-closed matching, migration boundaries,
   and a `TENANT_REQUIRED` error. Backend enforcement remains a staged task.
+- **V5 tenant schema expansion** adds optional persisted organization/project/
+  user/agent metadata while keeping tenantless V4 records at schema 3 and
+  tenant records at schema 4. A canonical HMAC-SHA256 migration manifest now
+  validates explicit organization/entity/ACL mappings, counts, checksums, and
+  relation references before any future migration step consumes it.
 
 ---
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { RemembraError } from "./errors.js";
+import { isValidTenantId } from "./types.js";
 
 /** V5 tenant enforcement mode. Legacy mode is the only V4-compatible mode. */
 export type TenantMode = "legacy" | "strict";
@@ -14,8 +15,7 @@ const identifier = z
   .string()
   .min(1)
   .max(128)
-  .regex(/^[A-Za-z0-9._:-]+$/, "must contain only letters, digits, '.', '_', ':', or '-'")
-  .refine((value) => value !== "." && value !== "..", "must not be a path segment");
+  .refine(isValidTenantId, "must be a valid opaque tenant identifier");
 
 const tenantScope = z
   .string()

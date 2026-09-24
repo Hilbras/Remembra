@@ -7,6 +7,8 @@ import {
   Memory,
   StoreInput,
   SCHEMA_VERSION,
+  TENANT_SCHEMA_VERSION,
+  isValidTenantId,
   MemoryType,
   Provenance,
   ProvenanceSchema,
@@ -797,7 +799,9 @@ export function render(m: Memory): string {
   // optimistic-concurrency counter (§3.5), exposed as `version` in JSON.
   const meta: Record<string, unknown> = {
     id: m.id,
-    version: SCHEMA_VERSION,
+    // Keep tenantless V4 records at schema 3 for V4.9 readers. A record with
+    // a tenant boundary is V5 schema 4 and older readers must skip it.
+    version: m.tenantId ? TENANT_SCHEMA_VERSION : SCHEMA_VERSION,
     revision: m.version,
     type: m.type,
     scope: m.scope,
@@ -808,6 +812,10 @@ export function render(m: Memory): string {
     created: m.createdAt,
     updated: m.updatedAt,
   };
+  if (m.tenantId) meta.tenantId = m.tenantId;
+  if (m.projectId) meta.projectId = m.projectId;
+  if (m.userId) meta.userId = m.userId;
+  if (m.agentId) meta.agentId = m.agentId;
   if (m.lastSeen) meta.lastSeen = m.lastSeen;
   if (m.lastValidated) meta.lastValidated = m.lastValidated;
   if (m.archivedAt) meta.archivedAt = m.archivedAt;
@@ -918,7 +926,22 @@ async function parse(file: string): Promise<Memory | null> {
     if (!Number.isInteger(version)) {
       return skip(`invalid schema version "${truncate(String(meta.version))}"`);
     }
-    if (version > SCHEMA_VERSION) return skip(`unsupported schema version ${version}`);
+    if (version > TENANT_SCHEMA_VERSION) return skip(`unsupported schema version ${version}`);
+
+    const tenantId = meta.tenantId === undefined ? undefined : asStr(meta.tenantId);
+    const projectId = meta.projectId === undefined ? undefined : asStr(meta.projectId);
+    const userId = meta.userId === undefined ? undefined : asStr(meta.userId);
+    const agentId = meta.agentId === undefined ? undefined : asStr(meta.agentId);
+    const tenantValue = tenantId ?? (version >= TENANT_SCHEMA_VERSION ? "" : undefined);
+    if (
+      (meta.tenantId !== undefined && (!tenantId || !isValidTenantId(tenantId))) ||
+      (meta.projectId !== undefined && (!projectId || !isValidTenantId(projectId))) ||
+      (meta.userId !== undefined && (!userId || !isValidTenantId(userId))) ||
+      (meta.agentId !== undefined && (!agentId || !isValidTenantId(agentId))) ||
+      (version >= TENANT_SCHEMA_VERSION && !isValidTenantId(tenantValue ?? ""))
+    ) {
+      return skip("invalid or missing tenant metadata");
+    }
 
     let revision = 1;
     if (meta.revision !== undefined) {
@@ -1137,6 +1160,10 @@ async function parse(file: string): Promise<Memory | null> {
       provenance,
       owner,
       access,
+      ...(tenantId ? { tenantId } : {}),
+      ...(projectId ? { projectId } : {}),
+      ...(userId ? { userId } : {}),
+      ...(agentId ? { agentId } : {}),
       ...(memoryMeta ? { meta: memoryMeta as Memory["meta"] } : {}),
       ...(validFrom ? { validFrom } : {}),
       ...(validUntil ? { validUntil } : {}),

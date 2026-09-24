@@ -17,18 +17,21 @@ export const MemoryType = z.enum([
 export type MemoryType = z.infer<typeof MemoryType>;
 
 /**
- * Frontmatter schema version (plan §3.4 — bumped to 2 in 4.1.0 when the
- * format gained trust/relations/provenance-object/retention and spec-parsed
- * YAML replaced the hand-rolled parser; bumped to 3 in 4.7.0 for agent
- * ownership/access and security metadata). Bump when the Memory format changes
- * and add a migration step in store.ts (missing field in old files = v1).
- *
- * Downgrade contract (4.1.0 decision): files written by 4.1.0 carry
- * `version: 2` and are skipped — logged, never deleted — by 4.0.x readers,
- * because those readers cannot honor `trust` when gating instructions.
- * 4.0.x-era files (version: 1) stay fully readable by 4.1.0.
+ * Frontmatter schema versions (plan §3.4). V4-compatible records remain at
+ * version 3 so a V4.9 reader can still round-trip the legacy namespace during
+ * migration. V5 tenant records use version 4 and are intentionally skipped by
+ * V4 readers that cannot enforce organization isolation.
  */
 export const SCHEMA_VERSION = 3;
+export const TENANT_SCHEMA_VERSION = 4;
+export const MAX_SCHEMA_VERSION = TENANT_SCHEMA_VERSION;
+
+/** Opaque tenant identifier grammar shared by persistence and policy code. */
+export const TENANT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+
+export function isValidTenantId(value: string): boolean {
+  return TENANT_ID_RE.test(value) && value !== "." && value !== "..";
+}
 
 /** Trust classification (plan §4.5). Gate rule: instruction-like types inject only at trust ≥ trusted. */
 export const TrustLevel = z.enum(["unverified", "trusted", "verified", "system"]);
@@ -106,12 +109,21 @@ export function defaultTrust(p: Pick<Provenance, "sourceType">): TrustLevel {
  */
 export type MemoryScope = string; // "global" | "/path/to/project" | "chatgpt"
 
+export interface TenantMetadata {
+  /** V5 organization boundary. Absent only on V4 legacy records. */
+  tenantId?: string;
+  projectId?: string;
+  userId?: string;
+  /** Authorization-bearing agent, distinct from provenance.agentId. */
+  agentId?: string;
+}
+
 /**
  * Plan §4.2 metadata contract. `Memory` extends it — the HTTP/MCP JSON shape
  * stays flat (all fields top-level), while `MemoryMetadata` names the
  * metadata subset that every read validates (plan §3.4).
  */
-export interface MemoryMetadata {
+export interface MemoryMetadata extends TenantMetadata {
   id: string;
   type: MemoryType;
   scope: string;
@@ -556,6 +568,10 @@ export const SnapshotInput = z.object({
         retention: RetentionMode.optional(),
         owner: MemoryOwner.optional(),
         access: MemoryAccess.optional(),
+        tenantId: z.string().regex(TENANT_ID_RE, "invalid tenant id").optional(),
+        projectId: z.string().regex(TENANT_ID_RE, "invalid project id").optional(),
+        userId: z.string().regex(TENANT_ID_RE, "invalid user id").optional(),
+        agentId: z.string().regex(TENANT_ID_RE, "invalid agent id").optional(),
         meta: z
           .object({
             injected: z.boolean().optional(),
@@ -580,7 +596,7 @@ export const SnapshotInput = z.object({
       }),
     )
     .max(100_000),
-}).refine((snapshot) => snapshot.version <= SCHEMA_VERSION, {
-  message: `snapshot schema version must be <= ${SCHEMA_VERSION}`,
+}).refine((snapshot) => snapshot.version <= MAX_SCHEMA_VERSION, {
+  message: `snapshot schema version must be <= ${MAX_SCHEMA_VERSION}`,
 });
 export type SnapshotInput = z.infer<typeof SnapshotInput>;
