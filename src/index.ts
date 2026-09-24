@@ -13,6 +13,7 @@ import { startMcp } from "./mcp.js";
 import { createOperatorTenantContext, snapshotKeyFromEnv, tenantModeFromEnv } from "./operator.js";
 import { tenantFilterFromContext } from "./tenant.js";
 import { readSignedSnapshotFile, writeSignedSnapshotFile } from "./recovery.js";
+import { backupSqlite, restoreSqliteBackup, verifySqliteBackup } from "./sqlite-recovery.js";
 import {
   MemoryType,
   TrustLevel,
@@ -154,9 +155,9 @@ if (argv[0] === "export") {
       process.exit(1);
     }
     const src = (store as SqliteBackend).getDbPath();
-    await fs.copyFile(src, outFile);
+    await backupSqlite(src, outFile, { overwrite: true });
     const hash = createHash("sha256").update(await fs.readFile(outFile)).digest("hex");
-    await fs.writeFile(`${outFile}.sha256`, hash, "utf8");
+    await fs.writeFile(`${outFile}.sha256`, hash, { encoding: "utf8", mode: 0o600 });
     console.log(`Backup: ${outFile} (${hash.slice(0, 16)}…)`);
     process.exit(0);
   } else if (argv[0] === "restore") {
@@ -170,10 +171,14 @@ if (argv[0] === "export") {
       console.error("Usage: remembra restore <file.sqlite>");
       process.exit(1);
     }
-    const expected = (await fs.readFile(`${inFile}.sha256`, "utf8")).trim();
-    const actual = createHash("sha256").update(await fs.readFile(inFile)).digest("hex");
-    if (actual !== expected) {
-      console.error("Checksum mismatch — restore aborted");
+    let expected: string;
+    try {
+      expected = (await fs.readFile(`${inFile}.sha256`, "utf8")).trim();
+      const actual = createHash("sha256").update(await fs.readFile(inFile)).digest("hex");
+      if (actual !== expected) throw new Error("checksum mismatch");
+      await verifySqliteBackup(inFile);
+    } catch (err) {
+      console.error(`Restore verification failed: ${err instanceof Error ? err.message : err}`);
       process.exit(1);
     }
     if (!(store instanceof SqliteBackend)) {
@@ -181,9 +186,13 @@ if (argv[0] === "export") {
       process.exit(1);
     }
     const dst = (store as SqliteBackend).getDbPath();
-    const tmp = dst + ".tmp.restore";
-    await fs.copyFile(inFile, tmp);
-    await fs.rename(tmp, dst);
+    (store as SqliteBackend).close();
+    try {
+      await restoreSqliteBackup(inFile, dst, { overwrite: true });
+    } catch (err) {
+      console.error(`Restore aborted: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
     console.log(`Restored from ${inFile}`);
     process.exit(0);
   } else if (argv[0] === "migrate") {
