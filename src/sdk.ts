@@ -475,18 +475,22 @@ export class Remembra {
 
 const IDENTITY_KEYS = new Set([
   "agent",
-  "agentId",
-  "agentType",
-  "agentVersion",
+  "agentid",
+  "agenttype",
+  "agentversion",
   "owner",
   "access",
   "tenant",
-  "tenantId",
-  "organizationId",
-  "userId",
-  "projectId",
-  "membershipVersion",
+  "tenantid",
+  "organization",
+  "organizationid",
+  "user",
+  "userid",
+  "project",
+  "projectid",
+  "membershipversion",
 ]);
+const normalizeIdentityKey = (key: string): string => key.replace(/[-_]/g, "").toLowerCase();
 
 const TENANT_HEADER = /^(?:x-)?(?:remembra-)?(?:tenant|tenant-id|organization|organization-id|user|user-id|project|project-id|agent|agent-id)$/i;
 
@@ -510,7 +514,7 @@ function assertNoUntrustedIdentity(
     value.forEach((item, index) => assertNoUntrustedIdentity(item, `${path}[${index}]`, seen));
   } else {
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (IDENTITY_KEYS.has(key)) {
+      if (IDENTITY_KEYS.has(normalizeIdentityKey(key))) {
         throw new TypeError(`${path}.${key} is server-managed and cannot be sent by the SDK`);
       }
       assertNoUntrustedIdentity(child, `${path}.${key}`, seen);

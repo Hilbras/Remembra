@@ -117,6 +117,19 @@ test("SDK rejects server-managed identity fields before sending", async () => {
     () => client.search({ query: "x" }, { headers: { "x-remembra-tenant": "org-a" } }),
     /server-managed/,
   );
+  for (const identity of [
+    { tenant_id: "org-a" },
+    { organization: "org-a" },
+    { user: "user-a" },
+    { project: "project-a" },
+    { AgentId: "agent-a" },
+    { membership_version: "membership-1" },
+  ]) {
+    await assert.rejects(
+      () => client.store({ type: "fact", content: "alias", ...identity } as never),
+      /server-managed/,
+    );
+  }
   assert.equal(called, false);
 });
 

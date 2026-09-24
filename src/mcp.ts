@@ -51,7 +51,10 @@ export function createMcpServer(service: MemoryService, requestOptions: AgentRea
   // The service performs the centralized authorization decision at each tool
   // call. Do not require write capability just to construct a read-only server.
   const server = new McpServer({ name: "remembra", version: VERSION });
-  const scoped = requestOptions;
+  const scoped = Object.freeze({
+    ...requestOptions,
+    ...(requestOptions.agent ? { agent: Object.freeze({ ...requestOptions.agent }) } : {}),
+  });
 
   server.registerTool(
     "memory_store",

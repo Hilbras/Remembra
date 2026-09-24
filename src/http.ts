@@ -40,10 +40,14 @@ export interface HttpOptions {
 const RESERVED_TENANT_KEYS = new Set([
   "tenant",
   "tenantid",
+  "organization",
   "organizationid",
   "userid",
+  "user",
   "projectid",
+  "project",
   "agentid",
+  "agent",
   "membershipversion",
 ]);
 const normalizeIdentityKey = (key: string): string => key.replace(/[-_]/g, "").toLowerCase();
