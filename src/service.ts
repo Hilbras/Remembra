@@ -1858,8 +1858,25 @@ export class MemoryService {
     const prepared: Memory[] = [];
     let skipped = 0;
     for (const raw of snap.memories) {
-      if ((!tenant && raw.tenantId) || (tenant && raw.tenantId && raw.tenantId !== tenant.organizationId)) {
-        throw new RemembraError("SNAPSHOT_INVALID", "snapshot contains a foreign tenant record");
+      if (!tenant && raw.tenantId) {
+        throw new RemembraError("SNAPSHOT_INVALID", "tenant-bearing snapshot requires a tenant-scoped destination");
+      }
+      if (tenant) {
+        if (!raw.tenantId) {
+          throw new RemembraError("SNAPSHOT_INVALID", "tenant-scoped restore requires tenant metadata");
+        }
+        if (raw.tenantId !== tenant.organizationId) {
+          throw new RemembraError("SNAPSHOT_INVALID", "snapshot contains a foreign tenant record");
+        }
+        if (tenant.projectId && raw.projectId !== tenant.projectId) {
+          throw new RemembraError("SNAPSHOT_INVALID", "snapshot project does not match the trusted tenant context");
+        }
+        if (tenant.userId && raw.userId !== tenant.userId) {
+          throw new RemembraError("SNAPSHOT_INVALID", "snapshot user does not match the trusted tenant context");
+        }
+        if (tenant.agentId && raw.agentId !== tenant.agentId) {
+          throw new RemembraError("SNAPSHOT_INVALID", "snapshot agent does not match the trusted tenant context");
+        }
       }
       const key = dedupKey(raw.type, raw.content, raw.scope);
       if (ids.has(raw.id) || keys.has(key)) {
