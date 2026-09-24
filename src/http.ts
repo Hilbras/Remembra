@@ -10,6 +10,7 @@ import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { RateLimiter } from "./rate-limiter.js";
 import type { AgentContext } from "./agent.js";
+import type { TenantContext } from "./tenant.js";
 
 export interface HttpOptions {
   port?: number;
@@ -27,6 +28,10 @@ export interface HttpOptions {
   resolveAgentContext?: (
     req: http.IncomingMessage,
   ) => AgentContext | undefined | Promise<AgentContext | undefined>;
+  /** Resolve a host-minted V5 tenant context after authentication. */
+  resolveTenantContext?: (
+    req: http.IncomingMessage,
+  ) => TenantContext | undefined | Promise<TenantContext | undefined>;
 }
 
 const DEFAULT_MAX_BODY = 10 * 1024 * 1024; // transcripts can be large — 10 MiB
@@ -270,7 +275,8 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // unverified public header.
       const resolvedAgent = await opts.resolveAgentContext?.(req);
       const agent = resolvedAgent?.agentId?.trim() ? resolvedAgent : undefined;
-      const agentOptions = { agent };
+      const tenant = await opts.resolveTenantContext?.(req);
+      const agentOptions = { agent, tenant };
 
       // GET /metrics — Prometheus text format. After the auth check on
       // purpose: keyed (incl. public) deployments must not leak counters.

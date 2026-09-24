@@ -24,6 +24,11 @@
       "import": "./dist/provider-adapters.js",
       "default": "./dist/provider-adapters.js"
     },
+    "./tenant": {
+      "types": "./dist/tenant.d.ts",
+      "import": "./dist/tenant.js",
+      "default": "./dist/tenant.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

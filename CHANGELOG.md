@@ -36,8 +36,13 @@ V5 work is additive until the tenant/schema migration contract is approved.
   unscoped legacy reads never enumerate tenant directories.
 - **SQLite tenant boundary** adds nullable tenant/project/user/agent columns,
   tenant-filtered point/lifecycle/history/audit operations, FTS filtering, and
-  candidate predicates before `LIMIT`/count calculation. Strict service
-  binding remains the next slice.
+  candidate predicates before `LIMIT`/count calculation.
+- **Strict tenant service and transport binding** adds opaque host contexts,
+  fail-closed service authorization, tenant-aware CRUD/search/context/history/
+  relations/import/export/maintenance paths, trusted HTTP resolution, strict
+  MCP server binding, and SDK rejection of tenant-bearing body/header fields.
+  Raw backend access is disabled in strict mode. Remaining work is durable
+  job reauthorization, CLI/operator binding, and derived-cache partitioning.
 
 ---
 

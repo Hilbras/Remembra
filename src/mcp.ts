@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { MemoryService } from "./service.js";
+import { MemoryService, type AgentReadOptions } from "./service.js";
 import { MemoryStore } from "./store.js";
 import { VERSION } from "./version.js";
 import { logEvent } from "./log.js";
@@ -47,8 +47,9 @@ export const MCP_TOOL_NAMES = [
 export type McpToolName = (typeof MCP_TOOL_NAMES)[number];
 
 /** Construct an MCP server with the complete stable tool manifest. */
-export function createMcpServer(service: MemoryService): McpServer {
+export function createMcpServer(service: MemoryService, requestOptions: AgentReadOptions = {}): McpServer {
   const server = new McpServer({ name: "remembra", version: VERSION });
+  const scoped = requestOptions;
 
   server.registerTool(
     "memory_store",
@@ -62,7 +63,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async (args) => {
       try {
-        const result = await service.store(args);
+        const result = await service.store(args, scoped);
         return { content: [{ type: "text", text: result.message }] };
       } catch (err) {
         return toolFail(err);
@@ -81,7 +82,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async (args) => {
       try {
-        const result = await service.batch(args);
+        const result = await service.batch(args, scoped);
         return { content: [{ type: "text", text: JSON.stringify(result) }] };
       } catch (err) {
         return toolFail(err);
@@ -102,7 +103,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async (args) => {
       try {
-        const result = await service.digest(DigestInput.parse(args));
+        const result = await service.digest({ ...DigestInput.parse(args), ...scoped });
         const text =
           `Digest complete: ${result.extracted} extracted, ${result.stored.length} stored, ` +
           `${result.merged} merged/revived, ${result.skippedDuplicates} duplicates skipped.` +
@@ -126,7 +127,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async () => {
       try {
-        const result = await service.maintain();
+        const result = await service.maintain(scoped);
         const text =
           `Maintenance complete: ${result.archived.length} archived, ` +
           `${result.deleted.length} deleted, ${result.embedded} vectors backfilled.` +
@@ -150,7 +151,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async (args) => {
       try {
-        const result = await service.search(args);
+        const result = await service.search({ ...args, ...scoped });
         return { content: [{ type: "text", text: result.text }] };
       } catch (err) {
         return toolFail(err);
@@ -169,7 +170,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async (args) => {
       try {
-        const result = await service.context(args);
+        const result = await service.context(args, scoped);
         return { content: [{ type: "text", text: JSON.stringify(result) }] };
       } catch (err) {
         return toolFail(err);
@@ -187,7 +188,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async (args) => {
       try {
-        const result = await service.list(args);
+        const result = await service.list({ ...args, ...scoped });
         return { content: [{ type: "text", text: result.text }] };
       } catch (err) {
         return toolFail(err);
@@ -204,7 +205,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async ({ id }) => {
       try {
-        const result = await service.forget(id);
+        const result = await service.forget(id, scoped);
         return {
           content: [{ type: "text", text: result.text }],
           isError: !result.ok,
@@ -226,7 +227,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async ({ id }) => {
       try {
-        const result = await service.get(id);
+        const result = await service.get(id, scoped);
         return { content: [{ type: "text", text: result.text }] };
       } catch (err) {
         return toolFail(err);
@@ -246,7 +247,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async (args) => {
       try {
-        const result = await service.relate(args);
+        const result = await service.relate(args, scoped);
         return { content: [{ type: "text", text: result.text }] };
       } catch (err) {
         return toolFail(err);
@@ -265,7 +266,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async (args) => {
       try {
-        const result = await service.history(args);
+        const result = await service.history(args, scoped);
         return { content: [{ type: "text", text: result.text }] };
       } catch (err) {
         return toolFail(err);
@@ -286,7 +287,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     async (args) => {
       try {
         const { id, ...patch } = args;
-        const result = await service.update(id, patch);
+        const result = await service.update(id, patch, scoped);
         return { content: [{ type: "text", text: result.text }] };
       } catch (err) {
         return toolFail(err);
@@ -305,7 +306,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async ({ id }) => {
       try {
-        const result = await service.archive(id);
+        const result = await service.archive(id, scoped);
         return { content: [{ type: "text", text: result.text }] };
       } catch (err) {
         return toolFail(err);
@@ -322,7 +323,7 @@ export function createMcpServer(service: MemoryService): McpServer {
     },
     async ({ id }) => {
       try {
-        const result = await service.revive(id);
+        const result = await service.revive(id, scoped);
         return { content: [{ type: "text", text: result.text }] };
       } catch (err) {
         return toolFail(err);
@@ -334,8 +335,8 @@ export function createMcpServer(service: MemoryService): McpServer {
 }
 
 /** Start the standard stdio transport used by the CLI. */
-export async function startMcp(service: MemoryService): Promise<void> {
-  const server = createMcpServer(service);
+export async function startMcp(service: MemoryService, requestOptions: AgentReadOptions = {}): Promise<void> {
+  const server = createMcpServer(service, requestOptions);
   const transport = new StdioServerTransport();
   await server.connect(transport);
   const rootNote = process.env.REMEMBRA_DEBUG ? ` (root: ${MemoryStore.defaultRoot()})` : "";

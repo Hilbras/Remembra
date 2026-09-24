@@ -60,6 +60,13 @@ API-key authentication and is the only supported HTTP identity source;
 Remembra does not trust an `agentId` JSON field or public agent header. See
 [multi-agent.md](multi-agent.md).
 
+Strict V5 tenant mode additionally accepts
+`resolveTenantContext(req)`, also after authentication. It must return an
+opaque host-minted tenant context; no public tenant header, query parameter,
+or JSON field is trusted. A strict service without a successful resolver
+returns `TENANT_REQUIRED` for data routes while `/health` remains a
+content-free liveness check.
+
 | Method | Route | Purpose |
 |--------|-------|---------|
 | GET | `/` · `/ui/*` | dashboard shell + assets (static, no auth) |

@@ -81,6 +81,15 @@ test("SDK rejects server-managed identity fields before sending", async () => {
     /server-managed/,
   );
   assert.equal(called, false);
+  await assert.rejects(
+    () => client.store({ type: "fact", content: "tenant", tenantId: "org-a" } as never),
+    /server-managed/,
+  );
+  await assert.rejects(
+    () => client.search({ query: "x" }, { headers: { "x-remembra-tenant": "org-a" } }),
+    /server-managed/,
+  );
+  assert.equal(called, false);
 });
 
 test("SDK forwards AbortSignal", async () => {
@@ -125,9 +134,11 @@ test("SDK completes an authenticated store/search/get/forget round trip", async 
   }
 });
 
-test("published SDK subpath resolves without starting the CLI", async () => {
+test("published SDK and tenant subpaths resolve without starting the CLI", async () => {
   const packageSdk = await import("@hilbras/remembra/sdk");
+  const packageTenant = await import("@hilbras/remembra/tenant");
   assert.equal(typeof packageSdk.Remembra, "function");
+  assert.equal(typeof packageTenant.createTenantContext, "function");
 });
 
 test("SDK rejects invalid endpoints and does not require an API key", async () => {

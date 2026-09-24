@@ -36,11 +36,12 @@ const context = await memory.context({
 - `fetch` — injectable fetch implementation for tests or custom runtimes.
 - `headers` — additional headers sent with every request.
 
-The SDK sends API credentials only. It does not accept or synthesize a trusted
-agent identity; agent context remains server-side. Server-managed
-`owner`/`access` and agent-attribution fields are rejected before a request is
-sent. Ordinary provenance IDs are audit metadata and do not authenticate a
-caller.
+The SDK sends API credentials only. It does not accept or synthesize trusted
+agent or tenant identity; both contexts remain server-side. Server-managed
+`owner`/`access`, agent-attribution, tenant/organization/project/user fields,
+and tenant-bearing headers are rejected before a request is sent. Ordinary
+provenance IDs are audit metadata and do not authenticate a caller. The V5
+opaque tenant contract is available from `@hilbras/remembra/tenant`.
 
 ## Methods
 

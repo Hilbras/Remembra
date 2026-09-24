@@ -347,6 +347,7 @@ export class Remembra {
     if (body !== undefined) headers.set("content-type", "application/json");
 
     assertNoUntrustedIdentity(body);
+    assertNoUntrustedTenantHeaders(headers);
     const response = await this.fetchImpl(url, {
       method,
       headers,
@@ -379,7 +380,23 @@ const IDENTITY_KEYS = new Set([
   "agentVersion",
   "owner",
   "access",
+  "tenant",
+  "tenantId",
+  "organizationId",
+  "userId",
+  "projectId",
+  "membershipVersion",
 ]);
+
+const TENANT_HEADER = /^(?:x-)?(?:remembra-)?(?:tenant|tenant-id|organization|organization-id|user|user-id|project|project-id|agent|agent-id)$/i;
+
+function assertNoUntrustedTenantHeaders(headers: Headers): void {
+  for (const key of headers.keys()) {
+    if (TENANT_HEADER.test(key)) {
+      throw new TypeError(`header ${key} is server-managed and cannot be sent by the SDK`);
+    }
+  }
+}
 
 function assertNoUntrustedIdentity(
   value: unknown,
