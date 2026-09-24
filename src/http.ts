@@ -2,9 +2,9 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { timingSafeEqual, createHash } from "node:crypto";
+import { timingSafeEqual, createHash, randomUUID } from "node:crypto";
 import { MemoryService } from "./service.js";
-import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION, API_VERSION_HEADER } from "./api-contract.js";
+import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION, API_VERSION_HEADER, REQUEST_ID_HEADER, isValidRequestId } from "./api-contract.js";
 import { DigestInput } from "./types.js";
 import { isRemembraError, statusFor, errorLabel, publicErrorMessage, RemembraError } from "./errors.js";
 import { logEvent } from "./log.js";
@@ -94,6 +94,12 @@ function rateIdentityPart(value: string): string {
 
 function requestAddress(req: http.IncomingMessage): string {
   return req.socket.remoteAddress ?? "unknown";
+}
+
+function requestIdFor(req: http.IncomingMessage): string {
+  const raw = req.headers[REQUEST_ID_HEADER.toLowerCase()];
+  const candidate = Array.isArray(raw) ? raw[0] : raw;
+  return isValidRequestId(candidate) ? candidate : randomUUID();
 }
 
 function protectedRateIdentity(req: http.IncomingMessage, tenant: TenantContext | undefined, apiKey: string | undefined): string {
@@ -199,13 +205,14 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
     }
     if (allowHeaders) {
       res.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
-      res.setHeader("access-control-allow-headers", "Content-Type, Authorization, x-api-key");
-      res.setHeader("access-control-expose-headers", `${API_VERSION_HEADER}, Retry-After`);
+      res.setHeader("access-control-allow-headers", `Content-Type, Authorization, x-api-key, ${REQUEST_ID_HEADER}`);
+      res.setHeader("access-control-expose-headers", `${API_VERSION_HEADER}, ${REQUEST_ID_HEADER}, Retry-After`);
       res.setHeader("access-control-max-age", "86400");
     }
   }
 
   const server = http.createServer(async (req, res) => {
+    res.setHeader(REQUEST_ID_HEADER, requestIdFor(req));
     // Parse before the overload fast path so versioned responses get their
     // contract header even when rejected immediately. Defer malformed-URL
     // handling to the normal request try/catch below.

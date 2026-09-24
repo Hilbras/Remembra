@@ -105,7 +105,13 @@ equivalents. Every `/api/v1` response, including transport errors, includes:
 
 ```http
 X-Remembra-API-Version: v1
+X-Remembra-Request-Id: <bounded correlation id>
 ```
+
+Clients may provide a safe request ID using `X-Remembra-Request-Id`; invalid
+values are replaced with a server-generated bounded ID. The header is
+correlation metadata only and is never used as an authorization or metric
+label.
 
 `/api/v1/health` is intentionally public, matching `/health`; all other v1
 routes retain the legacy auth requirements. `/api/v1/capabilities` is an
@@ -115,8 +121,8 @@ authority; the roadmap's illustrative `/v1/...` spelling is not a second alias.
 Future breaking changes require a separately documented major namespace.
 
 The UI is not served below the v1
-prefix. When CORS is enabled, the version and `Retry-After` headers are exposed
-to browser clients.
+prefix. When CORS is enabled, the version, request-ID, and `Retry-After`
+headers are exposed to browser clients.
 
 The v1 stabilization release deliberately preserves legacy response bodies
 rather than introducing a breaking wrapper. Typed service errors normally use

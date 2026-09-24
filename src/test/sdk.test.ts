@@ -7,7 +7,7 @@ import { Remembra, RemembraApiError, RemembraTimeoutError, type FetchLike } from
 import { MemoryStore } from "../store.js";
 import { MemoryService } from "../service.js";
 import { createHttpServer } from "../http.js";
-import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION } from "../api-contract.js";
+import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION, REQUEST_ID_HEADER } from "../api-contract.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -86,6 +86,32 @@ test("SDK exposes the shared v1 capabilities contract", async () => {
   assert.deepEqual(capabilities, API_CAPABILITY_MANIFEST);
   assert.equal(client.apiVersion, API_VERSION);
   assert.equal(calls[0], `https://memory.example.test${API_PREFIX}/capabilities`);
+});
+
+test("SDK propagates bounded request IDs and generates one when omitted", async () => {
+  const seen: Headers[] = [];
+  const client = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async (_input, init) => {
+      seen.push(new Headers(init?.headers));
+      return jsonResponse({ text: "ok", results: [] });
+    },
+  });
+  await client.search({}, { requestId: "sdk-request-001" });
+  await client.search({});
+  assert.equal(seen[0].get(REQUEST_ID_HEADER), "sdk-request-001");
+  assert.match(seen[1].get(REQUEST_ID_HEADER) ?? "", /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
+
+  let called = false;
+  const invalidClient = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async () => {
+      called = true;
+      return jsonResponse({ text: "ok", results: [] });
+    },
+  });
+  await assert.rejects(() => invalidClient.search({}, { requestId: "bad request id" }), /requestId/);
+  assert.equal(called, false);
 });
 
 test("SDK exposes typed tenant entity methods without tenant identity fields", async () => {

@@ -1,4 +1,4 @@
-import { API_PREFIX, API_VERSION, type ApiCapabilitiesResponse } from "./api-contract.js";
+import { API_PREFIX, API_VERSION, REQUEST_ID_HEADER, isValidRequestId, type ApiCapabilitiesResponse } from "./api-contract.js";
 export type { ApiCapabilitiesResponse } from "./api-contract.js";
 import type { ContextResult } from "./context.js";
 import type { TenantEntity, TenantEntityKind, TenantEntityPage, TenantMembershipPage } from "./tenant-entities.js";
@@ -54,6 +54,8 @@ export interface RequestOptions {
   headers?: Record<string, string>;
   /** Optional per-request timeout; bounded to 1–120 seconds when supplied. */
   timeoutMs?: number;
+  /** Optional correlation ID; bounded to 128 safe ASCII characters. */
+  requestId?: string;
 }
 
 export interface SearchOptions {
@@ -496,6 +498,11 @@ export class Remembra {
     const headers = new Headers(this.defaultHeaders);
     for (const [key, value] of Object.entries(options.headers ?? {})) headers.set(key, value);
     if (this.apiKey) headers.set("x-api-key", this.apiKey);
+    const requestId = options.requestId ?? headers.get(REQUEST_ID_HEADER) ?? createRequestId();
+    if (!isValidRequestId(requestId)) {
+      throw new TypeError("requestId must be 1-128 characters using letters, digits, '.', '_', ':', or '-'");
+    }
+    headers.set(REQUEST_ID_HEADER, requestId);
     if (body !== undefined) headers.set("content-type", "application/json");
 
     assertNoUntrustedIdentity(body, "input", new WeakSet<object>(), options.allowSnapshotEnvelope === true);
@@ -549,6 +556,12 @@ export class Remembra {
       if (controller) options.signal?.removeEventListener("abort", onAbort);
     }
   }
+}
+
+function createRequestId(): string {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
+  return `req-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 const IDENTITY_KEYS = new Set([

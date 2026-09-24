@@ -7,7 +7,7 @@ import type http from "node:http";
 import { MemoryStore } from "../store.js";
 import { MemoryService } from "../service.js";
 import { createHttpServer } from "../http.js";
-import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION } from "../api-contract.js";
+import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION, REQUEST_ID_HEADER } from "../api-contract.js";
 
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-http-"));
 const service = new MemoryService(new MemoryStore(dir));
@@ -100,12 +100,14 @@ test("v1 API namespace preserves auth, headers, and legacy handler behavior", as
 test("v1 capabilities discovery is authenticated, versioned, and bounded", async () => {
   const unauthorized = await fetch(`${base}/api/v1/capabilities`);
   assert.equal(unauthorized.status, 401);
+  assert.match(unauthorized.headers.get(REQUEST_ID_HEADER.toLowerCase()) ?? "", /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 
   const response = await fetch(`${base}${API_PREFIX}/capabilities`, {
-    headers: { "x-api-key": "test-key" },
+    headers: { "x-api-key": "test-key", "x-remembra-request-id": "http-request-001" },
   });
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("x-remembra-api-version"), API_VERSION);
+  assert.equal(response.headers.get(REQUEST_ID_HEADER.toLowerCase()), "http-request-001");
   const body = await response.json() as {
     apiVersion: string;
     basePath: string;
@@ -168,6 +170,8 @@ test("v1 CORS preflight exposes the version header", async () => {
     assert.equal(response.status, 204);
     assert.equal(response.headers.get("access-control-allow-origin"), "https://client.example");
     assert.match(response.headers.get("access-control-expose-headers") ?? "", /X-Remembra-API-Version/);
+    assert.match(response.headers.get("access-control-expose-headers") ?? "", /X-Remembra-Request-Id/);
+    assert.match(response.headers.get("access-control-allow-headers") ?? "", /X-Remembra-Request-Id/);
   } finally {
     await new Promise<void>((resolve, reject) =>
       corsServer.close((error) => (error ? reject(error) : resolve())),
