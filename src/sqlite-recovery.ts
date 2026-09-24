@@ -26,6 +26,15 @@ export interface SqliteRestoreResult {
   rollbackPath?: string;
 }
 
+async function syncDirectory(directory: string): Promise<void> {
+  const handle = await fs.open(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 function invalid(message: string): never {
   throw new RemembraError("INVALID_INPUT", `sqlite recovery: ${message}`);
 }
@@ -167,6 +176,7 @@ export async function reconcileSqliteRestore(targetPath: string): Promise<{
       return { recovered: true, action: "kept-target" };
     }
     await fs.rename(journal.target, journal.rollback);
+    await syncDirectory(path.dirname(journal.target));
     targetExists = false;
   }
 
@@ -180,6 +190,7 @@ export async function reconcileSqliteRestore(targetPath: string): Promise<{
   if (tempExists) {
     await verifySqliteBackup(journal.temp, { maxBytes: undefined });
     await fs.rename(journal.temp, journal.target);
+    await syncDirectory(path.dirname(journal.target));
     await verifySqliteBackup(journal.target, { maxBytes: undefined });
     await removeRestoreJournal(journal.target);
     return { recovered: true, action: "published-staged" };
@@ -188,6 +199,7 @@ export async function reconcileSqliteRestore(targetPath: string): Promise<{
   if (rollbackExists) {
     await verifySqliteBackup(journal.rollback, { maxBytes: undefined });
     await fs.rename(journal.rollback, journal.target);
+    await syncDirectory(path.dirname(journal.target));
     await verifySqliteBackup(journal.target, { maxBytes: undefined });
     await removeRestoreJournal(journal.target);
     return { recovered: true, action: "restored-previous" };
@@ -319,6 +331,7 @@ export async function restoreSqliteBackup(
       if (journal) await writeRestoreJournal({ ...journal, phase: "previous-moved" });
     }
     await fs.rename(temp, target);
+    await syncDirectory(path.dirname(target));
     if (journal) {
       await verifySqliteBackup(target, { maxBytes: options.maxBytes });
       await removeRestoreJournal(target);

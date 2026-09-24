@@ -47,8 +47,6 @@ const startup = validateStartupConfiguration({
   tenant: operatorTenant,
 });
 const validatedRoot = await validateStorageRoot(root);
-const backendSelection = await selectInitialBackend(validatedRoot);
-const store = backendSelection.store;
 const operatorSnapshotKey = startup.snapshotKey;
 const argv = process.argv.slice(2);
 const isRecoveryCommand = argv[0] === "recover" && (argv[1] === "verify" || argv[1] === "read-only");
@@ -59,7 +57,9 @@ try {
   await fs.lstat(restoreMarkerPath);
   restoreMarkerPending = true;
 } catch (error) {
-  if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+    logEvent("warn", "idempotency.gate_unreadable", { error: String(error).slice(0, 160) }, "Restore gate could not be inspected");
+  }
 }
 let batchIdempotencyStore: FileBatchIdempotencyStore | undefined;
 try {
@@ -70,6 +70,17 @@ try {
   // ledger is unavailable. Keyed calls fail closed with SERVICE_UNAVAILABLE.
   logEvent("warn", "idempotency.unavailable", { error: String(error).slice(0, 160) }, "Batch idempotency ledger unavailable");
 }
+if (isRestoreCommand) {
+  if (!batchIdempotencyStore) throw new Error("restore requires a healthy batch idempotency ledger");
+  await batchIdempotencyStore.beginRestore();
+}
+if (restoreMarkerPending && !isRecoveryCommand && !isRestoreCommand) {
+  throw new Error("a data restore is pending; resolve the restore-pending gate before serving");
+}
+const backendSelection = await selectInitialBackend(validatedRoot, process.env, {
+  reconcileRestore: !(isRecoveryCommand && restoreMarkerPending),
+});
+const store = backendSelection.store;
 const service = new MemoryService(store, {
   tenantMode,
   backend: backendSelection.backend,
@@ -111,6 +122,7 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
 } else if (argv[0] === "recover" && argv[1] === "verify") {
   try {
     await service.verifyRecovery();
+    if (service.batchIdempotencyRestorePending) await service.completeBatchRestore();
     const health = await service.health();
     console.log(JSON.stringify({ state: health.state, verified: true, durable: true }));
     process.exit(0);
@@ -278,9 +290,8 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
     }
     const dst = (store as SqliteBackend).getDbPath();
     try {
-      // The gate survives a failed restore; claims are invalidated only after
-      // the replacement database is published successfully.
-      await service.beginBatchRestore();
+      // The gate was established before backend reconciliation; claims are
+      // invalidated only after the replacement database is published.
       (store as SqliteBackend).close();
       await restoreSqliteBackup(inFile, dst, { overwrite: true });
       await service.completeBatchRestore();

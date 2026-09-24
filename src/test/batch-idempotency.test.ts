@@ -10,6 +10,7 @@ import { MemoryService } from "../service.js";
 import { MemoryStore } from "../store.js";
 import { createTenantContext } from "../tenant.js";
 import { RemembraError } from "../errors.js";
+import { FileRecoveryStateStore } from "../recovery-state-store.js";
 
 async function temporaryRoot(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -72,6 +73,48 @@ test("batch idempotency rejects tampered claim records", async () => {
     database.prepare("UPDATE batch_idempotency_claims SET mac = ?").run("tampered");
     database.close();
     await assert.rejects(() => store.claim(input), expectCode("SERVICE_UNAVAILABLE"));
+  } finally {
+    store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an empty replacement database cannot reset the ledger identity", async () => {
+  const root = await temporaryRoot("remembra-idempotency-replaced-");
+  const store = new FileBatchIdempotencyStore(path.join(root, "claims"));
+  try {
+    await store.claim({ scope: batchIdempotencyScope("tenant:alpha"), key: "batch-replaced", fingerprint: batchIdempotencyFingerprint("fingerprint-a") });
+    store.close();
+    await fs.rm(store.databasePath, { force: true });
+    const replacement = new Database(store.databasePath);
+    replacement.close();
+    assert.throws(() => new FileBatchIdempotencyStore(path.join(root, "claims")), expectCode("SERVICE_UNAVAILABLE"));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy SQLite ledgers migrate by invalidating old claims", async () => {
+  const root = await temporaryRoot("remembra-idempotency-migrate-");
+  const claimsRoot = path.join(root, "claims");
+  await fs.mkdir(claimsRoot, { recursive: true, mode: 0o700 });
+  const databasePath = path.join(claimsRoot, "claims.sqlite");
+  const legacy = new Database(databasePath);
+  legacy.exec(`
+    CREATE TABLE batch_idempotency_meta (id INTEGER PRIMARY KEY, generation INTEGER NOT NULL);
+    INSERT INTO batch_idempotency_meta (id, generation) VALUES (1, 7);
+    CREATE TABLE batch_idempotency_claims (
+      scope_hash TEXT NOT NULL, key_hash TEXT NOT NULL, fingerprint TEXT NOT NULL,
+      state TEXT NOT NULL, created_at INTEGER NOT NULL, completed_at INTEGER,
+      response TEXT, response_bytes INTEGER NOT NULL, reserved_bytes INTEGER NOT NULL,
+      mac TEXT NOT NULL, generation INTEGER NOT NULL, PRIMARY KEY(scope_hash, key_hash)
+    );
+  `);
+  legacy.close();
+  await fs.chmod(databasePath, 0o600);
+  const store = new FileBatchIdempotencyStore(claimsRoot);
+  try {
+    assert.deepEqual(await store.claim({ scope: batchIdempotencyScope("tenant:alpha"), key: "batch-migrated", fingerprint: batchIdempotencyFingerprint("fingerprint-a") }), { status: "fresh" });
   } finally {
     store.close();
     await fs.rm(root, { recursive: true, force: true });
@@ -151,6 +194,7 @@ test("restore gate blocks claims until successful completion", async () => {
   const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "batch-gate", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
   try {
     await store.beginRestore();
+    await assert.rejects(() => store.beginRestore(), expectCode("SERVICE_UNAVAILABLE"));
     assert.equal(store.restorePending, true);
     await assert.rejects(() => store.claim(input), expectCode("SERVICE_UNAVAILABLE"));
     await store.completeRestore();
@@ -332,6 +376,56 @@ test("host credential scopes isolate idempotency keys without using IP addresses
     assert.equal((await service.list({})).memories.length, 2);
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("keyed local HTTP batches require an isolated credential scope", async () => {
+  const root = await temporaryRoot("remembra-idempotency-local-scope-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  const service = new MemoryService(new MemoryStore(path.join(root, "memories")), {
+    embeddingProvider: "none",
+    batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(root, "claims")),
+  });
+  const server = createHttpServer(service, { port: 0 });
+  try {
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const address = server.address() as { port: number };
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/memories/batch`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "local-key" },
+      body: JSON.stringify({ operation: "store", items: [{ type: "fact", content: "no credential scope" }] }),
+    });
+    assert.equal(response.status, 400);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("keyed batches refresh durable recovery state before claiming", async () => {
+  const root = await temporaryRoot("remembra-idempotency-recovery-refresh-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  const statePath = path.join(root, ".recovery-state.json");
+  const service = new MemoryService(new MemoryStore(path.join(root, "memories")), {
+    embeddingProvider: "none",
+    recoveryStateStore: new FileRecoveryStateStore(statePath),
+    batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(root, "claims")),
+  });
+  try {
+    await service.initializeRecovery();
+    const operatorState = new FileRecoveryStateStore(statePath);
+    await operatorState.write("ReadOnly", "read_only");
+    await assert.rejects(
+      () => service.batch(
+        { operation: "store", items: [{ type: "fact", content: "must be blocked" }] },
+        { idempotencyKey: "batch-recovery-refresh", idempotencyScope: batchIdempotencyScope("test-client") },
+      ),
+      expectCode("SERVICE_UNAVAILABLE"),
+    );
+  } finally {
     await service.shutdownBackgroundJobs();
     await fs.rm(root, { recursive: true, force: true });
   }

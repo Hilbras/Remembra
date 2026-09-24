@@ -266,7 +266,11 @@ function isBatchOutcome(value: unknown, index: number, operation: "store" | "upd
   return typeof result.id === "string" && result.id.length <= 255;
 }
 
-function isBatchResult(value: unknown, expectedOperation?: BatchResult["operation"]): value is BatchResult {
+function isBatchResult(
+  value: unknown,
+  expectedOperation?: BatchResult["operation"],
+  expectedCount?: number,
+): value is BatchResult {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   if (record.operation !== "store" && record.operation !== "update" && record.operation !== "delete" && record.operation !== "export") return false;
@@ -284,10 +288,14 @@ function isBatchResult(value: unknown, expectedOperation?: BatchResult["operatio
   const requested = counts.requested as number;
   const succeeded = counts.succeeded as number;
   const failed = counts.failed as number;
-  if (requested < 0 || requested > 100 || succeeded < 0 || failed < 0) return false;
+  if (requested < 1 || requested > 100 || succeeded < 0 || failed < 0) return false;
   if (succeeded + failed !== requested) return false;
+  if (expectedCount !== undefined && requested !== expectedCount) return false;
   if (!Array.isArray(record.results) || record.results.length !== requested) return false;
   if (!record.results.every((outcome, index) => isBatchOutcome(outcome, index, record.operation as "store" | "update" | "delete" | "export"))) return false;
+  const actualSucceeded = record.results.filter((outcome) => outcome.ok).length;
+  const actualFailed = record.results.length - actualSucceeded;
+  if (actualSucceeded !== succeeded || actualFailed !== failed) return false;
   if (record.operation !== "export" && record.results.some((outcome) => !outcome.ok)) return false;
   if (record.operation !== "export"
     && Object.keys(record).sort().join(",") !== "execution,operation,results,summary") return false;
@@ -304,6 +312,10 @@ function isBatchResult(value: unknown, expectedOperation?: BatchResult["operatio
 
 function batchHasUnresolvedFailure(result: BatchResult): boolean {
   return result.operation !== "export" && result.results.some((outcome) => !outcome.ok);
+}
+
+function batchRequestCount(request: ReturnType<typeof BatchRequest.parse>): number {
+  return request.operation === "store" || request.operation === "update" ? request.items.length : request.ids.length;
 }
 
 function recordBatchMetrics(operation: string, results: readonly BatchOutcome[]): void {
@@ -535,7 +547,8 @@ export class MemoryService {
 
   /** Operator hook for verified data rollback/restore before serving again. */
   async invalidateBatchIdempotency(): Promise<void> {
-    await this.batchIdempotencyStore?.invalidate();
+    if (!this.batchIdempotencyStore) throw new RemembraError("SERVICE_UNAVAILABLE", "batch idempotency ledger is unavailable");
+    await this.batchIdempotencyStore.invalidate();
   }
 
   /** Load the durable recovery state before serving or mutating data. */
@@ -550,6 +563,19 @@ export class MemoryService {
       this.recoveryStateInitialized = true;
       if (error instanceof RemembraError) throw error;
       throw new RemembraError("SERVICE_UNAVAILABLE", "recovery state could not be loaded", { cause: error });
+    }
+  }
+
+  private async refreshDurableRecoveryState(): Promise<void> {
+    if (!this.recoveryStateStore || !this.recoveryStateInitialized) return;
+    try {
+      const persisted = await this.recoveryStateStore.read();
+      if (persisted) this.recoveryState = persisted;
+    } catch (error) {
+      this.recoveryState = "Failed";
+      throw error instanceof RemembraError
+        ? error
+        : new RemembraError("SERVICE_UNAVAILABLE", "recovery state could not be refreshed", { cause: error });
     }
   }
 
@@ -605,6 +631,9 @@ export class MemoryService {
 
   /** Reject a direct service/CLI mutation while recovery is restrictive. */
   assertWritable(): void {
+    if (this.batchIdempotencyStore?.restorePending) {
+      throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
+    }
     if (!this.recoveryStateInitialized) {
       throw new RemembraError("SERVICE_UNAVAILABLE", "recovery state is not initialized");
     }
@@ -1104,22 +1133,31 @@ export class MemoryService {
   private async preflightBatchAuthorization(
     request: ReturnType<typeof BatchRequest.parse>,
     options: AgentReadOptions,
+    replay = false,
   ): Promise<void> {
     if (request.operation === "export") {
       await this.freshTenantFilter(options, "read", "snapshot.create");
       return;
     }
-    await this.freshTenantFilter(options, "write");
+    const tenant = await this.freshTenantFilter(options, "write");
     if (request.operation === "store" && this.agentMode) {
       for (const item of request.items) {
         const canonical = this.canonicalizeAgentInput(item, options);
         this.assertAgentWrite(canonical, options);
       }
     }
+    if (replay && (request.operation === "update" || request.operation === "delete")) {
+      const ids = request.operation === "update" ? request.items.map((item) => item.id) : request.ids;
+      for (const id of ids) {
+        const existing = await this.#backend.get(id, tenant);
+        if (request.operation === "update" || existing) this.assertCanRead(existing, id, options);
+      }
+    }
   }
 
   async batch(input: unknown, options: BatchOptions = {}): Promise<BatchResult> {
     options = snapshotBatchOptions(options);
+    await this.refreshDurableRecoveryState();
     let request: ReturnType<typeof BatchRequest.parse>;
     let requestBytes = 0;
     try {
@@ -1301,8 +1339,8 @@ export class MemoryService {
     });
     if (claim.status === "replay") {
       // Replays are still a current authorization decision, not a cached grant.
-      await this.preflightBatchAuthorization(request, options);
-      if (!isBatchResult(claim.response, request.operation)) {
+      await this.preflightBatchAuthorization(request, options, true);
+      if (!isBatchResult(claim.response, request.operation, batchRequestCount(request))) {
         throw new RemembraError("SERVICE_UNAVAILABLE", "stored idempotent response is invalid");
       }
       return {
@@ -1319,6 +1357,9 @@ export class MemoryService {
       ...result,
       execution: { ...result.execution, idempotency: "stored" },
     };
+    if (!isBatchResult(stored, request.operation, batchRequestCount(request))) {
+      throw new RemembraError("SERVICE_UNAVAILABLE", "batch response failed integrity validation");
+    }
     const storedJson = JSON.stringify(stored);
     if (typeof storedJson !== "string" || Buffer.byteLength(storedJson, "utf8") > MAX_BATCH_IDEMPOTENCY_RESPONSE_BYTES) {
       throw new RemembraError("SERVICE_UNAVAILABLE", "batch response is too large to persist safely");
@@ -1765,6 +1806,7 @@ export class MemoryService {
     let stateReady = this.recoveryStateInitialized;
     try {
       await this.ensureRecoveryInitialized();
+      await this.refreshDurableRecoveryState();
       stateReady = true;
       await this.#backend.all();
       await this.applyRecoveryEvent("ready");
@@ -2439,6 +2481,7 @@ export class MemoryService {
     const total = plan.records.length;
     if (options.dryRun) return { total, planned: total, imported: 0, skipped: 0, dryRun: true };
     const result = await applyTenantMigration(plan, this.#backend, key, { destinationFilter: tenant });
+    if (this.batchIdempotencyStore) await this.batchIdempotencyStore.invalidate();
     return {
       total,
       planned: total,

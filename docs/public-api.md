@@ -250,7 +250,9 @@ persisted safely. Capacity exhaustion returns
 `invalidate()` operation before serving requests. The built-in restore flow
 creates a durable `restore.pending` gate before publishing the replacement;
 startup refuses normal serving while that marker exists, and a failed restore
-leaves the gate in place for explicit operator retry. A pre-SQLite development
+leaves the gate in place. After an operator has verified the data state,
+`recover verify` explicitly completes the gate and invalidates the old claim
+generation before a restore retry. A pre-SQLite development
 ledger containing legacy `.json` claim files is rejected rather than silently
 ignored; operators must migrate or invalidate it before startup. This V5.4
 implementation is single-host durable storage; distributed idempotency remains

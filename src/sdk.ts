@@ -61,7 +61,10 @@ export type SdkBatchRequestInput =
 export type LegacyBatchRequest = BatchRequest;
 
 /** SDK batch input excludes server-managed identity fields. */
-export type SdkBatchRequest = SdkBatchRequestInput;
+export type SafeSdkBatchRequest = SdkBatchRequestInput;
+
+/** Preserve the exported pre-V5.4 alias while keeping SafeSdkBatchRequest preferred. */
+export type SdkBatchRequest = SafeSdkBatchRequest | LegacyBatchRequest;
 
 export const MAX_SDK_TIMEOUT_MS = 120_000;
 
@@ -524,7 +527,7 @@ export class Remembra {
   batch(input: SdkBatchRequest, options?: RequestOptions): Promise<BatchResponse>;
   async batch(input: SdkBatchRequest | LegacyBatchRequest, options?: RequestOptions): Promise<BatchResponse> {
     const response = await this.request<unknown>("POST", "/memories/batch", input, options);
-    if (!isBatchResponse(response, input)) {
+    if (!isBatchResponse(response, input, options?.idempotencyKey !== undefined)) {
       throw new TypeError("server returned an invalid batch response");
     }
     return response as BatchResponse;
@@ -672,11 +675,14 @@ export class Remembra {
   }
 }
 
-function isBatchResponse(value: unknown, request: SdkBatchRequest | LegacyBatchRequest): value is BatchResponse {
+function isBatchResponse(value: unknown, request: SdkBatchRequest | LegacyBatchRequest, keyed = false): value is BatchResponse {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const body = value as Record<string, unknown>;
   const operation = (request as { operation?: unknown }).operation;
-  if (body.operation !== operation || !Array.isArray(body.results)) return false;
+  const expectedCount = operation === "store" || operation === "update"
+    ? ((request as { items?: unknown[] }).items?.length ?? -1)
+    : ((request as { ids?: unknown[] }).ids?.length ?? -1);
+  if (body.operation !== operation || !Array.isArray(body.results) || expectedCount < 1) return false;
   const summary = body.summary;
   if (summary === null || typeof summary !== "object" || Array.isArray(summary)) return false;
   const counts = summary as Record<string, unknown>;
@@ -684,7 +690,8 @@ function isBatchResponse(value: unknown, request: SdkBatchRequest | LegacyBatchR
   const requested = counts.requested as number;
   const succeeded = counts.succeeded as number;
   const failed = counts.failed as number;
-  if (requested < 0 || requested > 100 || succeeded < 0 || failed < 0 || succeeded + failed !== requested || body.results.length !== requested) return false;
+  if (requested < 1 || requested > 100 || succeeded < 0 || failed < 0 || succeeded + failed !== requested || requested !== expectedCount || body.results.length !== requested) return false;
+  let actualSucceeded = 0;
   for (const [index, raw] of body.results.entries()) {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
     const outcome = raw as Record<string, unknown>;
@@ -700,6 +707,7 @@ function isBatchResponse(value: unknown, request: SdkBatchRequest | LegacyBatchR
     }
     const successKeys = Object.keys(outcome).sort().join(",");
     if (successKeys !== "id,index,ok,result" && successKeys !== "index,ok,result") return false;
+    actualSucceeded++;
     const result = outcome.result;
     if (result === null || typeof result !== "object" || Array.isArray(result)) return false;
     const details = result as Record<string, unknown>;
@@ -708,13 +716,21 @@ function isBatchResponse(value: unknown, request: SdkBatchRequest | LegacyBatchR
     if (operation === "delete" && typeof details.text !== "string") return false;
     if (operation === "export" && (typeof details.id !== "string" || !details.id)) return false;
   }
+  if (actualSucceeded !== succeeded || requested - actualSucceeded !== failed) return false;
+  if (operation === "export"
+    && (typeof body.format !== "string"
+      || !Number.isInteger(body.version)
+      || typeof body.exportedAt !== "string"
+      || !Array.isArray(body.memories))) return false;
   const execution = body.execution;
   if (execution === null || typeof execution !== "object" || Array.isArray(execution)) return false;
   const metadata = execution as Record<string, unknown>;
   const policyMatches = operation === "export"
     ? metadata.transactionPolicy === "read-only" && metadata.idempotency === "read-only"
     : metadata.transactionPolicy === "per-item"
-      && (metadata.idempotency === "unsupported" || metadata.idempotency === "stored" || metadata.idempotency === "replayed");
+      && (keyed
+        ? metadata.idempotency === "stored" || metadata.idempotency === "replayed"
+        : metadata.idempotency === "unsupported");
   return policyMatches;
 }
 

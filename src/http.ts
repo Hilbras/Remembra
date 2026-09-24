@@ -605,6 +605,9 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       if (req.method === "POST" && path === "/memories/batch") {
         const body = await readBody(req, maxBody, service.isTenantStrict);
         const idempotencyKey = idempotencyKeyFor(req);
+        if (idempotencyKey && !opts.apiKey && !opts.resolveCredentialScope) {
+          throw new RemembraError("INVALID_INPUT", "idempotency keys require a static API key or trusted credential scope resolver");
+        }
         const credentialScope = idempotencyKey ? await opts.resolveCredentialScope?.(req) : undefined;
         const result = await service.batch(body, {
           ...agentOptions,
