@@ -37,6 +37,7 @@ const context = await memory.context({
 - `headers` — additional headers sent with every request.
 - `timeoutMs` — optional per-request timeout, bounded to 1–120 seconds; caller aborts remain distinct.
 - `requestId` — optional bounded correlation ID; the SDK generates one when omitted and sends it as `X-Remembra-Request-Id`.
+- `retry` — opt-in bounded retries for GET/HEAD reads only (`attempts` 1–3, bounded backoff); write requests reject retry configuration.
 
 The SDK sends API credentials only. It does not accept or synthesize trusted
 agent or tenant identity; both contexts remain server-side. Server-managed

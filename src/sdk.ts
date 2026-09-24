@@ -49,6 +49,13 @@ export type SdkStoreInput = Pick<StoreInput, "type" | "content"> &
 
 export const MAX_SDK_TIMEOUT_MS = 120_000;
 
+export interface RetryOptions {
+  /** Total attempts, including the first request. */
+  attempts?: number;
+  baseDelayMs?: number;
+  maxDelayMs?: number;
+}
+
 export interface RequestOptions {
   signal?: AbortSignal;
   headers?: Record<string, string>;
@@ -56,6 +63,8 @@ export interface RequestOptions {
   timeoutMs?: number;
   /** Optional correlation ID; bounded to 128 safe ASCII characters. */
   requestId?: string;
+  /** Opt-in bounded retries; accepted only for read-only requests. */
+  retry?: RetryOptions;
 }
 
 export interface SearchOptions {
@@ -497,6 +506,44 @@ export class Remembra {
       allowSnapshotEnvelope?: boolean;
     } = {},
   ): Promise<T> {
+    const retry = options.retry;
+    const attempts = retry?.attempts ?? 1;
+    const baseDelayMs = retry?.baseDelayMs ?? 100;
+    const maxDelayMs = retry?.maxDelayMs ?? 1_000;
+    if (retry && method !== "GET" && method !== "HEAD") {
+      throw new TypeError("retry is only supported for read-only requests");
+    }
+    if (!Number.isInteger(attempts) || attempts < 1 || attempts > 3) {
+      throw new TypeError("retry attempts must be an integer between 1 and 3");
+    }
+    if (!Number.isInteger(baseDelayMs) || baseDelayMs < 0 || baseDelayMs > 1_000) {
+      throw new TypeError("retry baseDelayMs must be an integer between 0 and 1000");
+    }
+    if (!Number.isInteger(maxDelayMs) || maxDelayMs < baseDelayMs || maxDelayMs > 5_000) {
+      throw new TypeError("retry maxDelayMs must be an integer between baseDelayMs and 5000");
+    }
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        return await this.requestAttempt(method, path, body, options);
+      } catch (error) {
+        if (attempt >= attempts || !shouldRetryRequest(error)) throw error;
+        const delay = Math.min(maxDelayMs, baseDelayMs * (2 ** (attempt - 1)));
+        await waitForRetry(delay, options.signal);
+      }
+    }
+    throw new Error("request retry loop exhausted");
+  }
+
+  private async requestAttempt<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    options: RequestOptions & {
+      query?: Record<string, unknown>;
+      /** Internal escape hatch for the server-validated snapshot envelope. */
+      allowSnapshotEnvelope?: boolean;
+    } = {},
+  ): Promise<T> {
     const url = new URL(`${this.baseEndpoint}${API_PREFIX}${path}`);
     for (const [key, value] of Object.entries(options.query ?? {})) {
       if (value === undefined || value === null) continue;
@@ -572,6 +619,30 @@ export class Remembra {
       if (controller) options.signal?.removeEventListener("abort", onAbort);
     }
   }
+}
+
+function shouldRetryRequest(error: unknown): boolean {
+  if (error instanceof RemembraNetworkError || error instanceof RemembraTimeoutError) return true;
+  if (error instanceof RemembraApiError) {
+    return [408, 425, 429, 500, 502, 503, 504].includes(error.status);
+  }
+  return false;
+}
+
+function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("Request aborted"));
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(signal?.reason ?? new Error("Request aborted"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function createRequestId(): string {

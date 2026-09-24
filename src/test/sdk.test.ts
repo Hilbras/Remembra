@@ -88,6 +88,35 @@ test("SDK exposes the shared v1 capabilities contract", async () => {
   assert.equal(calls[0], `https://memory.example.test${API_PREFIX}/capabilities`);
 });
 
+test("SDK retries only opted-in read requests and never retries writes", async () => {
+  let calls = 0;
+  const client = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async () => {
+      calls++;
+      if (calls === 1) throw new Error("temporary socket failure");
+      return jsonResponse({ text: "recovered", results: [] });
+    },
+  });
+  const result = await client.search({}, { retry: { attempts: 2, baseDelayMs: 1, maxDelayMs: 2 } });
+  assert.equal(result.text, "recovered");
+  assert.equal(calls, 2);
+
+  let writeCalled = false;
+  const writeClient = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async () => {
+      writeCalled = true;
+      return jsonResponse({ id: "m1", message: "stored", memory: {} });
+    },
+  });
+  await assert.rejects(
+    () => writeClient.store({ type: "fact", content: "unsafe retry" }, { retry: { attempts: 2 } }),
+    /read-only|retry/i,
+  );
+  assert.equal(writeCalled, false);
+});
+
 test("SDK propagates bounded request IDs and generates one when omitted", async () => {
   const seen: Headers[] = [];
   const client = new Remembra({
