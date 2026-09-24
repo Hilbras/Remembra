@@ -40,7 +40,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Full suite: 466 passed, 0 failed; security matrix: 64 passed; recovery matrix:
   48 passed on both runtimes.
 - Documentation check passed (36 files), dependency audit found 0
-  vulnerabilities, and package dry-run included 222 files (440.6 kB packed;
+  vulnerabilities, and package dry-run included 222 files (440.7 kB packed;
   1.9 MB unpacked).
 - Tenant benchmarks completed at 10K/100K records and the bounded scale
   benchmark completed at 10K/50K records under both runtimes.
