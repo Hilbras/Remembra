@@ -146,8 +146,9 @@ accept optional tenant filters, hide tenant rows from unscoped legacy reads,
 and apply tenant predicates to point/candidate/history/audit paths. The strict
 service path now requires opaque contexts, and HTTP/MCP transports bind them
 through trusted host resolvers. Queued handlers can re-check host membership,
-and embedding calls accept tenant-safe cache partitions. Operator CLI binding
-and broader derived-cache invalidation remain staged in
+and embedding calls accept tenant-safe cache partitions. The CLI binds strict
+mode to an explicit local operator context and refuses legacy global recovery
+commands. Broader derived-cache invalidation remains staged in
 [v5-tenant-spec.md](v5-tenant-spec.md).
 
 ## Schema versioning

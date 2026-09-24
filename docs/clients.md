@@ -93,6 +93,11 @@ metrics, export/import. See **[ui.md](ui.md)**; disable with
 |----------|---------|---------|
 | `REMEMBRA_HOME` | `~/.remembra` | Where memory files live |
 | `REMEMBRA_API_KEY` | *(unset)* | Enables auth on the HTTP API |
+| `REMEMBRA_TENANT_MODE` | `legacy` | `strict` requires the operator tenant variables below; never falls back |
+| `REMEMBRA_TENANT_ID` | *(unset)* | Trusted local organization binding in strict mode |
+| `REMEMBRA_TENANT_MEMBERSHIP_VERSION` | *(unset)* | Host membership version recorded in the operator context |
+| `REMEMBRA_TENANT_PROJECT_ID` | *(unset)* | Optional trusted project binding for local operator commands |
+| `REMEMBRA_TENANT_USER_ID` / `REMEMBRA_TENANT_AGENT_ID` | *(unset)* | Optional trusted user/agent binding |
 | `REMEMBRA_PORT` | `8787` | HTTP API port (`--port` overrides) |
 | `REMEMBRA_UI` | `1` | `0` disables serving the web dashboard (`/`, `/ui/*`) |
 | `REMEMBRA_LLM` | `openai` | Digest LLM: `openai` \| `anthropic` \| `ollama` |
@@ -115,6 +120,12 @@ metrics, export/import. See **[ui.md](ui.md)**; disable with
 | `REMEMBRA_LOG` | *(auto)* | Force log format: `json` or `text`. Unset → auto: JSON when stderr is piped, text on a TTY. See [observability.md](observability.md) |
 
 LLM/embedding key setup: see **[providers.md](providers.md)**.
+
+Strict mode is local-operator configuration, not a public tenant selector. The
+HTTP/MCP server binds the resulting context to the process; backup, restore,
+migration, and encryption commands refuse their legacy global forms until the
+tenant-aware recovery workflow is enabled. See
+[v5-tenant-spec.md](v5-tenant-spec.md).
 
 ## Tips
 

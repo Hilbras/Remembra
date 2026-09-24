@@ -10,6 +10,8 @@ import { render } from "./store.js";
 import { MemoryService } from "./service.js";
 import { createHttpServer } from "./http.js";
 import { startMcp } from "./mcp.js";
+import { createOperatorTenantContext, tenantModeFromEnv } from "./operator.js";
+import { tenantFilterFromContext } from "./tenant.js";
 import {
   MemoryType,
   TrustLevel,
@@ -29,7 +31,11 @@ try {
 } catch {
   store = new MemoryStore(root);
 }
-const service = new MemoryService(store);
+const tenantMode = tenantModeFromEnv();
+const operatorTenant = tenantMode === "strict" ? createOperatorTenantContext() : undefined;
+const operatorOptions = operatorTenant ? { tenant: operatorTenant } : {};
+const operatorFilter = operatorTenant ? tenantFilterFromContext(operatorTenant) : undefined;
+const service = new MemoryService(store, { tenantMode });
 
 const argv = process.argv.slice(2);
 const httpFlag = argv.includes("--http");
@@ -44,7 +50,7 @@ if (argv[0] === "export") {
     console.error("Usage: remembra export <file.json>");
     process.exit(1);
   }
-  const snapshot = await service.exportSnapshot();
+  const snapshot = await service.exportSnapshot(operatorOptions);
   await fs.writeFile(out, JSON.stringify(snapshot, null, 2), "utf8");
   console.log(`Exported ${snapshot.memories.length} memories to ${out}`);
   process.exit(0);
@@ -64,7 +70,7 @@ if (argv[0] === "export") {
     process.exit(1);
   }
   try {
-    const result = await service.importSnapshot(data);
+    const result = await service.importSnapshot(data, operatorOptions);
     console.log(`Import: ${result.imported} imported, ${result.skipped} skipped`);
     process.exit(0);
   } catch (err) {
@@ -78,7 +84,7 @@ if (argv[0] === "export") {
       console.error("Usage: remembra export-markdown <directory>");
       process.exit(1);
     }
-    const memories = await store.all();
+    const memories = await store.all(false, operatorFilter);
     await fs.mkdir(outDir, { recursive: true });
     for (const m of memories) {
       const scopeDir = m.scope === "global" ? outDir : path.join(outDir, m.scope);
@@ -100,13 +106,26 @@ if (argv[0] === "export") {
       try {
         const mem = await parseMarkdownFile(file);
         if (!mem) { skipped++; continue; }
-        const ok = await store.importMemory(mem);
+        const importedMemory = operatorTenant
+          ? {
+              ...mem,
+              tenantId: operatorTenant.principal.organizationId,
+              ...(operatorTenant.principal.projectId ? { projectId: operatorTenant.principal.projectId } : {}),
+              ...(operatorTenant.principal.userId ? { userId: operatorTenant.principal.userId } : {}),
+              ...(operatorTenant.principal.agentId ? { agentId: operatorTenant.principal.agentId } : {}),
+            }
+          : mem;
+        const ok = await store.importMemory(importedMemory, operatorFilter);
         if (ok) imported++; else skipped++;
       } catch { skipped++; }
     }
     console.log(`Imported ${imported}, skipped ${skipped}`);
     process.exit(0);
   } else if (argv[0] === "backup") {
+    if (tenantMode === "strict") {
+      console.error("backup requires the dedicated tenant-aware recovery workflow in strict mode");
+      process.exit(1);
+    }
     // V4.3.0: copy DB + write SHA-256 sidecar.
     const outFile = argv[1];
     if (!outFile) {
@@ -124,6 +143,10 @@ if (argv[0] === "export") {
     console.log(`Backup: ${outFile} (${hash.slice(0, 16)}…)`);
     process.exit(0);
   } else if (argv[0] === "restore") {
+    if (tenantMode === "strict") {
+      console.error("restore requires the dedicated tenant-aware recovery workflow in strict mode");
+      process.exit(1);
+    }
     // V4.3.0: verify SHA-256 and atomically replace DB.
     const inFile = argv[1];
     if (!inFile) {
@@ -147,6 +170,10 @@ if (argv[0] === "export") {
     console.log(`Restored from ${inFile}`);
     process.exit(0);
   } else if (argv[0] === "migrate") {
+    if (tenantMode === "strict") {
+      console.error("migrate requires the signed tenant migration workflow in strict mode");
+      process.exit(1);
+    }
     // V4.3.0: explicit manual migration from legacy flat files.
     if (!(store instanceof SqliteBackend)) {
       console.error("migrate requires SQLite backend");
@@ -168,15 +195,19 @@ if (argv[0] === "export") {
       console.error("audit requires SQLite backend");
       process.exit(1);
     }
-    const events = await (store as SqliteBackend).getAudit({ limit, since });
+    const events = await (store as SqliteBackend).getAudit({ limit, since }, operatorFilter);
     console.log(JSON.stringify({ events, count: events.length }, null, 2));
     process.exit(0);
   } else if (maintainFlag) {
   // CLI maintenance: `remembra maintain` — one-shot, prints JSON, exits.
-  const result = await service.maintain();
+  const result = await service.maintain(operatorOptions);
   console.log(JSON.stringify(result, null, 2));
   process.exit(0);
 } else if (argv[0] === "encrypt" || argv[0] === "decrypt") {
+  if (tenantMode === "strict") {
+    console.error("encryption migration requires the dedicated tenant-aware recovery workflow in strict mode");
+    process.exit(1);
+  }
   // CLI encryption migration (audit Phase 8): rewrite the tree in place
   // under the storage lock. Requires REMEMBRA_ENCRYPT_KEY either way.
   //   remembra encrypt   → plain files become AES-256-GCM ciphertext
@@ -199,6 +230,7 @@ if (argv[0] === "export") {
   const httpServer = createHttpServer(service, {
     port,
     apiKey: process.env.REMEMBRA_API_KEY,
+    ...(operatorTenant ? { resolveTenantContext: () => operatorTenant } : {}),
   });
   // Graceful shutdown: stop accepting, drain in-flight requests, then exit.
   const shutdown = (sig: string) => {
@@ -210,7 +242,7 @@ if (argv[0] === "export") {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 } else {
   // MCP mode (default): stdio transport launched by an MCP client.
-  await startMcp(service);
+  await startMcp(service, operatorOptions);
 }
 
 // -------------------------------------------------------------------------

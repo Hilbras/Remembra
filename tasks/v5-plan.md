@@ -113,9 +113,8 @@ Implementation slices:
 3. [x] Tenant-aware `MemoryBackend` contract plus file backend enforcement.
 4. [x] SQLite tenant columns, predicates, history/audit, and candidate SQL.
 5. [ ] Service authorization, immutable job context, and transport binding
-   (strict service/HTTP/MCP/SDK core, job membership recheck, and cache
-   partitions are complete; operator CLI binding and derived-cache invalidation
-   remain).
+   (strict service/HTTP/MCP/SDK core, job membership recheck, cache partitions,
+   and local operator binding are complete; derived-cache invalidation remains).
 6. [ ] Cross-tenant relation/import/export/maintenance hardening and matrix.
 
 ### Phase 4 — Retrieval quality and scale

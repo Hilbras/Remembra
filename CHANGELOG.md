@@ -43,8 +43,9 @@ V5 work is additive until the tenant/schema migration contract is approved.
   MCP server binding, and SDK rejection of tenant-bearing body/header fields.
   Raw backend access is disabled in strict mode. Queued handlers support
   host membership re-checks, and embedding cache keys accept tenant-safe
-  partitions. Remaining work is CLI/operator binding and broader derived-cache
-  invalidation.
+  partitions. The CLI now has an explicit `REMEMBRA_TENANT_MODE=strict` operator
+  binding and refuses legacy global backup/restore/migration/encryption forms;
+  remaining work is broader derived-cache invalidation.
 
 ---
 
