@@ -26,6 +26,7 @@ import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { encryptionEnabled, isEncrypted, encryptBuffer, decryptBuffer } from "./crypto.js";
 import { defaultAccess, defaultOwner } from "./agent.js";
+import { tenantDirectoryKey, type TenantFilter } from "./tenant.js";
 
 export interface StoreLockOptions {
   /** Max wait for the cross-process lock (ms). Env: REMEMBRA_LOCK_TIMEOUT_MS. Default 5000. */
@@ -68,6 +69,7 @@ export interface StoreLockOptions {
  *   never depends on cache coherence, only speed does.
  */
 export class MemoryStore implements MemoryBackend {
+  readonly tenantCapable = true;
   private readonly lockTimeoutMs: number;
   private readonly lockStaleMs: number;
   /** In-process FIFO so the file lock is only ever contended cross-process. */
@@ -98,15 +100,15 @@ export class MemoryStore implements MemoryBackend {
   // (the queue/lock are not reentrant); reads (get/all) never lock.
   // -------------------------------------------------------------------------
 
-  async store(input: StoreInput, embedding?: number[]): Promise<Memory> {
+  async store(input: StoreInput, embedding?: number[], tenant?: TenantFilter): Promise<Memory> {
     await this.ensureRecovered();
-    return this.withLock(() => this.storeLocked(input, embedding));
+    return this.withLock(() => this.storeLocked(input, embedding, tenant));
   }
 
-  async forget(id: string): Promise<boolean> {
+  async forget(id: string, tenant?: TenantFilter): Promise<boolean> {
     await this.ensureRecovered();
     return this.withLock(async () => {
-      const file = await this.findFile(id);
+      const file = await this.findFile(id, tenant);
       if (!file) return false;
       await fs.unlink(file);
       this.cache.forget(file);
@@ -115,22 +117,24 @@ export class MemoryStore implements MemoryBackend {
   }
 
   /** Load active memories (excludes archived). Pass includeArchived for everything. */
-  async all(includeArchived = false): Promise<Memory[]> {
+  async all(includeArchived = false, tenant?: TenantFilter): Promise<Memory[]> {
     await this.ensureRecovered();
-    const dirs = [path.join(this.root, "global"), path.join(this.root, "scopes")];
+    const base = tenant ? this.tenantRoot(tenant) : this.root;
+    const dirs = [path.join(base, "global"), path.join(base, "scopes")];
     if (includeArchived) {
-      dirs.push(path.join(this.root, "archived", "global"), path.join(this.root, "archived", "scopes"));
+      dirs.push(path.join(base, "archived", "global"), path.join(base, "archived", "scopes"));
     }
     const files = await walk(...dirs);
     const memories = await Promise.all(files.map((f) => this.parseCached(f)));
-    return memories.filter((m): m is Memory => m !== null);
+    return memories.filter((m): m is Memory => m !== null && (!tenant || this.matchesTenant(m, tenant)));
   }
 
-  async get(id: string): Promise<Memory | null> {
+  async get(id: string, tenant?: TenantFilter): Promise<Memory | null> {
     await this.ensureRecovered();
-    const file = await this.findFile(id);
+    const file = await this.findFile(id, tenant);
     if (!file) return null;
-    return this.parseCached(file);
+    const memory = await this.parseCached(file);
+    return memory && (!tenant || this.matchesTenant(memory, tenant)) ? memory : null;
   }
 
   /** Parse-cache observability (tests + future /metrics). */
@@ -139,10 +143,10 @@ export class MemoryStore implements MemoryBackend {
   }
 
   /** Move a memory to the archived tree (sets archivedAt). */
-  async archive(id: string): Promise<Memory | null> {
+  async archive(id: string, tenant?: TenantFilter): Promise<Memory | null> {
     await this.ensureRecovered();
     return this.withLock(async () => {
-      const m = await this.get(id);
+      const m = await this.get(id, tenant);
       if (!m || m.archivedAt) return null;
       const oldFile = this.fileFor(m);
       const now = new Date().toISOString();
@@ -158,10 +162,10 @@ export class MemoryStore implements MemoryBackend {
   }
 
   /** Bring an archived memory back into active search. */
-  async revive(id: string): Promise<Memory | null> {
+  async revive(id: string, tenant?: TenantFilter): Promise<Memory | null> {
     await this.ensureRecovered();
     return this.withLock(async () => {
-      const m = await this.get(id);
+      const m = await this.get(id, tenant);
       if (!m || !m.archivedAt) return null;
       const oldFile = this.fileFor(m);
       const now = new Date().toISOString();
@@ -179,9 +183,13 @@ export class MemoryStore implements MemoryBackend {
   async update(
     memory: Memory,
     opts?: { expectedVersion?: number; reason?: string },
+    tenant?: TenantFilter,
   ): Promise<Memory> {
     await this.ensureRecovered();
     return this.withLock(async () => {
+      if (tenant && !this.matchesTenant(memory, tenant)) {
+        throw new RemembraError("NOT_FOUND", `No memory with id ${memory.id}`);
+      }
       const target = this.fileFor(memory);
       // Locate the current file. Same path (scope unchanged — the common
       // case: merge, embedding backfill) = one stat; a scope move via
@@ -189,8 +197,11 @@ export class MemoryStore implements MemoryBackend {
       const samePath = await fs
         .stat(target)
         .then(() => true, () => false);
-      const existingFile = samePath ? target : await this.findFile(memory.id);
+      const existingFile = samePath ? target : await this.findFile(memory.id, tenant);
       const current = existingFile ? await this.parseCached(existingFile) : null;
+      if (!current || (memory.tenantId && !tenant) || (tenant && !this.matchesTenant(current, tenant))) {
+        throw new RemembraError("NOT_FOUND", `No memory with id ${memory.id}`);
+      }
 
       // Optimistic concurrency (plan §3.5): compare against the FRESH
       // on-disk version inside the lock, then write disk+1 — a stale writer
@@ -214,7 +225,8 @@ export class MemoryStore implements MemoryBackend {
       // change no content → no snapshot). The optional reason lands beside the
       // snapshot in reasons.json — never inline in current content.
       if (current && current.content !== memory.content) {
-        await this.snapshotHistory(existingFile!, opts?.reason);
+        const historyTenant = tenant ?? (memory.tenantId ? { organizationId: memory.tenantId } : undefined);
+        await this.snapshotHistory(existingFile!, opts?.reason, historyTenant);
       }
       await fs.mkdir(path.dirname(target), { recursive: true });
       await this.writeCached(target, render(updated), updated);
@@ -233,9 +245,9 @@ export class MemoryStore implements MemoryBackend {
    * Version history for one memory — `.history/<id>/*.md`, newest first.
    * Entries are raw pre-image copies (byte-for-byte, ciphertext preserved).
    */
-  async history(id: string): Promise<HistoryEntry[]> {
+  async history(id: string, tenant?: TenantFilter): Promise<HistoryEntry[]> {
     await this.ensureRecovered();
-    const dir = path.join(this.root, ".history", id);
+    const dir = path.join(tenant ? this.tenantRoot(tenant) : this.root, ".history", id);
     let names: string[];
     try {
       names = (await fs.readdir(dir)).filter((n) => n.endsWith(".md")).sort().reverse();
@@ -304,11 +316,11 @@ export class MemoryStore implements MemoryBackend {
   }
 
   /** Copy the current file into `.history/<id>/` and prune beyond the cap. */
-  private async snapshotHistory(file: string, reason?: string): Promise<void> {
+  private async snapshotHistory(file: string, reason?: string, tenant?: TenantFilter): Promise<void> {
     const limit = Number(process.env.REMEMBRA_HISTORY_LIMIT ?? 20);
     if (limit <= 0) return; // history disabled
     const id = path.basename(file, ".md");
-    const dir = path.join(this.root, ".history", id);
+    const dir = path.join(tenant ? this.tenantRoot(tenant) : this.root, ".history", id);
     await fs.mkdir(dir, { recursive: true });
     const existing = (await fs.readdir(dir)).filter((n) => n.endsWith(".md"));
     let maxSeq = -1;
@@ -345,12 +357,12 @@ export class MemoryStore implements MemoryBackend {
   }
 
   /** Record that a memory surfaced in search (decay refresh). Cheap: no-op if seen <1h ago. */
-  async touch(id: string): Promise<void> {
+  async touch(id: string, tenant?: TenantFilter): Promise<void> {
     await this.ensureRecovered();
     return this.withLock(async () => {
       // Read + write inside the lock: racing an archive/revive move here is
       // what used to be able to resurrect a file in both trees.
-      const m = await this.get(id);
+      const m = await this.get(id, tenant);
       if (!m) return;
       const last = Date.parse(m.lastSeen ?? m.updatedAt);
       if (Number.isFinite(last) && Date.now() - last < 3_600_000) return;
@@ -360,10 +372,11 @@ export class MemoryStore implements MemoryBackend {
   }
 
   /** Import a snapshot memory verbatim (id preserved). Returns false if the id exists. */
-  async importMemory(m: Memory): Promise<boolean> {
+  async importMemory(m: Memory, tenant?: TenantFilter): Promise<boolean> {
     await this.ensureRecovered();
     return this.withLock(async () => {
-      if (await this.findFile(m.id)) return false;
+      if ((!tenant && m.tenantId) || (tenant && !this.matchesTenant(m, tenant))) return false;
+      if (await this.findFile(m.id, tenant)) return false;
       const file = this.fileFor(m); // containment check applies (P0)
       await fs.mkdir(path.dirname(file), { recursive: true });
       await this.writeCached(file, render(m), m);
@@ -414,7 +427,7 @@ export class MemoryStore implements MemoryBackend {
     return memory;
   }
 
-  private async storeLocked(input: StoreInput, embedding?: number[]): Promise<Memory> {
+  private async storeLocked(input: StoreInput, embedding?: number[], tenant?: TenantFilter): Promise<Memory> {
     const now = new Date().toISOString();
     // UUIDv7 (plan §3.6): unique from entropy + time alone — the old
     // 12-hex existence-scan retry loop is gone by design.
@@ -439,6 +452,10 @@ export class MemoryStore implements MemoryBackend {
       type: input.type,
       content: input.content,
       scope: input.scope,
+      ...(tenant ? { tenantId: tenant.organizationId } : {}),
+      ...(tenant?.projectId ? { projectId: tenant.projectId } : {}),
+      ...(tenant?.userId ? { userId: tenant.userId } : {}),
+      ...(tenant?.agentId ? { agentId: tenant.agentId } : {}),
       tags: input.tags,
       importance: input.importance,
       createdAt: now,
@@ -464,13 +481,26 @@ export class MemoryStore implements MemoryBackend {
     return memory;
   }
 
+  private tenantRoot(tenant: TenantFilter): string {
+    return path.join(this.root, "tenants", tenantDirectoryKey(tenant.organizationId));
+  }
+
+  private matchesTenant(memory: Memory, tenant: TenantFilter): boolean {
+    if (memory.tenantId !== tenant.organizationId) return false;
+    if (tenant.projectId && memory.projectId !== tenant.projectId) return false;
+    return true;
+  }
+
   private fileFor(m: Memory): string {
     const safeScope = m.scope === "global" ? "global" : m.scope.replace(/[^a-zA-Z0-9._/-]/g, "_");
-    const base = m.scope === "global" ? path.join(this.root, "global") : path.join(this.root, "scopes", safeScope);
+    const baseRoot = m.tenantId
+      ? path.join(this.root, "tenants", tenantDirectoryKey(m.tenantId))
+      : this.root;
+    const base = m.scope === "global" ? path.join(baseRoot, "global") : path.join(baseRoot, "scopes", safeScope);
     const archivedBase =
       m.scope === "global"
-        ? path.join(this.root, "archived", "global")
-        : path.join(this.root, "archived", "scopes", safeScope);
+        ? path.join(baseRoot, "archived", "global")
+        : path.join(baseRoot, "archived", "scopes", safeScope);
     const dir = m.archivedAt ? archivedBase : base;
     const file = path.resolve(path.join(dir, `${m.id}.md`));
     // Defense in depth (P0): never touch anything outside the storage root.
@@ -484,11 +514,12 @@ export class MemoryStore implements MemoryBackend {
     return file;
   }
 
-  private async findFile(id: string): Promise<string | null> {
+  private async findFile(id: string, tenant?: TenantFilter): Promise<string | null> {
+    const base = tenant ? this.tenantRoot(tenant) : this.root;
     const files = await walk(
-      path.join(this.root, "global"),
-      path.join(this.root, "scopes"),
-      path.join(this.root, "archived"),
+      path.join(base, "global"),
+      path.join(base, "scopes"),
+      path.join(base, "archived"),
     );
     return files.find((f) => path.basename(f, ".md") === id) ?? null;
   }

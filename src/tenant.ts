@@ -72,6 +72,7 @@ export interface TenantFilter {
   readonly organizationId: string;
   readonly projectId?: string;
   readonly userId?: string;
+  readonly agentId?: string;
 }
 
 export const TenantFilterSchema = z
@@ -79,6 +80,7 @@ export const TenantFilterSchema = z
     organizationId: identifier,
     projectId: identifier.optional(),
     userId: identifier.optional(),
+    agentId: identifier.optional(),
   })
   .strict();
 
@@ -140,6 +142,7 @@ export function tenantFilterFromContext(context: TenantContext): TenantFilter {
     organizationId: principal.organizationId,
     ...(principal.projectId ? { projectId: principal.projectId } : {}),
     ...(principal.userId ? { userId: principal.userId } : {}),
+    ...(principal.agentId ? { agentId: principal.agentId } : {}),
   });
 }
 

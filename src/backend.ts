@@ -1,4 +1,5 @@
 import type { Memory, StoreInput } from "./types.js";
+import type { TenantFilter } from "./tenant.js";
 
 /** One superseded pre-image from `.history/<id>/` (audit Phase 8). */
 export interface HistoryEntry {
@@ -49,6 +50,8 @@ export interface CandidateSearchRequest {
   maxCandidates: number;
   /** Service-owned policy/lifecycle predicate, checked before LIMIT. */
   eligible: (memory: Memory) => boolean;
+  /** Trusted tenant filter; strict mode requires this before LIMIT. */
+  tenant?: TenantFilter;
   /** True for latest/recent temporal queries, which double recency weight. */
   temporalBoost?: boolean;
 }
@@ -64,13 +67,15 @@ export interface CandidateSearchPage {
 }
 
 export interface MemoryBackend {
-  store(input: StoreInput, embedding?: number[]): Promise<Memory>;
+  /** True only when every data-plane method enforces the supplied tenant filter. */
+  readonly tenantCapable?: boolean;
+  store(input: StoreInput, embedding?: number[], tenant?: TenantFilter): Promise<Memory>;
   /** Optional bounded candidate generation; absence preserves the legacy path. */
   searchCandidates?(request: CandidateSearchRequest): Promise<CandidateSearchPage>;
   /** Optional observability hook — the file backend exposes parse-cache stats. */
   cacheStats?(): { size: number; capacity: number };
-  get(id: string): Promise<Memory | null>;
-  all(includeArchived?: boolean): Promise<Memory[]>;
+  get(id: string, tenant?: TenantFilter): Promise<Memory | null>;
+  all(includeArchived?: boolean, tenant?: TenantFilter): Promise<Memory[]>;
   /**
    * Persist an update. Implementations MUST apply optimistic concurrency
    * (plan §3.5): when `opts.expectedVersion` is set, compare it against the
@@ -80,14 +85,15 @@ export interface MemoryBackend {
   update(
     memory: Memory,
     opts?: { expectedVersion?: number; reason?: string },
+    tenant?: TenantFilter,
   ): Promise<Memory>;
-  archive(id: string): Promise<Memory | null>;
-  revive(id: string): Promise<Memory | null>;
-  touch(id: string): Promise<void>;
-  forget(id: string): Promise<boolean>;
-  importMemory(m: Memory): Promise<boolean>;
+  archive(id: string, tenant?: TenantFilter): Promise<Memory | null>;
+  revive(id: string, tenant?: TenantFilter): Promise<Memory | null>;
+  touch(id: string, tenant?: TenantFilter): Promise<void>;
+  forget(id: string, tenant?: TenantFilter): Promise<boolean>;
+  importMemory(m: Memory, tenant?: TenantFilter): Promise<boolean>;
   /** Optional (audit Phase 8): superseded pre-images, newest first. */
-  history?(id: string): Promise<HistoryEntry[]>;
+  history?(id: string, tenant?: TenantFilter): Promise<HistoryEntry[]>;
   /** V4.4: query audit events (optional; stub returns empty). */
-  getAudit?(opts?: { limit?: number; since?: string }): Promise<Record<string, unknown>[]>;
+  getAudit?(opts?: { limit?: number; since?: string }, tenant?: TenantFilter): Promise<Record<string, unknown>[]>;
 }

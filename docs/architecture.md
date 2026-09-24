@@ -38,7 +38,10 @@ Contract highlights:
 
 - mutations must be safe under same-process **and** cross-process concurrency;
 - a memory id exists in **exactly one tree** (active or archived) at rest;
-- `importMemory` refuses ids that already exist.
+- `importMemory` refuses ids that already exist;
+- V5 strict mode supplies a `TenantFilter` to every data-plane method and
+  requires `tenantCapable` backends; the file backend keeps tenant namespaces
+  out of unscoped legacy reads.
 
 ## Concurrency model (audit Phase 2: advisory locking)
 
@@ -138,8 +141,9 @@ provenance policy. See [v5-policy.md](v5-policy.md).
 
 `src/tenant.ts` defines the host-minted, immutable tenant context and
 fail-closed identifier/matching primitives. `src/tenant-migration.ts` defines
-the canonical HMAC-signed migration manifest. Neither module yet alters the
-V4 backend; the staged storage/service work is specified in
+the canonical HMAC-signed migration manifest. The file backend now accepts
+optional tenant filters and keeps tenant namespaces out of unscoped legacy
+reads; SQLite and service/transport enforcement remain staged in
 [v5-tenant-spec.md](v5-tenant-spec.md). Strict mode will require these contexts
 at every backend and transport boundary.
 

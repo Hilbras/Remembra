@@ -40,8 +40,14 @@ test("tenant records use V5 frontmatter while legacy records remain V4.9-compati
 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-tenant-schema-"));
   const store = new MemoryStore(dir);
-  await store.importMemory(memory({ tenantId: "org_01", projectId: "project.alpha" }));
-  const loaded = await store.get("12345678-1234-4234-8234-123456789abc");
+  await store.importMemory(
+    memory({ tenantId: "org_01", projectId: "project.alpha" }),
+    { organizationId: "org_01", projectId: "project.alpha" },
+  );
+  const loaded = await store.get("12345678-1234-4234-8234-123456789abc", {
+    organizationId: "org_01",
+    projectId: "project.alpha",
+  });
   assert.equal(loaded?.tenantId, "org_01");
   assert.equal(loaded?.projectId, "project.alpha");
   await fs.rm(dir, { recursive: true, force: true });

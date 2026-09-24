@@ -14,7 +14,7 @@ crash-recovery mechanics, the backend interface) live in
 │                                   (scope chars outside [A-Za-z0-9._/-] → "_")
 ├── archived/global/<id>.md         archived (removed from default list/search)
 ├── archived/scopes/<scope>/...     archived scoped memories
-├── tenants/<tenant-key>/...        V5 tenant namespaces (staged; encoded key)
+├── tenants/<tenant-key>/...        V5 tenant namespaces (encoded key; strict filter required)
 ├── .history/<id>/<epochMs>-<seq>.md   version snapshots (raw pre-images)
 ├── .history/<id>/reasons.json         why each snapshot was superseded (4.1.0)
 ├── .remembra.lock                  advisory cross-process lock (transient)
