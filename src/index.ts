@@ -12,6 +12,7 @@ import { createHttpServer } from "./http.js";
 import { startMcp } from "./mcp.js";
 import { createOperatorTenantContext, snapshotKeyFromEnv, tenantModeFromEnv } from "./operator.js";
 import { selectInitialBackend } from "./backend-selection.js";
+import { analyzeTenantSnapshot } from "./tenant-snapshot-migration.js";
 import { tenantFilterFromContext } from "./tenant.js";
 import { readSignedSnapshotFile, writeSignedSnapshotFile } from "./recovery.js";
 import { backupSqlite, restoreSqliteBackup, verifySqliteBackup } from "./sqlite-recovery.js";
@@ -193,6 +194,24 @@ if (argv[0] === "export") {
     }
     console.log(`Restored from ${inFile}`);
     process.exit(0);
+  } else if (argv[0] === "migrate" && argv[1] === "analyze") {
+    const input = argv[2];
+    if (!input) {
+      console.error("Usage: remembra migrate analyze <snapshot.json>");
+      process.exit(1);
+    }
+    if (!operatorSnapshotKey) {
+      console.error("migrate analyze requires REMEMBRA_SNAPSHOT_KEY");
+      process.exit(1);
+    }
+    try {
+      const report = analyzeTenantSnapshot(JSON.parse(await fs.readFile(input, "utf8")), operatorSnapshotKey);
+      console.log(JSON.stringify(report, null, 2));
+      process.exit(0);
+    } catch (err) {
+      console.error(`migrate analyze failed: ${err instanceof Error ? err.message : err}`);
+      process.exit(1);
+    }
   } else if (argv[0] === "migrate") {
     if (tenantMode === "strict") {
       console.error("migrate requires the signed tenant migration workflow in strict mode");
