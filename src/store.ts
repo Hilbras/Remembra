@@ -28,6 +28,7 @@ import { metrics } from "./metrics.js";
 import { encryptionEnabled, isEncrypted, encryptBuffer, decryptBuffer } from "./crypto.js";
 import { defaultAccess, defaultOwner } from "./agent.js";
 import { memoryBelongsToTenant, tenantDirectoryKey, type TenantFilter } from "./tenant.js";
+import { reconcileSnapshotImport, removeSnapshotImportJournal, writeSnapshotImportJournal } from "./snapshot-import-recovery.js";
 
 export interface StoreLockOptions {
   /** Max wait for the cross-process lock (ms). Env: REMEMBRA_LOCK_TIMEOUT_MS. Default 5000. */
@@ -38,6 +39,10 @@ export interface StoreLockOptions {
   cacheSize?: number;
   /** Test hook: memory-id factory (default: UUIDv7 — plan §3.6). */
   idGen?: () => string;
+  /** Test/host hook invoked after each file record is durably written. */
+  onImportRecord?: (context: { index: number; file: string }) => void | Promise<void>;
+  /** Test/host hook invoked immediately before a file write. */
+  beforeWrite?: (file: string) => void | Promise<void>;
 }
 
 function assertSafeHistoryId(id: string): void {
@@ -131,6 +136,8 @@ export class MemoryStore implements MemoryBackend {
   private holdsLock = false;
   private readonly cache: ParseCache;
   private readonly idGen: () => string;
+  private readonly onImportRecord?: (context: { index: number; file: string }) => void | Promise<void>;
+  private readonly beforeWrite?: (file: string) => void | Promise<void>;
 
   constructor(
     private readonly root: string,
@@ -140,6 +147,8 @@ export class MemoryStore implements MemoryBackend {
     this.lockStaleMs = opts.lockStaleMs ?? Number(process.env.REMEMBRA_LOCK_STALE_MS ?? 10000);
     this.cache = new ParseCache(opts.cacheSize ?? Number(process.env.REMEMBRA_CACHE_SIZE ?? 10_000));
     this.idGen = opts.idGen ?? genId;
+    this.onImportRecord = opts.onImportRecord;
+    this.beforeWrite = opts.beforeWrite;
   }
 
   static defaultRoot(): string {
@@ -479,29 +488,54 @@ export class MemoryStore implements MemoryBackend {
     return this.withLock(async () => (await this.importMemoryLocked(m, tenant)).imported);
   }
 
-  /** Import a prepared batch with rollback for operational write failures. */
+  /** Import a prepared batch with a durable rollback journal. */
   async importBatch(memories: readonly Memory[], tenant?: TenantFilter): Promise<{ imported: number; skipped: number }> {
     await this.ensureRecovered();
     return this.withLock(async () => {
-      const created: string[] = [];
-      let imported = 0;
+      const planned: Array<{ memory: Memory; file: string }> = [];
+      const plannedIds = new Set<string>();
+      const plannedFiles = new Set<string>();
       let skipped = 0;
-      try {
-        for (const memory of memories) {
-          const result = await this.importMemoryLocked(memory, tenant);
-          if (result.imported && result.file) {
-            created.push(result.file);
-            imported++;
-          } else {
-            skipped++;
-          }
+      for (const memory of memories) {
+        if ((!tenant && memory.tenantId) || (tenant && !this.matchesTenant(memory, tenant))) {
+          skipped++;
+          continue;
         }
-        return { imported, skipped };
+        if (plannedIds.has(memory.id) || await this.findFile(memory.id, tenant)) {
+          skipped++;
+          continue;
+        }
+        const file = this.fileFor(memory);
+        if (plannedFiles.has(file)) {
+          skipped++;
+          continue;
+        }
+        plannedIds.add(memory.id);
+        plannedFiles.add(file);
+        planned.push({ memory, file });
+      }
+      if (planned.length === 0) return { imported: 0, skipped };
+
+      await writeSnapshotImportJournal(this.root, planned.map(({ file }) => file));
+      try {
+        for (const [index, { memory, file }] of planned.entries()) {
+          // Recheck under the lock so an unexpected external writer is never
+          // overwritten by the batch publication step.
+          if (await this.findFile(memory.id, tenant)) {
+            throw new RemembraError("CONFLICT", `memory id appeared during import: ${memory.id}`);
+          }
+          await fs.mkdir(path.dirname(file), { recursive: true });
+          await this.writeCached(file, render(memory), memory);
+          await this.onImportRecord?.({ index, file });
+        }
+        await removeSnapshotImportJournal(this.root);
+        return { imported: planned.length, skipped };
       } catch (error) {
-        for (const file of created.reverse()) {
+        for (const { file } of planned.reverse()) {
           await fs.unlink(file).catch(() => {});
           this.cache.forget(file);
         }
+        await removeSnapshotImportJournal(this.root).catch(() => {});
         throw error;
       }
     });
@@ -516,6 +550,7 @@ export class MemoryStore implements MemoryBackend {
    * with the on-disk stat, so the next read is a validated hit.
    */
   private async writeCached(file: string, data: string, memory: Memory): Promise<void> {
+    await this.beforeWrite?.(file);
     // Encrypted mode (Phase 8): ciphertext at rest, plaintext in cache/RAM.
     const payload = encryptionEnabled() ? encryptBuffer(Buffer.from(data, "utf8")) : data;
     await writeFileAtomic(file, payload, fs);
@@ -768,6 +803,7 @@ export class MemoryStore implements MemoryBackend {
   }
 
   private async recover(): Promise<void> {
+    const importRecovery = await reconcileSnapshotImport(this.root);
     const everything = await walkRaw(this.root);
     // Age-gated sweep: a tmp younger than the stale-lock window belongs to an
     // in-flight atomic write (its rename is milliseconds away — touching it
@@ -803,6 +839,15 @@ export class MemoryStore implements MemoryBackend {
       const keepArchived = !am || (zm !== null && Date.parse(zm.updatedAt) >= Date.parse(am.updatedAt));
       await fs.unlink(keepArchived ? activeFile : twin).catch(() => {});
       reconciled++;
+    }
+
+    if (importRecovery.recovered) {
+      logEvent(
+        "warn",
+        "snapshot_import_rollback",
+        { rolled_back: importRecovery.rolledBack },
+        "Remembra: rolled back an interrupted snapshot import",
+      );
     }
 
     if (tmps.length > 0 || reconciled > 0) {

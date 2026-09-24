@@ -245,6 +245,8 @@ export interface SqliteOptions {
   idGen?: () => string;
   /** Whether to force FTS5 on/off (auto-detected if omitted). */
   ftsEnabled?: boolean;
+  /** Test/host hook invoked immediately before a data mutation. */
+  beforeMutation?: (operation: string, memoryId?: string) => void;
 }
 
 export class SqliteBackend implements MemoryBackend {
@@ -252,6 +254,7 @@ export class SqliteBackend implements MemoryBackend {
   protected readonly db: Database.Database;
   private readonly statementCache = new Map<string, Database.Statement>();
   private readonly idGen: () => string;
+  private readonly beforeMutation?: (operation: string, memoryId?: string) => void;
   private ftsEnabled: boolean;
 
   private prepare(sql: string): Database.Statement {
@@ -430,6 +433,7 @@ export class SqliteBackend implements MemoryBackend {
     `);
 
     this.idGen = opts.idGen ?? genId;
+    this.beforeMutation = opts.beforeMutation;
 
     // Auto-migrate from legacy flat files if needed.
     this.startMigration(opts.root).catch((err) => {
@@ -860,6 +864,7 @@ export class SqliteBackend implements MemoryBackend {
     const existing = this.prepare(`SELECT 1 FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
       .get(m.id, ...scoped.params) as { 1: number } | undefined;
     if (existing) return false;
+    this.beforeMutation?.("import", m.id);
     this.insertRow(m);
     this.audit("import", m.id, undefined, m.provenance, tenant, memoryDimensions(m));
     return true;

@@ -69,6 +69,38 @@ test("REC-CRASH-001: recovery state refuses symlinked storage paths", async () =
   }
 });
 
+test("REC-CRASH-001: a backend health failure is durably recorded as Failed", async () => {
+  const root = await temporaryRoot("remembra-v503-recovery-health-failure-");
+  const statePath = path.join(root, ".recovery-state.json");
+  const firstBackend = new MemoryStore(root);
+  const first = new MemoryService(firstBackend, {
+    embeddingProvider: "none",
+    recoveryStateStore: new FileRecoveryStateStore(statePath),
+  });
+  try {
+    await first.initializeRecovery();
+    (firstBackend as unknown as { all: () => Promise<unknown> }).all = async () => {
+      throw new Error("injected backend read failure");
+    };
+    const health = await first.health();
+    assert.equal(health.status, "unready");
+    assert.equal(health.state, "Failed");
+  } finally {
+    await first.shutdownBackgroundJobs();
+  }
+  const second = new MemoryService(new MemoryStore(root), {
+    embeddingProvider: "none",
+    recoveryStateStore: new FileRecoveryStateStore(statePath),
+  });
+  try {
+    await second.initializeRecovery();
+    assert.equal((await second.health()).state, "Failed");
+  } finally {
+    await second.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("REC-FAIL-001: a recovery-state persistence failure fails closed", async () => {
   const root = await temporaryRoot("remembra-v503-recovery-write-failure-");
   const service = new MemoryService(new MemoryStore(root), {
@@ -127,6 +159,24 @@ test("REC-CRASH-001: the operator verify command can recover a persisted Failed 
     const persisted = JSON.parse(await fs.readFile(statePath, "utf8")) as { state: string };
     assert.equal(persisted.state, "Healthy");
   } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("REC-STATE-001: explicit verification preserves an observable fallback state", async () => {
+  const root = await temporaryRoot("remembra-v503-recovery-fallback-");
+  const service = new MemoryService(new MemoryStore(root), {
+    embeddingProvider: "none",
+    backend: "file",
+    backendFallback: true,
+  });
+  try {
+    await service.enterReadOnly();
+    await service.verifyRecovery();
+    assert.equal((await service.health()).state, "Degraded");
+    await service.store({ type: "fact", content: "fallback remains writable after verification" });
+  } finally {
+    await service.shutdownBackgroundJobs();
     await fs.rm(root, { recursive: true, force: true });
   }
 });

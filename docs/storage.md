@@ -21,6 +21,7 @@ crash-recovery mechanics, the backend interface) live in
 ├── .history/<id>/reasons.json         why each snapshot was superseded (4.1.0)
 ├── .remembra.lock                  advisory cross-process lock (transient)
 ├── .recovery-state.json            durable recovery state (V5.0.3; 0600)
+├── .snapshot-import-journal.json   interrupted file-import rollback journal (transient)
 └── <id>.<rand>.tmp                 atomic-write staging files (transient;
                                     orphans are deleted by the recovery pass)
 ```
@@ -122,9 +123,12 @@ performs a backend read before explicitly returning to `Healthy`.
 SQLite restore additionally uses a `data.sqlite.restore-journal.json` state
 file. Startup reconciliation verifies and publishes a staged database, keeps a
 verified target, or restores the retained pre-restore database before the
-backend is served. Snapshot imports use a SQLite transaction; file-backend
-batch imports remove files written by the failed operation. Neither path
-reports an operational failure as a successful import.
+backend is served. File-backend snapshot batches publish a
+`.snapshot-import-journal.json` before writing and remove it only after the
+batch succeeds; an interrupted process is rolled back on the next startup.
+SQLite snapshot imports use a transaction, and file batches roll back
+operational failures. Neither path reports an operational failure as a
+successful import.
 
 ## Read validation (4.0.1, plan §3.4)
 

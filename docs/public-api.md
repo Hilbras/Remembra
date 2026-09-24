@@ -265,9 +265,10 @@ Envelope written by `remembra export` and `GET /snapshot`:
 - Pre-4.1.0 snapshots (string `provenance`, untyped `related: […]`, no
   `trust`) import cleanly — those shapes are normalized on read/import.
 - Import validates the **whole file before the first write** and preserves ids.
-  SQLite imports run in one transaction; file-backend batch imports roll back
-  files written by an operational failure. Re-running remains idempotent after
-  an interrupted process.
+  SQLite imports run in one transaction; file-backend batch imports publish a
+  durable rollback journal and remove it only after success. An interrupted
+  file import is rolled back on the next startup, so re-running remains
+  idempotent.
 - Strict tenant services add an `integrity` object with an HMAC-SHA256 value
   over the canonical envelope. This authenticates plaintext content; it does
   not encrypt it or provide anti-replay freshness. Unsigned, tampered, or

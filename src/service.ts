@@ -434,8 +434,9 @@ export class MemoryService {
       }
       throw new RemembraError("SERVICE_UNAVAILABLE", "recovery verification failed", { cause: error });
     }
-    const next = transitionRecoveryState(this.recoveryState, "verified");
-    if (this.recoveryStateStore) await this.recoveryStateStore.write(next, "verified");
+    const next = this.backendFallback ? "Degraded" : "Healthy";
+    const event = this.backendFallback ? "degraded" : "verified";
+    if (this.recoveryStateStore) await this.recoveryStateStore.write(next, event);
     this.recoveryState = next;
   }
 
@@ -1491,16 +1492,22 @@ export class MemoryService {
     cache?: { size: number; capacity: number };
   }> {
     let storage = "ok";
+    let stateReady = this.recoveryStateInitialized;
     try {
       await this.ensureRecoveryInitialized();
+      stateReady = true;
       await this.#backend.all();
       await this.applyRecoveryEvent("ready");
       if (this.backendFallback) await this.applyRecoveryEvent("degraded");
     } catch (err) {
       storage = errorLabel(err);
-      this.recoveryState = this.recoveryState === "ReadOnly"
+      const next = this.recoveryState === "ReadOnly"
         ? transitionRecoveryState(this.recoveryState, "storage_error")
         : transitionRecoveryState(this.recoveryState, "failed");
+      if (stateReady && next === "Failed" && this.recoveryStateStore) {
+        await this.recoveryStateStore.write("Failed", "failed").catch(() => {});
+      }
+      this.recoveryState = next;
     }
     const cache = this.storageStats();
     return {

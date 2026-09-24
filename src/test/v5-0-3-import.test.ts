@@ -82,6 +82,59 @@ test("REC-FAIL-001: SQLite batch import rolls back a transaction on injected fai
   }
 });
 
+test("REC-FAIL-001: SQLite batch import rolls back SQLITE_FULL without partial rows", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v503-sqlite-full-"));
+  let calls = 0;
+  const backend = new SqliteBackend({
+    root,
+    beforeMutation: () => {
+      if (calls++ === 1) {
+        throw Object.assign(new Error("injected SQLITE_FULL"), { code: "SQLITE_FULL" });
+      }
+    },
+  });
+  try {
+    await assert.rejects(
+      () => backend.importBatch([
+        record("72345678-1234-4234-8234-123456789abc", "sqlite full one"),
+        record("82345678-1234-4234-8234-123456789abc", "sqlite full two"),
+      ] as never),
+      (error: unknown) => (error as { code?: string }).code === "SQLITE_FULL",
+    );
+    assert.equal((await backend.all()).length, 0);
+  } finally {
+    backend.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const code of ["ENOSPC", "EACCES", "EPERM", "EIO"]) {
+  test(`REC-FAIL-001: file batch import rolls back ${code} without partial files`, async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), `remembra-v503-file-${code}-`));
+    let writes = 0;
+    const backend = new MemoryStore(root, {
+      beforeWrite: () => {
+        if (writes++ === 1) throw Object.assign(new Error(`injected ${code}`), { code });
+      },
+    });
+    try {
+      await assert.rejects(
+        () => backend.importBatch([
+          record("92345678-1234-4234-8234-123456789abc", "file failure one"),
+          record("a2345678-1234-4234-8234-123456789abc", "file failure two"),
+        ] as never),
+        (error: unknown) => {
+          const value = error as { code?: string; message?: string };
+          return value.code === "IO_ERROR" && value.message?.includes(`(${code})`) === true;
+        },
+      );
+      assert.equal((await backend.all()).length, 0);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("REC-ATOMIC-001: file batch import rolls back files written before an operational failure", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v503-file-import-"));
   const backend = new MemoryStore(root);

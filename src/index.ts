@@ -88,7 +88,8 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
 } else if (argv[0] === "recover" && argv[1] === "verify") {
   try {
     await service.verifyRecovery();
-    console.log(JSON.stringify({ state: "Healthy", verified: true, durable: true }));
+    const health = await service.health();
+    console.log(JSON.stringify({ state: health.state, verified: true, durable: true }));
     process.exit(0);
   } catch (err) {
     console.error(`Recovery verification failed: ${err instanceof Error ? err.message : err}`);
@@ -173,12 +174,13 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
     }
     service.assertWritable();
     const files = await globMdFiles(inDir);
-    let imported = 0, skipped = 0;
+    const memories: Memory[] = [];
+    let skipped = 0;
     for (const file of files) {
       try {
         const mem = await parseMarkdownFile(file);
         if (!mem) { skipped++; continue; }
-        const importedMemory = operatorTenant
+        memories.push(operatorTenant
           ? {
               ...mem,
               tenantId: operatorTenant.principal.organizationId,
@@ -186,12 +188,24 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
               ...(operatorTenant.principal.userId ? { userId: operatorTenant.principal.userId } : {}),
               ...(operatorTenant.principal.agentId ? { agentId: operatorTenant.principal.agentId } : {}),
             }
-          : mem;
-        const ok = await store.importMemory(importedMemory, operatorFilter);
-        if (ok) imported++; else skipped++;
+          : mem);
       } catch { skipped++; }
     }
-    console.log(`Imported ${imported}, skipped ${skipped}`);
+    let imported = 0;
+    let batchSkipped = 0;
+    if (memories.length > 0) {
+      if (store.importBatch) {
+        const result = await store.importBatch(memories, operatorFilter);
+        imported = result.imported;
+        batchSkipped = result.skipped;
+      } else {
+        for (const memory of memories) {
+          if (await store.importMemory(memory, operatorFilter)) imported++;
+          else batchSkipped++;
+        }
+      }
+    }
+    console.log(`Imported ${imported}, skipped ${skipped + batchSkipped}`);
     process.exit(0);
   } else if (argv[0] === "backup") {
     if (tenantMode === "strict") {
