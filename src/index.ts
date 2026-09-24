@@ -10,7 +10,7 @@ import { render } from "./store.js";
 import { MemoryService } from "./service.js";
 import { createHttpServer } from "./http.js";
 import { startMcp } from "./mcp.js";
-import { createOperatorTenantContext, tenantModeFromEnv } from "./operator.js";
+import { createOperatorTenantContext, snapshotKeyFromEnv, tenantModeFromEnv } from "./operator.js";
 import { tenantFilterFromContext } from "./tenant.js";
 import {
   MemoryType,
@@ -35,7 +35,11 @@ const tenantMode = tenantModeFromEnv();
 const operatorTenant = tenantMode === "strict" ? createOperatorTenantContext() : undefined;
 const operatorOptions = operatorTenant ? { tenant: operatorTenant } : {};
 const operatorFilter = operatorTenant ? tenantFilterFromContext(operatorTenant) : undefined;
-const service = new MemoryService(store, { tenantMode });
+const operatorSnapshotKey = snapshotKeyFromEnv();
+const service = new MemoryService(store, {
+  tenantMode,
+  ...(operatorSnapshotKey ? { snapshotKey: operatorSnapshotKey } : {}),
+});
 
 const argv = process.argv.slice(2);
 const httpFlag = argv.includes("--http");

@@ -7,12 +7,22 @@ export interface OperatorEnvironment {
   REMEMBRA_TENANT_PROJECT_ID?: string;
   REMEMBRA_TENANT_USER_ID?: string;
   REMEMBRA_TENANT_AGENT_ID?: string;
+  REMEMBRA_SNAPSHOT_KEY?: string;
 }
 
 export function tenantModeFromEnv(env: OperatorEnvironment = process.env): TenantMode {
   const value = (env.REMEMBRA_TENANT_MODE ?? "legacy").trim().toLowerCase();
   if (value === "legacy" || value === "strict") return value;
   throw new Error(`Invalid REMEMBRA_TENANT_MODE "${value}" — expected legacy or strict`);
+}
+
+export function snapshotKeyFromEnv(env: OperatorEnvironment = process.env): Buffer | undefined {
+  const value = env.REMEMBRA_SNAPSHOT_KEY?.trim();
+  if (!value) return undefined;
+  if (!/^[a-f0-9]{64}$/i.test(value)) {
+    throw new Error("REMEMBRA_SNAPSHOT_KEY must be a 64-character hex HMAC key");
+  }
+  return Buffer.from(value, "hex");
 }
 
 /**

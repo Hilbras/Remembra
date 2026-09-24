@@ -214,6 +214,10 @@ Envelope written by `remembra export` and `GET /snapshot`:
   `trust`) import cleanly — those shapes are normalized on read/import.
 - Import validates the **whole file before writing** (atomic), preserves ids,
   and is idempotent — re-importing skips existing ids (`{imported, skipped}`).
+- Strict tenant services add an `integrity` object with an HMAC-SHA256 value
+  over the canonical envelope. Unsigned, tampered, or wrongly keyed snapshots
+  return `SNAPSHOT_INVALID` before any record is read or written. Legacy mode
+  continues to accept unsigned V4 snapshots during migration.
 
 ## CLI
 

@@ -7,6 +7,7 @@ import { MemoryService } from "../service.js";
 import { MemoryStore } from "../store.js";
 import { SqliteBackend } from "../sqlite-backend.js";
 import { createTenantContext } from "../tenant.js";
+import { createSignedSnapshot } from "../snapshot-integrity.js";
 import { RemembraError } from "../errors.js";
 
 function context(organizationId: string, projectId: string) {
@@ -22,7 +23,15 @@ function context(organizationId: string, projectId: string) {
 async function strictService() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-tenant-service-"));
   const store = new MemoryStore(root);
-  return { root, store, service: new MemoryService(store, { tenantMode: "strict", embeddingProvider: "none" }) };
+  return {
+    root,
+    store,
+    service: new MemoryService(store, {
+      tenantMode: "strict",
+      embeddingProvider: "none",
+      snapshotKey: Buffer.from("test snapshot key"),
+    }),
+  };
 }
 
 test("strict service requires opaque context and isolates core memory operations", async () => {
@@ -75,7 +84,7 @@ test("strict service requires opaque context and isolates core memory operations
     (error: unknown) => error instanceof RemembraError && error.code === "SNAPSHOT_INVALID",
   );
   await assert.rejects(
-    () => service.importSnapshot({
+    () => service.importSnapshot(createSignedSnapshot({
       format: snapshot.format,
       version: snapshot.version,
       exportedAt: snapshot.exportedAt,
@@ -84,7 +93,7 @@ test("strict service requires opaque context and isolates core memory operations
         id: "42345678-1234-4234-8234-123456789abc",
         relations: [{ id: b.id, kind: "related" }],
       }],
-    }, { tenant: tenantA }),
+    }, Buffer.from("test snapshot key")), { tenant: tenantA }),
     (error: unknown) => error instanceof RemembraError && error.code === "NOT_FOUND",
   );
   assert.throws(() => service.db, (error: unknown) => error instanceof RemembraError && error.code === "TENANT_REQUIRED");

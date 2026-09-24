@@ -40,6 +40,7 @@ import {
   type TenantFilter,
   type TenantMode,
 } from "./tenant.js";
+import { createSignedSnapshot, isSignedSnapshot, verifySignedSnapshot } from "./snapshot-integrity.js";
 import { JobQueue } from "./job-queue.js";
 import type { JobHandle } from "./job-queue.js";
 
@@ -100,6 +101,10 @@ export interface ServiceDeps {
   tenantMode?: TenantMode;
   /** Optional host membership recheck for queued/background work. */
   verifyTenantContext?: (context: TenantContext) => boolean | Promise<boolean>;
+  /** HMAC key used to sign/verify V5 snapshot envelopes. */
+  snapshotKey?: Buffer | Uint8Array;
+  /** Strict tenant mode defaults to requiring signed snapshots. */
+  requireSignedSnapshots?: boolean;
 }
 
 export interface AgentReadOptions {
@@ -167,6 +172,8 @@ export class MemoryService {
   private readonly agentMode: boolean;
   private readonly tenantMode: TenantMode;
   private readonly verifyTenantContext?: ServiceDeps["verifyTenantContext"];
+  private readonly snapshotKey?: Buffer;
+  private readonly requireSignedSnapshots: boolean;
   private readonly jobs: JobQueue;
   /** V4.4: prompt injection detector (pattern-based). */
   private readonly injectionDetector = createInjectionDetector();
@@ -216,6 +223,8 @@ export class MemoryService {
     this.agentMode = deps.agentMode ?? process.env.REMEMBRA_AGENT_MODE === "1";
     this.tenantMode = deps.tenantMode ?? "legacy";
     this.verifyTenantContext = deps.verifyTenantContext;
+    this.snapshotKey = deps.snapshotKey ? Buffer.from(deps.snapshotKey) : undefined;
+    this.requireSignedSnapshots = deps.requireSignedSnapshots ?? this.tenantMode === "strict";
     if (this.tenantMode === "strict" && this.backend.tenantCapable !== true) {
       throw new RemembraError("SERVICE_UNAVAILABLE", "strict tenant mode requires a tenant-capable backend");
     }
@@ -379,7 +388,6 @@ export class MemoryService {
   }
 
   private sanitizeMemory(memory: Memory, options: AgentReadOptions, visibleIds: ReadonlySet<string>): Memory {
-    if (this.tenantMode !== "strict" && !options.tenant) return memory;
     const relations = memory.relations?.filter((relation) => visibleIds.has(relation.id));
     const compressedFrom = memory.meta?.compressedFrom?.filter((id) => visibleIds.has(id));
     return {
@@ -1753,12 +1761,18 @@ export class MemoryService {
     const visible = (await this.backend.all(true, tenant)).filter((m) => this.canRead(m, options));
     const visibleIds = new Set(visible.map((m) => m.id));
     const memories = visible.map((m) => this.sanitizeMemory(m, options, visibleIds));
-    return {
+    const snapshot = {
       format: SNAPSHOT_FORMAT,
       version: tenant ? TENANT_SCHEMA_VERSION : SCHEMA_VERSION,
       exportedAt: new Date().toISOString(),
       memories,
     };
+    if (this.requireSignedSnapshots) {
+      if (!this.snapshotKey) throw new RemembraError("SNAPSHOT_INVALID", "signed snapshot export requires a configured HMAC key");
+      return createSignedSnapshot(snapshot, this.snapshotKey);
+    }
+    if (this.snapshotKey) return createSignedSnapshot(snapshot, this.snapshotKey);
+    return snapshot;
   }
 
   /**
@@ -1770,8 +1784,14 @@ export class MemoryService {
   async importSnapshot(data: unknown, options: AgentReadOptions = {}): Promise<{ imported: number; skipped: number }> {
     let snap: ReturnType<typeof SnapshotInput.parse>;
     try {
-      snap = SnapshotInput.parse(data); // throws before any write
+      if (this.requireSignedSnapshots || this.snapshotKey || isSignedSnapshot(data)) {
+        if (!this.snapshotKey) throw new RemembraError("SNAPSHOT_INVALID", "signed snapshot import requires a configured HMAC key");
+        snap = verifySignedSnapshot(data, this.snapshotKey);
+      } else {
+        snap = SnapshotInput.parse(data); // throws before any write
+      }
     } catch (err) {
+      if (err instanceof RemembraError) throw err;
       throw inputError(err, "SNAPSHOT_INVALID");
     }
     const tenant = this.tenantFilter(options, "write");

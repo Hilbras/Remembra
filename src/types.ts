@@ -546,6 +546,12 @@ export const SnapshotInput = z.object({
   format: z.literal(SNAPSHOT_FORMAT),
   version: z.number().int().positive(),
   exportedAt: z.string(),
+  integrity: z
+    .object({
+      algorithm: z.literal("HMAC-SHA256"),
+      value: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    })
+    .optional(),
   memories: z
     .array(
       z.object({

@@ -146,6 +146,14 @@ Implementation slices:
     recovery fixtures.
   - Scope: M/L.
 
+Implementation slices:
+
+1. [x] Canonical signed snapshot envelope, strict verification, and operator key
+   configuration.
+2. [x] Tenant reference sanitization and pre-write reference validation.
+3. [ ] Staged, idempotent tenant migration executor and crash-recovery state.
+4. [ ] File/SQLite backup/restore dry-run and atomic publication fixtures.
+
 - [ ] Task 9: Complete the V5 security baseline.
   - Acceptance: authenticated API, authorization, rate limits, request limits,
     timeouts, audit logs, scope/tenant isolation, poisoning protection, secret

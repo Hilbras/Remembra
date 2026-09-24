@@ -98,6 +98,7 @@ metrics, export/import. See **[ui.md](ui.md)**; disable with
 | `REMEMBRA_TENANT_MEMBERSHIP_VERSION` | *(unset)* | Host membership version recorded in the operator context |
 | `REMEMBRA_TENANT_PROJECT_ID` | *(unset)* | Optional trusted project binding for local operator commands |
 | `REMEMBRA_TENANT_USER_ID` / `REMEMBRA_TENANT_AGENT_ID` | *(unset)* | Optional trusted user/agent binding |
+| `REMEMBRA_SNAPSHOT_KEY` | *(unset)* | 64-hex HMAC key required for strict signed snapshot export/import |
 | `REMEMBRA_PORT` | `8787` | HTTP API port (`--port` overrides) |
 | `REMEMBRA_UI` | `1` | `0` disables serving the web dashboard (`/`, `/ui/*`) |
 | `REMEMBRA_LLM` | `openai` | Digest LLM: `openai` \| `anthropic` \| `ollama` |

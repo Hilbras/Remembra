@@ -31,6 +31,10 @@ V5 work is additive until the tenant/schema migration contract is approved.
   tenant records at schema 4. A canonical HMAC-SHA256 migration manifest now
   validates explicit organization/entity/ACL mappings, counts, checksums, and
   relation references before any future migration step consumes it.
+- **V5 signed snapshot recovery** adds canonical HMAC-SHA256 snapshot
+  envelopes, strict export/import verification, reference sanitization, and
+  operator key configuration. Legacy mode continues to accept unsigned V4
+  snapshots during migration.
 - **File-backend tenant boundary** adds encoded tenant namespaces and
   tenant-filtered point reads, writes, lifecycle operations, and history;
   unscoped legacy reads never enumerate tenant directories.

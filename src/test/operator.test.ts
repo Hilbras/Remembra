@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createOperatorTenantContext, tenantModeFromEnv } from "../operator.js";
+import { createOperatorTenantContext, snapshotKeyFromEnv, tenantModeFromEnv } from "../operator.js";
 
 test("operator tenant configuration is explicit and validated", () => {
   assert.equal(tenantModeFromEnv({}), "legacy");
@@ -20,4 +20,6 @@ test("operator tenant configuration is explicit and validated", () => {
   assert.equal(context.principal.organizationId, "org-a");
   assert.equal(context.principal.projectId, "project-a");
   assert.ok(context.principal.capabilities?.includes("tenant:admin"));
+  assert.throws(() => snapshotKeyFromEnv({ REMEMBRA_SNAPSHOT_KEY: "short" }), /SNAPSHOT_KEY/);
+  assert.equal(snapshotKeyFromEnv({ REMEMBRA_SNAPSHOT_KEY: "a".repeat(64) })?.length, 32);
 });
