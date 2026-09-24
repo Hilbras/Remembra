@@ -8,6 +8,7 @@ import { MemoryService } from "../service.js";
 import { MemoryStore } from "../store.js";
 import { createTenantContext } from "../tenant.js";
 import { logEvent } from "../log.js";
+import { StoreInput } from "../types.js";
 
 async function makeService(): Promise<MemoryService> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-"));
@@ -145,4 +146,70 @@ test("SEC-LOG-001: structured logs redact credentials, headers, and secret-beari
   } finally {
     restore();
   }
+});
+
+test("SEC-LOG-003: debug search logs redact secret-bearing queries", async () => {
+  const restore = withEnv({ REMEMBRA_LOG: "json", REMEMBRA_DEBUG: "1" });
+  const service = await makeService();
+  try {
+    const output = await captureStderr(async () => {
+      await service.search({ query: "Bearer debug-secret-token" });
+    });
+    assert.ok(!output.includes("debug-secret-token"));
+    assert.ok(output.includes("[REDACTED]"));
+  } finally {
+    restore();
+  }
+});
+
+test("SEC-LOG-004: provider error logs redact secret-bearing diagnostics", async () => {
+  const restore = withEnv({ REMEMBRA_LOG: "json" });
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-provider-"));
+  const service = new MemoryService(new MemoryStore(root), {
+    embeddingProvider: "none",
+    embedFn: async () => {
+      throw new Error("provider failed with Bearer provider-secret-token");
+    },
+  });
+  try {
+    const output = await captureStderr(async () => {
+      await service.store(StoreInput.parse({ type: "fact", content: "provider error memory" }));
+    });
+    assert.ok(!output.includes("provider-secret-token"));
+    assert.ok(output.includes("[REDACTED]"));
+  } finally {
+    restore();
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SEC-LOG-004: public provider errors do not expose secret diagnostics", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-public-error-"));
+  const service = new MemoryService(new MemoryStore(root), {
+    embeddingProvider: "none",
+    llmAdapter: {
+      id: "test-provider",
+      complete: async () => {
+        throw new Error("upstream Bearer public-secret-token");
+      },
+    },
+  });
+  const server = createHttpServer(service, { port: 0, host: "127.0.0.1" });
+  await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+  const address = server.address() as { port: number };
+  t.after(async () => {
+    await service.shutdownBackgroundJobs();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  const response = await fetch(`http://127.0.0.1:${address.port}/memories/digest`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ transcript: "remember this" }),
+  });
+  assert.equal(response.status, 502);
+  const body = await response.text();
+  assert.ok(!body.includes("public-secret-token"));
 });

@@ -73,6 +73,25 @@ const SECURE_HEADERS: Record<string, string> = {
   "cache-control": "no-store",
 };
 
+function publicErrorMessage(error: unknown): string {
+  if (isRemembraError(error)) {
+    switch (error.code) {
+      case "LLM_ERROR":
+        return "The provider request failed.";
+      case "PROVIDER_TIMEOUT":
+        return "The provider request timed out.";
+      case "IO_ERROR":
+        return "The server could not complete the request.";
+      default:
+        return error.message;
+    }
+  }
+  if (error instanceof Error && (error.name === "ZodError" || error.name === "BadRequestError")) {
+    return error.message;
+  }
+  return "The server could not complete the request.";
+}
+
 const UI_MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -691,7 +710,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       applySecureHeaders(res);
       applyCorsHeaders(res);
       send(res, status, {
-        error: err instanceof Error ? err.message : String(err),
+        error: publicErrorMessage(err),
         ...(isRemembraError(err) ? { code: err.code } : {}),
       });
     } finally {
