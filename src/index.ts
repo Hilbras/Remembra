@@ -111,7 +111,7 @@ if (argv[0] === "export") {
     }
     process.exit(0);
   } catch (err) {
-    console.error(`Import rejected (nothing written): ${err instanceof Error ? err.message : err}`);
+    console.error(`Import failed; verify the primary store before retrying: ${err instanceof Error ? err.message : err}`);
     process.exit(1);
   }
 } else if (argv[0] === "export-markdown") {

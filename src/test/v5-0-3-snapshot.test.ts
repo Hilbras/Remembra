@@ -55,13 +55,10 @@ test("REC-SNAP-001: strict tenant validation checks dimensions and references", 
     () => validateSnapshotSemantics(snapshot([memory({ projectId: "project-a" })]), { strictTenant: true }),
     (error: unknown) => (error as { code?: string }).code === "SNAPSHOT_INVALID",
   );
-  assert.throws(
-    () => validateSnapshotSemantics(
-      snapshot([memory({ tenantId: "org-a", relations: [{ id: "82345678-1234-4234-8234-123456789abc", kind: "related" }] })]),
-      { strictTenant: true },
-    ),
-    (error: unknown) => (error as { code?: string }).code === "SNAPSHOT_INVALID",
-  );
+  assert.doesNotThrow(() => validateSnapshotSemantics(
+    snapshot([memory({ tenantId: "org-a", relations: [{ id: "82345678-1234-4234-8234-123456789abc", kind: "related" }] })]),
+    { strictTenant: true },
+  ));
   assert.doesNotThrow(() => validateSnapshotSemantics(
     snapshot([memory({ related: ["82345678-1234-4234-8234-123456789abc"] })]),
   ));

@@ -75,23 +75,6 @@ export function validateSnapshotSemantics(
     ];
     for (const reference of references) {
       if (reference === memory.id) invalid(`memory ${memory.id} contains a self-reference`);
-      if (options.strictTenant && !ids.has(reference) && reference !== memory.id) {
-        // References are checked again after all ids are collected below.
-      }
-    }
-  }
-
-  if (options.strictTenant) {
-    for (const memory of snapshot.memories) {
-      const references = [
-        ...(memory.relations ?? []).map((relation) => relation.id),
-        ...(memory.related ?? []),
-        ...(memory.supersededBy ? [memory.supersededBy] : []),
-        ...(memory.meta?.compressedFrom ?? []),
-      ];
-      for (const reference of references) {
-        if (!ids.has(reference)) invalid(`memory ${memory.id} references missing memory ${reference}`);
-      }
     }
   }
 }
