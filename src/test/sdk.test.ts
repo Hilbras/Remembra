@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Remembra, RemembraApiError, type FetchLike } from "../sdk.js";
+import { Remembra, RemembraApiError, RemembraTimeoutError, type FetchLike } from "../sdk.js";
 import { MemoryStore } from "../store.js";
 import { MemoryService } from "../service.js";
 import { createHttpServer } from "../http.js";
@@ -173,6 +173,46 @@ test("SDK rejects server-managed identity fields before sending", async () => {
       /server-managed/,
     );
   }
+  assert.equal(called, false);
+});
+
+test("SDK enforces bounded request timeouts and preserves caller aborts", async () => {
+  const timeoutClient = new Remembra({
+    endpoint: "http://localhost:8787",
+    fetch: async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    }),
+  });
+  await assert.rejects(
+    () => timeoutClient.search({ query: "slow" }, { timeoutMs: 10 }),
+    (error: unknown) => {
+      assert.ok(error instanceof RemembraTimeoutError);
+      assert.equal(error.timeoutMs, 10);
+      return true;
+    },
+  );
+
+  const controller = new AbortController();
+  const abortClient = new Remembra({
+    endpoint: "http://localhost:8787",
+    fetch: async (_input, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+    }),
+  });
+  const pending = abortClient.search({ query: "abort" }, { signal: controller.signal, timeoutMs: 1000 });
+  controller.abort();
+  await assert.rejects(pending, (error: unknown) => (error as { name?: string }).name === "AbortError");
+
+  let called = false;
+  const invalidClient = new Remembra({
+    endpoint: "http://localhost:8787",
+    fetch: async () => {
+      called = true;
+      return jsonResponse({ text: "ok", results: [] });
+    },
+  });
+  await assert.rejects(() => invalidClient.search({}, { timeoutMs: 0 }), /timeout/i);
+  await assert.rejects(() => invalidClient.search({}, { timeoutMs: 120_001 }), /timeout/i);
   assert.equal(called, false);
 });
 

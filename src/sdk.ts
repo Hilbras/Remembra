@@ -47,9 +47,13 @@ export type SdkStoreInput = Pick<StoreInput, "type" | "content"> &
     provenance?: SdkProvenance;
   };
 
+export const MAX_SDK_TIMEOUT_MS = 120_000;
+
 export interface RequestOptions {
   signal?: AbortSignal;
   headers?: Record<string, string>;
+  /** Optional per-request timeout; bounded to 1–120 seconds when supplied. */
+  timeoutMs?: number;
 }
 
 export interface SearchOptions {
@@ -136,6 +140,18 @@ export class RemembraApiError extends Error {
     this.status = status;
     this.code = typeof body.code === "string" ? body.code : `HTTP_${status}`;
     this.body = body;
+  }
+}
+
+/** A bounded client-side timeout, distinct from a caller abort or HTTP error. */
+export class RemembraTimeoutError extends Error {
+  readonly code = "TIMEOUT" as const;
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`Remembra request timed out after ${timeoutMs}ms`);
+    this.name = "RemembraTimeoutError";
+    this.timeoutMs = timeoutMs;
   }
 }
 
@@ -484,28 +500,54 @@ export class Remembra {
 
     assertNoUntrustedIdentity(body, "input", new WeakSet<object>(), options.allowSnapshotEnvelope === true);
     assertNoUntrustedTenantHeaders(headers);
-    const response = await this.fetchImpl(url, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: options.signal,
-    });
-    const text = await response.text();
-    let parsed: unknown = undefined;
-    if (text.length > 0) {
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        parsed = text;
+    const timeoutMs = options.timeoutMs;
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_SDK_TIMEOUT_MS)) {
+      throw new TypeError(`timeoutMs must be an integer between 1 and ${MAX_SDK_TIMEOUT_MS}`);
+    }
+    const controller = timeoutMs === undefined ? undefined : new AbortController();
+    let timedOut = false;
+    const onAbort = () => controller?.abort();
+    if (controller && options.signal) {
+      if (options.signal.aborted) controller.abort();
+      else options.signal.addEventListener("abort", onAbort, { once: true });
+    }
+    const timer = controller && timeoutMs !== undefined
+      ? setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs)
+      : undefined;
+    try {
+      const response = await this.fetchImpl(url, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller?.signal ?? options.signal,
+      });
+      const text = await response.text();
+      if (timedOut && timeoutMs !== undefined) throw new RemembraTimeoutError(timeoutMs);
+      let parsed: unknown = undefined;
+      if (text.length > 0) {
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = text;
+        }
       }
-    }
 
-    if (!response.ok) {
-      const errorBody =
-        parsed && typeof parsed === "object" ? (parsed as RemembraApiErrorBody) : { error: text };
-      throw new RemembraApiError(response.status, errorBody);
+      if (!response.ok) {
+        const errorBody =
+          parsed && typeof parsed === "object" ? (parsed as RemembraApiErrorBody) : { error: text };
+        throw new RemembraApiError(response.status, errorBody);
+      }
+      return parsed as T;
+    } catch (error) {
+      if (timedOut && timeoutMs !== undefined) throw new RemembraTimeoutError(timeoutMs);
+      throw error;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (controller) options.signal?.removeEventListener("abort", onAbort);
     }
-    return parsed as T;
   }
 }
 

@@ -35,6 +35,7 @@ const context = await memory.context({
 - `apiKey` — optional key sent as `x-api-key`.
 - `fetch` — injectable fetch implementation for tests or custom runtimes.
 - `headers` — additional headers sent with every request.
+- `timeoutMs` — optional per-request timeout, bounded to 1–120 seconds; caller aborts remain distinct.
 
 The SDK sends API credentials only. It does not accept or synthesize trusted
 agent or tenant identity; both contexts remain server-side. Server-managed
