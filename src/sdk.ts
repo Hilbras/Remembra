@@ -324,8 +324,8 @@ export class Remembra {
     }
 
     const headers = new Headers(this.defaultHeaders);
-    if (this.apiKey) headers.set("x-api-key", this.apiKey);
     for (const [key, value] of Object.entries(options.headers ?? {})) headers.set(key, value);
+    if (this.apiKey) headers.set("x-api-key", this.apiKey);
     if (body !== undefined) headers.set("content-type", "application/json");
 
     assertNoUntrustedIdentity(body);
