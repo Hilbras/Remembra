@@ -29,6 +29,8 @@ export interface RetrievalPolicyOptions {
   diversity?: boolean;
   /** Reserved for a future non-identity reranker; preserved in the policy contract. */
   reranking?: boolean;
+  /** Expand only through already-authorized pool relations. */
+  relationExpansion?: boolean;
 }
 
 // =============================================================================
@@ -261,6 +263,71 @@ export class EmbedReranker implements Reranker {
       return vb - va;
     });
   }
+}
+
+export interface RelationExpansionOptions {
+  maxDepth?: number;
+  maxEdges?: number;
+}
+
+/**
+ * Expand only through relations whose target is already in the authorized
+ * candidate pool. Depth and edge budgets are hard caps; no backend or
+ * cross-tenant lookup is performed here.
+ */
+export function expandRelationCandidates(
+  pool: readonly Memory[],
+  seeds: readonly Memory[],
+  options: RelationExpansionOptions = {},
+): Memory[] {
+  const maxDepth = Math.max(0, Math.min(2, Math.floor(options.maxDepth ?? 1)));
+  const maxEdges = Math.max(0, Math.min(128, Math.floor(options.maxEdges ?? 32)));
+  if (maxDepth === 0 || maxEdges === 0) return dedupeMemories(seeds);
+  const byId = new Map(pool.map((memory) => [memory.id, memory]));
+  const incoming = new Map<string, string[]>();
+  for (const memory of pool) {
+    for (const relation of memory.relations ?? []) {
+      const list = incoming.get(relation.id) ?? [];
+      list.push(memory.id);
+      incoming.set(relation.id, list);
+    }
+  }
+  const selected = dedupeMemories(seeds);
+  const visited = new Set(selected.map((memory) => memory.id));
+  let frontier = selected.slice();
+  let edges = 0;
+  for (let depth = 0; depth < maxDepth && frontier.length > 0 && edges < maxEdges; depth++) {
+    const next: Memory[] = [];
+    for (const current of frontier) {
+      const neighborIds = [
+        ...(current.relations ?? []).map((relation) => relation.id),
+        ...(incoming.get(current.id) ?? []),
+      ];
+      for (const id of neighborIds) {
+        if (edges >= maxEdges) break;
+        edges++;
+        if (visited.has(id)) continue;
+        const neighbor = byId.get(id);
+        if (!neighbor) continue;
+        visited.add(id);
+        selected.push(neighbor);
+        next.push(neighbor);
+      }
+    }
+    frontier = next;
+  }
+  return selected;
+}
+
+function dedupeMemories(memories: readonly Memory[]): Memory[] {
+  const seen = new Set<string>();
+  const output: Memory[] = [];
+  for (const memory of memories) {
+    if (seen.has(memory.id)) continue;
+    seen.add(memory.id);
+    output.push(memory);
+  }
+  return output;
 }
 
 // =============================================================================

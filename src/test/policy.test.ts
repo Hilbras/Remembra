@@ -21,6 +21,7 @@ test("policy files and environment overrides are validated and layered", () => {
       REMEMBRA_POLICY_FILE: "/trusted/policy.yml",
       REMEMBRA_ROLES_REQUIRE_TRUST: "false",
       REMEMBRA_RETRIEVAL_DIVERSITY: "0",
+      REMEMBRA_RETRIEVAL_RELATION_EXPANSION: "1",
     } as NodeJS.ProcessEnv,
     readFile: () => `
 memory:
@@ -43,6 +44,7 @@ memory:
   assert.equal(loaded.roles.requireTrust, false);
   assert.equal(loaded.retrieval.reranking, false);
   assert.equal(loaded.retrieval.diversity, false);
+  assert.equal(loaded.retrieval.relationExpansion, true);
 });
 
 test("invalid policy configuration fails closed", () => {

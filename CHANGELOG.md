@@ -26,6 +26,9 @@ V5 work is additive until the tenant/schema migration contract is approved.
 - **Effective embedding reranking** now honors the validated retrieval
   reranking policy with a deterministic cosine tie-breaker before MMR
   selection; unsupported/vectorless cases retain the fused order.
+- **Bounded relation expansion** is available through validated retrieval
+  policy, restricted to the already-authorized candidate pool with one-hop and
+  32-edge caps.
 - **V5 tenant contract and identity primitives** with opaque host contexts,
   canonical scoped identifiers, fail-closed matching, migration boundaries,
   versioned organization/user/project/agent directory verification, and a

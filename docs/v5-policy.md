@@ -21,6 +21,7 @@ memory:
   retrieval:
     reranking: true
     diversity: true
+    relationExpansion: false
   provenance:
     required: true
 ```
@@ -42,6 +43,7 @@ The following trusted environment variables override file values:
 | `REMEMBRA_LIFECYCLE_DEFAULT` | `pinned`, `persistent`, `ephemeral`, `decaying`, `neverExpire` | `decaying` |
 | `REMEMBRA_RETRIEVAL_RERANKING` | `true`/`false` | `true` |
 | `REMEMBRA_RETRIEVAL_DIVERSITY` | `true`/`false` | `true` |
+| `REMEMBRA_RETRIEVAL_RELATION_EXPANSION` | `true`/`false` | `false` |
 | `REMEMBRA_PROVENANCE_REQUIRED` | `true`/`false` | `true` |
 
 Precedence is: validated defaults → policy file → environment overrides.
@@ -56,8 +58,10 @@ The policy object can also be injected directly in trusted application code via
   by a memory request.
 - `sensitiveData.action` is passed to the existing sensitive-data detector.
 - `lifecycle.default` is applied when a store omits retention.
-- `retrieval.diversity` controls bounded MMR; reranking remains an explicit
-  policy seam until a non-identity reranker is selected.
+- `retrieval.diversity` controls bounded MMR; `retrieval.reranking` applies the
+  deterministic embedding tie-breaker before MMR.
+- `retrieval.relationExpansion` enables one-hop, 32-edge expansion inside the
+  already-authorized candidate pool; it never performs a cross-tenant lookup.
 - `provenance.required` documents the mandatory provenance invariant; current
   storage schemas already enforce provenance on normalized reads/writes.
 

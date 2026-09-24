@@ -10,7 +10,7 @@ export interface MemoryPolicy {
   roles: { requireTrust: boolean };
   sensitiveData: { action: SensitivePolicy };
   lifecycle: { default: RetentionMode };
-  retrieval: { reranking: boolean; diversity: boolean };
+  retrieval: { reranking: boolean; diversity: boolean; relationExpansion: boolean };
   provenance: { required: boolean };
 }
 
@@ -23,7 +23,7 @@ const policyFileSchema = z
     roles: z.object({ requireTrust: z.boolean() }).strict(),
     sensitiveData: z.object({ action: SensitiveAction }).strict(),
     lifecycle: z.object({ default: RetentionDefault }).strict(),
-    retrieval: z.object({ reranking: z.boolean(), diversity: z.boolean() }).strict(),
+    retrieval: z.object({ reranking: z.boolean(), diversity: z.boolean(), relationExpansion: z.boolean() }).strict(),
     provenance: z.object({ required: z.boolean() }).strict(),
   })
   .strict();
@@ -34,7 +34,7 @@ export function defaultMemoryPolicy(): MemoryPolicy {
     roles: { requireTrust: true },
     sensitiveData: { action: "redact" },
     lifecycle: { default: "decaying" },
-    retrieval: { reranking: true, diversity: true },
+    retrieval: { reranking: true, diversity: true, relationExpansion: false },
     provenance: { required: true },
   };
 }
@@ -107,6 +107,7 @@ export function loadMemoryPolicy(options: PolicyLoadOptions = {}): MemoryPolicy 
   const requireTrust = boolEnv(env, "REMEMBRA_ROLES_REQUIRE_TRUST");
   const reranking = boolEnv(env, "REMEMBRA_RETRIEVAL_RERANKING");
   const diversity = boolEnv(env, "REMEMBRA_RETRIEVAL_DIVERSITY");
+  const relationExpansion = boolEnv(env, "REMEMBRA_RETRIEVAL_RELATION_EXPANSION");
   const provenanceRequired = boolEnv(env, "REMEMBRA_PROVENANCE_REQUIRED");
   const sensitive = env.REMEMBRA_SENSITIVE_POLICY?.trim();
   const lifecycle = env.REMEMBRA_LIFECYCLE_DEFAULT?.trim();
@@ -115,6 +116,7 @@ export function loadMemoryPolicy(options: PolicyLoadOptions = {}): MemoryPolicy 
   if (requireTrust !== undefined) merged.roles = { ...(merged.roles as object), requireTrust };
   if (reranking !== undefined) merged.retrieval = { ...(merged.retrieval as object), reranking };
   if (diversity !== undefined) merged.retrieval = { ...(merged.retrieval as object), diversity };
+  if (relationExpansion !== undefined) merged.retrieval = { ...(merged.retrieval as object), relationExpansion };
   if (provenanceRequired !== undefined) merged.provenance = { ...(merged.provenance as object), required: provenanceRequired };
   if (sensitive) merged.sensitiveData = { ...(merged.sensitiveData as object), action: sensitive };
   if (lifecycle) merged.lifecycle = { ...(merged.lifecycle as object), default: lifecycle };

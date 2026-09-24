@@ -1,5 +1,5 @@
 import type { MemoryBackend } from "./backend.js";
-import { extractQuery, searchQ } from "./retrieval.js";
+import { extractQuery, searchQ, expandRelationCandidates } from "./retrieval.js";
 import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, TENANT_SCHEMA_VERSION, Provenance, defaultTrust, CompressInput, BatchRequest, MAX_BATCH_BYTES, BatchOutcome, BatchSummary, BatchFailure } from "./types.js";
 import { RemembraError, inputError, errorLabel } from "./errors.js";
 import {
@@ -687,7 +687,7 @@ export class MemoryService {
     // V4.5: temporal and lifecycle filtering before search.
     pool ??= (await this.backend.all(q.includeArchived, tenant)).filter(eligible);
 
-    const { results: ranked, explanations } = searchQ(
+    let { results: ranked, explanations } = searchQ(
       pool,
       totalDocs === undefined ? q : { ...q, totalDocs },
       queryVec,
@@ -695,8 +695,30 @@ export class MemoryService {
         requireRoleTrust: this.policy.roles.requireTrust,
         diversity: this.policy.retrieval.diversity,
         reranking: this.policy.retrieval.reranking,
+        relationExpansion: this.policy.retrieval.relationExpansion,
       },
     );
+    if (this.policy.retrieval.relationExpansion && !q.candidates?.length) {
+      const expanded = expandRelationCandidates(pool, ranked, { maxDepth: 1, maxEdges: 32 });
+      if (expanded.length > ranked.length) {
+        const reranked = searchQ(
+          expanded,
+          {
+            ...(totalDocs === undefined ? q : { ...q, totalDocs }),
+            candidates: expanded.map((memory) => memory.id),
+          },
+          queryVec,
+          {
+            requireRoleTrust: this.policy.roles.requireTrust,
+            diversity: this.policy.retrieval.diversity,
+            reranking: this.policy.retrieval.reranking,
+            relationExpansion: false,
+          },
+        );
+        ranked = reranked.results;
+        explanations = reranked.explanations;
+      }
+    }
     const visibleIds = new Set(pool.map((memory) => memory.id));
     const publicRanked = ranked.map((memory) => this.sanitizeMemory(memory, q, visibleIds));
     const durationMs = performance.now() - t0;

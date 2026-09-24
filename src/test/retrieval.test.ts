@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { search, searchQ, rrfFuse, mmrDedup } from "../retrieval.js";
+import { search, searchQ, rrfFuse, mmrDedup, expandRelationCandidates } from "../retrieval.js";
 import { embedCached, clearEmbedCache, clearEmbedCachePartition } from "../embeddings.js";
 import { Memory } from "../types.js";
 
@@ -165,6 +165,18 @@ test("MMR reduces redundancy: two near-identical vectors don't both rank top", (
   assert.ok(ids.includes("sim1"));
   assert.ok(ids.includes("diff"));
   assert.ok(!ids.includes("sim2"), "MMR dedupes near-duplicate embeddings");
+});
+
+test("relation expansion is pool-bounded and does not follow foreign IDs", () => {
+  const pool = [
+    mem({ id: "seed", relations: [{ id: "neighbor", kind: "related" }, { id: "foreign", kind: "related" }] }),
+    mem({ id: "neighbor" }),
+    mem({ id: "other" }),
+  ];
+  const expanded = expandRelationCandidates(pool, [pool[0]], { maxDepth: 1, maxEdges: 8 });
+  assert.deepEqual(expanded.map((m) => m.id), ["seed", "neighbor"]);
+  const capped = expandRelationCandidates(pool, [pool[0]], { maxDepth: 2, maxEdges: 0 });
+  assert.deepEqual(capped.map((m) => m.id), ["seed"]);
 });
 
 test("embedding cache partitions and purges are tenant-safe", async () => {
