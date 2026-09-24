@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { timingSafeEqual, createHash, randomUUID } from "node:crypto";
 import { MemoryService } from "./service.js";
-import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION, API_VERSION_HEADER, REQUEST_ID_HEADER, isValidRequestId } from "./api-contract.js";
+import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION, API_VERSION_HEADER, IDEMPOTENCY_KEY_HEADER, REQUEST_ID_HEADER, isValidIdempotencyKey, isValidRequestId } from "./api-contract.js";
 import { DigestInput } from "./types.js";
 import { isRemembraError, statusFor, errorLabel, publicErrorMessage, RemembraError } from "./errors.js";
 import { logEvent } from "./log.js";
@@ -100,6 +100,15 @@ function requestIdFor(req: http.IncomingMessage): string {
   const raw = req.headers[REQUEST_ID_HEADER.toLowerCase()];
   const candidate = Array.isArray(raw) ? raw[0] : raw;
   return isValidRequestId(candidate) ? candidate : randomUUID();
+}
+
+function idempotencyKeyFor(req: http.IncomingMessage): string | undefined {
+  const raw = req.headers[IDEMPOTENCY_KEY_HEADER.toLowerCase()];
+  if (raw === undefined) return undefined;
+  if (Array.isArray(raw) || !isValidIdempotencyKey(raw)) {
+    throw new RemembraError("INVALID_INPUT", "Idempotency-Key must be 1-128 safe ASCII characters");
+  }
+  return raw;
 }
 
 function protectedRateIdentity(req: http.IncomingMessage, tenant: TenantContext | undefined, apiKey: string | undefined): string {
@@ -205,7 +214,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
     }
     if (allowHeaders) {
       res.setHeader("access-control-allow-methods", "GET, POST, PUT, DELETE, OPTIONS");
-      res.setHeader("access-control-allow-headers", `Content-Type, Authorization, x-api-key, ${REQUEST_ID_HEADER}`);
+      res.setHeader("access-control-allow-headers", `Content-Type, Authorization, x-api-key, ${REQUEST_ID_HEADER}, ${IDEMPOTENCY_KEY_HEADER}`);
       res.setHeader("access-control-expose-headers", `${API_VERSION_HEADER}, ${REQUEST_ID_HEADER}, Retry-After`);
       res.setHeader("access-control-max-age", "86400");
     }
@@ -559,7 +568,12 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // POST /memories/batch — bounded operation-dispatched batch.
       if (req.method === "POST" && path === "/memories/batch") {
         const body = await readBody(req, maxBody, service.isTenantStrict);
-        const result = await service.batch(body, agentOptions);
+        const idempotencyKey = idempotencyKeyFor(req);
+        const result = await service.batch(body, {
+          ...agentOptions,
+          idempotencyKey,
+          idempotencyScope: rateKey,
+        });
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return result.operation === "export"
@@ -901,16 +915,17 @@ function intParam(raw: string | null, min: number): number | undefined {
 function sendListLike(
   res: http.ServerResponse,
   status: number,
-  body: Record<string, unknown>,
+  body: object,
   itemKey: "memories" | "results" | "events",
 ): void {
-  const items = (body[itemKey] as Array<Record<string, unknown>> | undefined) ?? [];
+  const record = body as Record<string, unknown>;
+  const items = (record[itemKey] as Array<Record<string, unknown>> | undefined) ?? [];
   let est = 256;
-  for (const k of Object.keys(body)) est += k.length + 16;
+  for (const k of Object.keys(record)) est += k.length + 16;
   for (const it of items) est += JSON.stringify(it).length + 64;
   if (est < STREAM_THRESHOLD) return send(res, status, body);
 
-  const { [itemKey]: _items, ...rest } = body;
+  const { [itemKey]: _items, ...rest } = record;
   const tail =
     "]" +
     Object.entries(rest)

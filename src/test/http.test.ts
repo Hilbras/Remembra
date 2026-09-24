@@ -177,6 +177,7 @@ test("v1 CORS preflight exposes the version header", async () => {
     assert.match(response.headers.get("access-control-expose-headers") ?? "", /X-Remembra-API-Version/);
     assert.match(response.headers.get("access-control-expose-headers") ?? "", /X-Remembra-Request-Id/);
     assert.match(response.headers.get("access-control-allow-headers") ?? "", /X-Remembra-Request-Id/);
+    assert.match(response.headers.get("access-control-allow-headers") ?? "", /Idempotency-Key/);
   } finally {
     await new Promise<void>((resolve, reject) =>
       corsServer.close((error) => (error ? reject(error) : resolve())),

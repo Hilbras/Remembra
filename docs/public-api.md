@@ -216,8 +216,10 @@ Structural validation (shape, count, duplicate IDs, and the 10 MiB compact JSON
 limit) completes before any write. Valid mutations then run sequentially;
 operational failures are returned per item and successful/failed rows retain
 input order. Responses include `execution` metadata: mutation batches report
-`transactionPolicy: "per-item"` and `idempotency: "unsupported"`; export reports
-read-only execution. The first batch slice is **not** a cross-item transaction.
+`transactionPolicy: "per-item"`; without a key they report
+`idempotency: "unsupported"`, while keyed mutations report `"stored"` or
+`"replayed"`. Export reports read-only execution. The first batch slice is
+**not** a cross-item transaction.
 Export returns a normal import-compatible snapshot plus per-item selection outcomes;
 relations to unselected memories are omitted. In strict mode the export branch
 requires the explicit `tenant:export` capability and signs its result when a
@@ -225,6 +227,16 @@ snapshot key is configured.
 
 Batch limits are 100 items and 10 MiB. HTTP mixed results use status `200`;
 top-level malformed requests use the normal `INVALID_INPUT` envelope.
+
+Mutation requests may include `Idempotency-Key` (1–128 safe ASCII
+characters). The authenticated, host-derived tenant/API-key scope and canonical
+request body are fingerprinted; raw keys and tenant identifiers are never
+written to the claim store. A completed claim replays its original response,
+the same key with a different body returns `CONFLICT`, and an in-progress or
+ambiguous claim fails closed rather than risking duplicate writes. Completed
+claims are retained for 24 hours by default; capacity exhaustion returns
+`SERVICE_UNAVAILABLE`. This V5.4 implementation is a durable local claim store;
+distributed idempotency remains a V5.2 concern.
 
 ### Error codes → HTTP status
 
@@ -234,7 +246,7 @@ top-level malformed requests use the normal `INVALID_INPUT` envelope.
 | `SNAPSHOT_INVALID` | 400 | import file failed validation (nothing written) |
 | `SCOPE_ESCAPES_ROOT` | 400 | scope resolves outside the storage root |
 | `NOT_FOUND` | 404 | unknown id / route |
-| `CONFLICT` | 409 | stale `expectedVersion` on update (CAS, plan §3.5) / state conflict |
+| `CONFLICT` | 409 | stale `expectedVersion`, idempotency-key body mismatch, or state conflict |
 | `LOCK_TIMEOUT` | 423 | storage lock not acquired in time |
 | `IO_ERROR` | 500 | filesystem failure |
 | `LLM_ERROR` | 502 | provider failure after bounded retries / malformed provider response / cancelled |

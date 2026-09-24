@@ -24,6 +24,11 @@
       "import": "./dist/api-contract.js",
       "default": "./dist/api-contract.js"
     },
+    "./batch-idempotency": {
+      "types": "./dist/batch-idempotency-store.d.ts",
+      "import": "./dist/batch-idempotency-store.js",
+      "default": "./dist/batch-idempotency-store.js"
+    },
     "./providers": {
       "types": "./dist/provider-adapters.d.ts",
       "import": "./dist/provider-adapters.js",

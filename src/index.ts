@@ -13,6 +13,7 @@ import { startMcp } from "./mcp.js";
 import { createOperatorTenantContext, tenantModeFromEnv } from "./operator.js";
 import { validateStartupConfiguration, validateStorageRoot } from "./startup-validation.js";
 import { FileRecoveryStateStore } from "./recovery-state-store.js";
+import { FileBatchIdempotencyStore } from "./batch-idempotency-store.js";
 import { selectInitialBackend } from "./backend-selection.js";
 import {
   analyzeTenantSnapshot,
@@ -59,6 +60,7 @@ const service = new MemoryService(store, {
   llmProvider: startup.llmProvider,
   ...(operatorSnapshotKey ? { snapshotKey: operatorSnapshotKey } : {}),
   recoveryStateStore: new FileRecoveryStateStore(path.join(validatedRoot, ".recovery-state.json")),
+  batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(validatedRoot, ".idempotency")),
 });
 await service.initializeRecovery();
 const initialHealth = await service.health();

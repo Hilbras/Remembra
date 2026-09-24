@@ -1,4 +1,4 @@
-import { API_PREFIX, API_VERSION, REQUEST_ID_HEADER, isValidRequestId, type ApiCapabilitiesResponse } from "./api-contract.js";
+import { API_PREFIX, API_VERSION, IDEMPOTENCY_KEY_HEADER, REQUEST_ID_HEADER, isValidIdempotencyKey, isValidRequestId, type ApiCapabilitiesResponse } from "./api-contract.js";
 export type { ApiCapabilitiesResponse } from "./api-contract.js";
 import type { ContextResult } from "./context.js";
 import type { TenantEntity, TenantEntityKind, TenantEntityPage, TenantMembershipPage } from "./tenant-entities.js";
@@ -7,7 +7,6 @@ export type { ContextMemory, ContextResult } from "./context.js";
 import type {
   BatchExecutionMetadata,
   BatchOutcome,
-  BatchRequest,
   BatchSummary,
   DigestInput,
   Memory,
@@ -48,6 +47,15 @@ export type SdkStoreInput = Pick<StoreInput, "type" | "content"> &
     provenance?: SdkProvenance;
   };
 
+export type SdkBatchUpdateItem = { id: string } & Partial<Omit<UpdateInput, "id">>;
+
+/** SDK-friendly batch input; server validation remains authoritative. */
+export type SdkBatchRequest =
+  | { operation: "store"; items: SdkStoreInput[] }
+  | { operation: "update"; items: SdkBatchUpdateItem[] }
+  | { operation: "delete"; ids: string[] }
+  | { operation: "export"; ids: string[] };
+
 export const MAX_SDK_TIMEOUT_MS = 120_000;
 
 export interface RetryOptions {
@@ -64,6 +72,8 @@ export interface RequestOptions {
   timeoutMs?: number;
   /** Optional correlation ID; bounded to 128 safe ASCII characters. */
   requestId?: string;
+  /** Optional bounded key for replay-safe batch mutations. */
+  idempotencyKey?: string;
   /** Opt-in bounded retries; accepted only for read-only requests. */
   retry?: RetryOptions;
 }
@@ -503,7 +513,7 @@ export class Remembra {
     }, options);
   }
 
-  batch(input: BatchRequest, options?: RequestOptions): Promise<BatchResponse> {
+  batch(input: SdkBatchRequest, options?: RequestOptions): Promise<BatchResponse> {
     return this.request("POST", "/memories/batch", input, options);
   }
 
@@ -523,6 +533,13 @@ export class Remembra {
     const maxDelayMs = retry?.maxDelayMs ?? 1_000;
     if (retry && method !== "GET" && method !== "HEAD") {
       throw new TypeError("retry is only supported for read-only requests");
+    }
+    if (options.idempotencyKey !== undefined
+      && (method !== "POST" || path !== "/memories/batch")) {
+      throw new TypeError("idempotencyKey is only supported for batch mutations");
+    }
+    if (options.idempotencyKey !== undefined && !isValidIdempotencyKey(options.idempotencyKey)) {
+      throw new TypeError("idempotencyKey must be 1-128 safe ASCII characters");
     }
     if (!Number.isInteger(attempts) || attempts < 1 || attempts > 3) {
       throw new TypeError("retry attempts must be an integer between 1 and 3");
@@ -573,6 +590,16 @@ export class Remembra {
       throw new TypeError("requestId must be 1-128 characters using letters, digits, '.', '_', ':', or '-'");
     }
     headers.set(REQUEST_ID_HEADER, requestId);
+    const idempotencyKey = options.idempotencyKey ?? headers.get(IDEMPOTENCY_KEY_HEADER) ?? undefined;
+    if (idempotencyKey !== undefined) {
+      if (method !== "POST" || path !== "/memories/batch") {
+        throw new TypeError("idempotencyKey is only supported for batch mutations");
+      }
+      if (!isValidIdempotencyKey(idempotencyKey)) {
+        throw new TypeError("idempotencyKey must be 1-128 safe ASCII characters");
+      }
+      headers.set(IDEMPOTENCY_KEY_HEADER, idempotencyKey);
+    }
     if (body !== undefined) headers.set("content-type", "application/json");
 
     assertNoUntrustedIdentity(body, "input", new WeakSet<object>(), options.allowSnapshotEnvelope === true);

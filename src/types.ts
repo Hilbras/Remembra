@@ -470,7 +470,7 @@ export type BatchOutcome<T = unknown> = BatchSuccess<T> | BatchFailure;
 
 export interface BatchExecutionMetadata {
   transactionPolicy: "per-item" | "read-only";
-  idempotency: "unsupported" | "read-only";
+  idempotency: "unsupported" | "read-only" | "stored" | "replayed";
 }
 
 export interface BatchMutationResult {
@@ -490,6 +490,8 @@ export interface BatchExportResult {
   results: BatchOutcome<{ id: string }>[];
   execution: BatchExecutionMetadata;
 }
+
+export type BatchResult = BatchMutationResult | BatchExportResult;
 
 
 export const getInputShape = {

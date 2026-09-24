@@ -88,6 +88,44 @@ test("SDK exposes the shared v1 capabilities contract", async () => {
   assert.equal(calls[0], `https://memory.example.test${API_PREFIX}/capabilities`);
 });
 
+test("SDK sends bounded idempotency keys for batch mutations", async () => {
+  const calls: Headers[] = [];
+  const client = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async (_input, init) => {
+      calls.push(new Headers(init?.headers));
+      return jsonResponse({
+        operation: "store",
+        summary: { requested: 1, succeeded: 1, failed: 0 },
+        results: [{ index: 0, id: "m1", ok: true, result: { id: "m1" } }],
+        execution: { transactionPolicy: "per-item", idempotency: "stored" },
+      });
+    },
+  });
+  await client.batch(
+    { operation: "store", items: [{ type: "fact", content: "once" }] },
+    { idempotencyKey: "sdk-batch-001" },
+  );
+  assert.equal(calls[0].get("idempotency-key"), "sdk-batch-001");
+
+  let called = false;
+  const invalidClient = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async () => {
+      called = true;
+      return jsonResponse({});
+    },
+  });
+  await assert.rejects(
+    () => invalidClient.batch(
+      { operation: "store", items: [{ type: "fact", content: "once" }] },
+      { idempotencyKey: "bad key" },
+    ),
+    /idempotency/i,
+  );
+  assert.equal(called, false);
+});
+
 test("SDK retries only opted-in read requests and never retries writes", async () => {
   let calls = 0;
   const client = new Remembra({
@@ -365,6 +403,7 @@ test("SDK completes an authenticated store/search/get/forget round trip", async 
 test("published SDK and tenant subpaths resolve without starting the CLI", async () => {
   const packageSdk = await import("@hilbras/remembra/sdk");
   const packageContract = await import("@hilbras/remembra/api-contract");
+  const packageIdempotency = await import("@hilbras/remembra/batch-idempotency");
   const packageTenant = await import("@hilbras/remembra/tenant");
   const packageDirectory = await import("@hilbras/remembra/tenant-directory");
   const packageDirectoryFile = await import("@hilbras/remembra/tenant-directory-file");
@@ -375,6 +414,7 @@ test("published SDK and tenant subpaths resolve without starting the CLI", async
   const packageSqliteRecovery = await import("@hilbras/remembra/sqlite-recovery");
   assert.equal(typeof packageSdk.Remembra, "function");
   assert.equal(packageContract.API_VERSION, API_VERSION);
+  assert.equal(typeof packageIdempotency.FileBatchIdempotencyStore, "function");
   assert.equal(typeof packageTenant.createTenantContext, "function");
   assert.equal(typeof packageDirectory.InMemoryTenantDirectory, "function");
   assert.equal(typeof packageDirectoryFile.FileTenantDirectory, "function");

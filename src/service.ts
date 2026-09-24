@@ -1,6 +1,6 @@
 import type { MemoryBackend } from "./backend.js";
 import { extractQuery, searchQ, expandRelationCandidates } from "./retrieval.js";
-import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, TENANT_SCHEMA_VERSION, Provenance, defaultTrust, CompressInput, BatchRequest, MAX_BATCH_BYTES, BatchOutcome, BatchSummary, BatchFailure } from "./types.js";
+import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, TENANT_SCHEMA_VERSION, Provenance, defaultTrust, CompressInput, BatchRequest, MAX_BATCH_BYTES, BatchOutcome, BatchSummary, BatchFailure, BatchResult } from "./types.js";
 import { RemembraError, inputError, errorLabel, publicErrorMessage } from "./errors.js";
 import {
   ContextInput,
@@ -51,6 +51,8 @@ import { transitionRecoveryState, type RecoveryState } from "./recovery-state.js
 import type { RecoveryStateStore } from "./recovery-state-store.js";
 import type { TenantDirectory } from "./tenant-directory.js";
 import { applyTenantMigration, preflightTenantMigration, type TenantMigrationPlan } from "./tenant-migration-runner.js";
+import { batchIdempotencyFingerprint, type BatchIdempotencyStore } from "./batch-idempotency-store.js";
+import { isValidIdempotencyKey } from "./api-contract.js";
 import type { JobHandle } from "./job-queue.js";
 
 export interface DigestResult {
@@ -142,6 +144,8 @@ export interface ServiceDeps {
   backendFallback?: boolean;
   /** Optional durable state store for restart-safe recovery transitions. */
   recoveryStateStore?: RecoveryStateStore;
+  /** Durable claim/response store for opt-in batch idempotency keys. */
+  batchIdempotencyStore?: BatchIdempotencyStore;
 }
 
 export interface AgentReadOptions {
@@ -149,6 +153,13 @@ export interface AgentReadOptions {
   agent?: AgentContext;
   /** V5 host-minted tenant context; never constructed from a public request. */
   tenant?: TenantContext;
+}
+
+export interface BatchOptions extends AgentReadOptions {
+  /** Validated Idempotency-Key supplied by the host/HTTP boundary. */
+  idempotencyKey?: string;
+  /** Hashed principal/tenant scope; never a raw API key or tenant identifier. */
+  idempotencyScope?: string;
 }
 
 export interface SearchExecutionOptions {
@@ -225,6 +236,35 @@ function compareMemoryDescending(left: Memory, right: Memory | ListCursor): numb
 const BATCH_PER_ITEM_EXECUTION = { transactionPolicy: "per-item", idempotency: "unsupported" } as const;
 const BATCH_READ_ONLY_EXECUTION = { transactionPolicy: "read-only", idempotency: "read-only" } as const;
 
+function isBatchResult(value: unknown): value is BatchResult {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (record.operation !== "store" && record.operation !== "update" && record.operation !== "delete" && record.operation !== "export") return false;
+  if (record.execution === null || typeof record.execution !== "object" || Array.isArray(record.execution)) return false;
+  const execution = record.execution as Record<string, unknown>;
+  if (execution.transactionPolicy !== "per-item" && execution.transactionPolicy !== "read-only") return false;
+  if (execution.idempotency !== "unsupported" && execution.idempotency !== "read-only" && execution.idempotency !== "stored") return false;
+  const summary = record.summary;
+  if (summary === null || typeof summary !== "object" || Array.isArray(summary)) return false;
+  const counts = summary as Record<string, unknown>;
+  if (!Number.isInteger(counts.requested) || !Number.isInteger(counts.succeeded) || !Number.isInteger(counts.failed)) return false;
+  const requested = counts.requested as number;
+  const succeeded = counts.succeeded as number;
+  const failed = counts.failed as number;
+  if (requested < 0 || requested > 100 || succeeded < 0 || failed < 0) return false;
+  if (succeeded + failed !== requested) return false;
+  if (!Array.isArray(record.results) || record.results.length !== requested) return false;
+  if (record.operation === "export") {
+    return execution.transactionPolicy === "read-only"
+      && execution.idempotency === "read-only"
+      && typeof record.format === "string"
+      && typeof record.version === "number"
+      && typeof record.exportedAt === "string"
+      && Array.isArray(record.memories);
+  }
+  return execution.transactionPolicy === "per-item" && execution.idempotency === "stored";
+}
+
 function recordBatchMetrics(operation: string, results: readonly BatchOutcome[]): void {
   for (const result of results) {
     metrics.inc("remembra_batch_items_total", { operation, result: result.ok ? "success" : "failure" });
@@ -264,6 +304,7 @@ export class MemoryService {
   #backend: MemoryBackend;
   private recoveryState: RecoveryState = "Recovering";
   private readonly recoveryStateStore?: RecoveryStateStore;
+  private readonly batchIdempotencyStore?: BatchIdempotencyStore;
   private recoveryStateInitialized: boolean;
   private readonly backendName?: "sqlite" | "file";
   private readonly backendFallback: boolean;
@@ -274,6 +315,7 @@ export class MemoryService {
   constructor(db: MemoryBackend, deps: ServiceDeps = {}) {
     this.#backend = db;
     this.recoveryStateStore = deps.recoveryStateStore;
+    this.batchIdempotencyStore = deps.batchIdempotencyStore;
     this.recoveryStateInitialized = !deps.recoveryStateStore;
     this.backendName = deps.backend;
     this.backendFallback = deps.backendFallback ?? false;
@@ -979,7 +1021,7 @@ export class MemoryService {
    * parsed before the first write. Mutations then run sequentially and report
    * operational failures per item; they are not a cross-item transaction.
    */
-  async batch(input: unknown, options: AgentReadOptions = {}) {
+  async batch(input: unknown, options: BatchOptions = {}): Promise<BatchResult> {
     let request: ReturnType<typeof BatchRequest.parse>;
     try {
       let compact: string | undefined;
@@ -996,126 +1038,177 @@ export class MemoryService {
       throw inputError(err, "INVALID_INPUT");
     }
 
-    if (request.operation === "store") {
-      // Precompute vectors only when it cannot bypass redaction or a reject
-      // policy. The public store path remains the fallback and is still used
-      // for every item's canonicalization/security checks.
-      const precomputed = new Map<number, number[] | null>();
-      const embedFn = this.embedFn;
-      if (embedFn && !this.redactOn && this.tenantMode === "legacy" && !options.tenant) {
-        const hasRejectedContent = request.items.some((item) => {
-          const scan = this.sensitiveDetector.scan(item.content);
-          return scan.detected && scan.action === "reject";
-        });
-        if (!hasRejectedContent) {
-          try {
-            const vectors = await embedTexts(
-              request.items.map((item) => item.content),
-              "none",
-              {
-                embedder: async (text, _provider, callOptions) =>
-                  embedFn(text, callOptions),
-              },
-            );
-            vectors.forEach((vector, index) => precomputed.set(index, vector));
-          } catch (err) {
-            logEvent(
-              "warn",
-              "batch_embedding_precompute_failed",
-              { error: String(err).slice(0, 200) },
-              "Remembra: batch embedding precompute unavailable; using per-item fallback",
-            );
+    const idempotencyKey = options.idempotencyKey;
+    if (idempotencyKey !== undefined) {
+      if (!isValidIdempotencyKey(idempotencyKey)) {
+        throw new RemembraError("INVALID_INPUT", "Idempotency-Key must be 1-128 safe ASCII characters");
+      }
+      if (request.operation === "export") {
+        throw new RemembraError("INVALID_INPUT", "Idempotency-Key is only supported for batch mutations");
+      }
+      if (!this.batchIdempotencyStore) {
+        throw new RemembraError("SERVICE_UNAVAILABLE", "batch idempotency is not configured");
+      }
+      if (!options.idempotencyScope || options.idempotencyScope.length > 1024) {
+        throw new RemembraError("INVALID_INPUT", "a trusted idempotency scope is required");
+      }
+    }
+
+    const execute = async (): Promise<BatchResult> => {
+      if (request.operation === "store") {
+        // Precompute vectors only when it cannot bypass redaction or a reject
+        // policy. The public store path remains the fallback and is still used
+        // for every item's canonicalization/security checks.
+        const precomputed = new Map<number, number[] | null>();
+        const embedFn = this.embedFn;
+        if (embedFn && !this.redactOn && this.tenantMode === "legacy" && !options.tenant) {
+          const hasRejectedContent = request.items.some((item) => {
+            const scan = this.sensitiveDetector.scan(item.content);
+            return scan.detected && scan.action === "reject";
+          });
+          if (!hasRejectedContent) {
+            try {
+              const vectors = await embedTexts(
+                request.items.map((item) => item.content),
+                "none",
+                {
+                  embedder: async (text, _provider, callOptions) =>
+                    embedFn(text, callOptions),
+                },
+              );
+              vectors.forEach((vector, index) => precomputed.set(index, vector));
+            } catch (err) {
+              logEvent(
+                "warn",
+                "batch_embedding_precompute_failed",
+                { error: String(err).slice(0, 200) },
+                "Remembra: batch embedding precompute unavailable; using per-item fallback",
+              );
+            }
           }
         }
-      }
 
-      const results: BatchOutcome[] = [];
-      for (const [index, item] of request.items.entries()) {
-        try {
-          const result = precomputed.has(index)
-            ? await this.store(item, options, precomputed.get(index))
-            : await this.store(item, options);
-          results.push({ index, id: result.id, ok: true, result: { id: result.id, message: result.message } });
-        } catch (err) {
-          results.push(batchFailure(index, undefined, err));
+        const results: BatchOutcome[] = [];
+        for (const [index, item] of request.items.entries()) {
+          try {
+            const result = precomputed.has(index)
+              ? await this.store(item, options, precomputed.get(index))
+              : await this.store(item, options);
+            results.push({ index, id: result.id, ok: true, result: { id: result.id, message: result.message } });
+          } catch (err) {
+            results.push(batchFailure(index, undefined, err));
+          }
         }
+        recordBatchMetrics("store", results);
+        return { operation: "store" as const, summary: batchSummary(results), results, execution: BATCH_PER_ITEM_EXECUTION };
       }
-      recordBatchMetrics("store", results);
-      return { operation: "store" as const, summary: batchSummary(results), results, execution: BATCH_PER_ITEM_EXECUTION };
-    }
 
-    if (request.operation === "update") {
-      const results: BatchOutcome[] = [];
-      for (const [index, item] of request.items.entries()) {
-        const { id, ...patch } = item;
-        try {
-          const result = await this.update(id, patch, options);
-          results.push({
-            index,
-            id,
-            ok: true,
-            result: { version: result.memory.version, text: result.text },
-          });
-        } catch (err) {
-          results.push(batchFailure(index, id, err));
+      if (request.operation === "update") {
+        const results: BatchOutcome[] = [];
+        for (const [index, item] of request.items.entries()) {
+          const { id, ...patch } = item;
+          try {
+            const result = await this.update(id, patch, options);
+            results.push({
+              index,
+              id,
+              ok: true,
+              result: { version: result.memory.version, text: result.text },
+            });
+          } catch (err) {
+            results.push(batchFailure(index, id, err));
+          }
         }
+        recordBatchMetrics("update", results);
+        return { operation: "update" as const, summary: batchSummary(results), results, execution: BATCH_PER_ITEM_EXECUTION };
       }
-      recordBatchMetrics("update", results);
-      return { operation: "update" as const, summary: batchSummary(results), results, execution: BATCH_PER_ITEM_EXECUTION };
-    }
 
-    if (request.operation === "delete") {
-      const results: BatchOutcome[] = [];
+      if (request.operation === "delete") {
+        const results: BatchOutcome[] = [];
+        for (const [index, id] of request.ids.entries()) {
+          try {
+            const result = await this.forget(id, options);
+            if (!result.ok) throw new RemembraError("NOT_FOUND", result.text);
+            results.push({ index, id, ok: true, result: { text: result.text } });
+          } catch (err) {
+            results.push(batchFailure(index, id, err));
+          }
+        }
+        recordBatchMetrics("delete", results);
+        return { operation: "delete" as const, summary: batchSummary(results), results, execution: BATCH_PER_ITEM_EXECUTION };
+      }
+
+      const selected: Memory[] = [];
+      const results: BatchOutcome<{ id: string }>[] = [];
+      const tenant = await this.freshTenantFilter(options, "read", "snapshot.create");
       for (const [index, id] of request.ids.entries()) {
-        try {
-          const result = await this.forget(id, options);
-          if (!result.ok) throw new RemembraError("NOT_FOUND", result.text);
-          results.push({ index, id, ok: true, result: { text: result.text } });
-        } catch (err) {
-          results.push(batchFailure(index, id, err));
+        const memory = await this.#backend.get(id, tenant);
+        if (!memory || !this.canRead(memory, options)) {
+          results.push(batchFailure(index, id, new RemembraError("NOT_FOUND", `No memory with id ${id}`)) as BatchFailure);
+          continue;
         }
+        selected.push(memory);
+        results.push({ index, id, ok: true, result: { id } });
       }
-      recordBatchMetrics("delete", results);
-      return { operation: "delete" as const, summary: batchSummary(results), results, execution: BATCH_PER_ITEM_EXECUTION };
+      const selectedIds = new Set(selected.map((memory) => memory.id));
+      const memories = selected.map((memory) => this.sanitizeMemory(memory, options, selectedIds));
+      const snapshot = {
+        format: SNAPSHOT_FORMAT,
+        version: tenant ? TENANT_SCHEMA_VERSION : SCHEMA_VERSION,
+        exportedAt: new Date().toISOString(),
+        memories,
+      } as const;
+      const compact = JSON.stringify(snapshot);
+      if (Buffer.byteLength(compact, "utf8") > MAX_BATCH_BYTES) {
+        throw new RemembraError("INVALID_INPUT", `batch export exceeds ${MAX_BATCH_BYTES} bytes`);
+      }
+      let output: typeof snapshot | SignedSnapshot = snapshot;
+      if (this.requireSignedSnapshots || this.snapshotKey) {
+        if (!this.snapshotKey) throw new RemembraError("SNAPSHOT_INVALID", "signed batch export requires a configured HMAC key");
+        output = createSignedSnapshot(snapshot, this.snapshotKey);
+      }
+      recordBatchMetrics("export", results);
+      return {
+        ...output,
+        operation: "export" as const,
+        summary: batchSummary(results),
+        results,
+        execution: BATCH_READ_ONLY_EXECUTION,
+      } as BatchResult;
+    };
+
+    if (!idempotencyKey) return execute();
+    const store = this.batchIdempotencyStore!;
+    const fingerprint = batchIdempotencyFingerprint(request);
+    const claim = await store.claim({
+      scope: options.idempotencyScope!,
+      key: idempotencyKey,
+      fingerprint,
+    });
+    if (claim.status === "replay") {
+      if (!isBatchResult(claim.response)) {
+        throw new RemembraError("SERVICE_UNAVAILABLE", "stored idempotent response is invalid");
+      }
+      return {
+        ...claim.response,
+        execution: { ...claim.response.execution, idempotency: "replayed" },
+      };
     }
 
-    const selected: Memory[] = [];
-    const results: BatchOutcome<{ id: string }>[] = [];
-    const tenant = await this.freshTenantFilter(options, "read", "snapshot.create");
-    for (const [index, id] of request.ids.entries()) {
-      const memory = await this.#backend.get(id, tenant);
-      if (!memory || !this.canRead(memory, options)) {
-        results.push(batchFailure(index, id, new RemembraError("NOT_FOUND", `No memory with id ${id}`)) as BatchFailure);
-        continue;
-      }
-      selected.push(memory);
-      results.push({ index, id, ok: true, result: { id } });
-    }
-    const selectedIds = new Set(selected.map((memory) => memory.id));
-    const memories = selected.map((memory) => this.sanitizeMemory(memory, options, selectedIds));
-    const snapshot = {
-      format: SNAPSHOT_FORMAT,
-      version: tenant ? TENANT_SCHEMA_VERSION : SCHEMA_VERSION,
-      exportedAt: new Date().toISOString(),
-      memories,
-    } as const;
-    const compact = JSON.stringify(snapshot);
-    if (Buffer.byteLength(compact, "utf8") > MAX_BATCH_BYTES) {
-      throw new RemembraError("INVALID_INPUT", `batch export exceeds ${MAX_BATCH_BYTES} bytes`);
-    }
-    let output: typeof snapshot | SignedSnapshot = snapshot;
-    if (this.requireSignedSnapshots || this.snapshotKey) {
-      if (!this.snapshotKey) throw new RemembraError("SNAPSHOT_INVALID", "signed batch export requires a configured HMAC key");
-      output = createSignedSnapshot(snapshot, this.snapshotKey);
-    }
-    recordBatchMetrics("export", results);
-    return {
-      ...output,
-      operation: "export" as const,
-      summary: batchSummary(results),
-      results,
-      execution: BATCH_READ_ONLY_EXECUTION,
+    const result = await execute();
+    const stored: BatchResult = {
+      ...result,
+      execution: { ...result.execution, idempotency: "stored" },
     };
+    // If completion persistence fails, the in-progress claim deliberately remains
+    // fail-closed rather than allowing a retry to duplicate mutations.
+    await store.complete({
+      scope: options.idempotencyScope!,
+      key: idempotencyKey,
+      fingerprint,
+      response: stored,
+    });
+    return stored;
   }
 
   async list(q: {

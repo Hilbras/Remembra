@@ -37,6 +37,7 @@ const context = await memory.context({
 - `headers` — additional headers sent with every request.
 - `timeoutMs` — optional per-request timeout, bounded to 1–120 seconds; caller aborts remain distinct.
 - `requestId` — optional bounded correlation ID; the SDK generates one when omitted and sends it as `X-Remembra-Request-Id`.
+- `idempotencyKey` — optional 1–128 character key for replay-safe batch mutations; sent as `Idempotency-Key`.
 - `retry` — opt-in bounded retries for GET/HEAD reads only (`attempts` 1–3, bounded backoff); write requests reject retry configuration.
 
 The SDK sends API credentials only. It does not accept or synthesize trusted
@@ -61,7 +62,25 @@ opaque tenant contract is available from `@hilbras/remembra/tenant`.
 - `history(id, { limit })`
 - `related(id, ids, { action, kind })`
 - `archive(id)` / `revive(id)`
-- `batch(request)`
+- `batch(request)` — SDK-friendly store/update/delete/export input types
+
+### Replay-safe batch mutations
+
+Pass `idempotencyKey` as the final request argument to `batch()` for `store`,
+`update`, or `delete`:
+
+```ts
+const result = await memory.batch(
+  { operation: "store", items: [{ type: "fact", content: "Redis is the queue" }] },
+  { idempotencyKey: "import-2026-09-25-001" },
+);
+```
+
+The first response reports `execution.idempotency: "stored"`. Repeating the
+same authenticated scope and canonical request returns the original response
+with `"replayed"` and does not write again. Reusing a key for a different body
+returns `CONFLICT`; a claim left in progress fails closed until explicitly
+resolved. The SDK never retries unsafe writes automatically.
 
 All methods return typed decoded JSON. Non-2xx responses throw
 `RemembraApiError`, which exposes `status`, machine-readable `code`, and the
