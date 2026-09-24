@@ -51,8 +51,8 @@ A fresh strict-tenant gate run after the recovery/retrieval changes recorded:
 
 | Corpus | Seed ms | Search p50 ms | Search p95 ms | Heap MB |
 |---|---:|---:|---:|---:|
-| 10,000 | 1,108 | 57.29 | 110.46 | 10.78 |
-| 100,000 | 11,083 | 421.19 | 526.91 | 10.79 |
+| 10,000 | 921 | 48.56 | 50.87 | 9.37 |
+| 100,000 | 9,153 | 359.65 | 398.81 | 9.45 |
 
 Both remain below the documented p95, heap, and seed ceilings. The scale
 harness also completed its 10K/50K bounded-candidate runs; its FTS5-unavailable
