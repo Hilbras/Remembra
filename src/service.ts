@@ -2480,8 +2480,10 @@ export class MemoryService {
     preflightTenantMigration(plan, this.#backend, key, tenant);
     const total = plan.records.length;
     if (options.dryRun) return { total, planned: total, imported: 0, skipped: 0, dryRun: true };
+    const ledger = this.batchIdempotencyStore;
+    if (ledger?.beginRestore && ledger.completeRestore) await this.beginBatchRestore();
     const result = await applyTenantMigration(plan, this.#backend, key, { destinationFilter: tenant });
-    if (this.batchIdempotencyStore) await this.batchIdempotencyStore.invalidate();
+    if (ledger?.beginRestore && ledger.completeRestore) await this.completeBatchRestore();
     return {
       total,
       planned: total,
