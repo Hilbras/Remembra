@@ -1,7 +1,9 @@
 # Storage Format & Layout
 
-The file format and on-disk contract for Remembra's store — the human-readable,
-local-first source of truth (no database). Process concerns (locking details,
+The file format and on-disk contract for Remembra's file backend, plus the
+SQLite runtime layout. SQLite is the default runtime backend and is **not
+application-level encrypted**; the Markdown tree is the portable/legacy file
+representation. Process concerns (locking details,
 crash-recovery mechanics, the backend interface) live in
 [architecture.md](architecture.md); this document is the **format reference**.
 
@@ -97,10 +99,11 @@ so scopes/tags/sources containing YAML-ambiguous characters round-trip.
 | `relations` | list of `{id, kind}` | — | typed edges `supports · contradicts · supersedes · refines · duplicates · related` (4.1.0, §4.7); legacy `related: [ids]` migrates on read |
 | `embedding` | `[f,f,…]` | — | vector cache (comma-separated, no spaces) |
 
-**Encryption (opt-in, 3.8.0):** with `REMEMBRA_ENCRYPT_KEY` set, the entire
-file (frontmatter + body) is stored as AES-256-GCM ciphertext after
-`remembra encrypt`. Reads without the key fail **loudly**
-(`ENCRYPTED_NO_KEY`, health 503) — they are never warn-skipped.
+**File-backend encryption (opt-in):** with `REMEMBRA_ENCRYPT_KEY` set, covered
+file-backend memory/history files (frontmatter + body) are stored as
+AES-256-GCM ciphertext. The migration command is legacy/non-tenant scoped;
+reads without the key fail loudly (`ENCRYPTED_NO_KEY`). This does not encrypt
+SQLite pages, exports, or transport.
 
 **Writes are atomic**: temp file in the same directory + `rename()` — a crash
 mid-write can never leave a half-written memory.
@@ -171,7 +174,7 @@ changed or it didn't.
 | `REMEMBRA_LOCK_STALE_MS` | `10000` | Age after which a lock with a dead pid is stolen |
 | `REMEMBRA_CACHE_SIZE` | `10000` | Parse-cache LRU capacity; `0` disables |
 | `REMEMBRA_HISTORY_LIMIT` | `20` | Version snapshots kept per memory; `0` disables |
-| `REMEMBRA_ENCRYPT_KEY` | *(unset)* | 64-hex key → AES-256-GCM at rest |
+| `REMEMBRA_ENCRYPT_KEY` | *(unset)* | 64-hex key for covered file-backend memory/history encryption; not SQLite/snapshot/transport encryption |
 
 Full env index: [clients.md](clients.md#environment). Migration/export:
 `remembra export` / `remembra import` (see [public-api.md](public-api.md)).
@@ -191,12 +194,14 @@ Schema (auto-created):
 | `memories` | Main memory rows; BLOB embeddings; nullable V5 tenant/project/user/agent columns |
 | `memories_fts` | FTS5 virtual table for keyword search |
 | `memory_versions` | Content-change snapshots (history) |
-| `memory_audit` | Immutable audit log; tenant columns scope strict reads |
+| `memory_audit` | Best-effort backend mutation log; tenant columns scope strict reads, but it is not immutable/complete anti-repudiation evidence |
 
 Tenant columns are nullable during the expand phase so V4.9 SQLite databases
 remain readable. Strict mode requires the service to supply a tenant filter;
-candidate SQL applies it before limits and count calculation. Unscoped reads
-exclude tenant rows.
+candidate SQL applies organization/project/user/agent predicates before limits
+and count calculation. Unscoped reads exclude tenant rows. The exact
+visibility and capability contract is in
+[`v5.0.2-authorization.md`](v5.0.2-authorization.md).
 
 FTS5 is optional: if the SQLite build lacks FTS5 support the backend starts
 without the virtual table and degrades to keyword-only scoring with a startup

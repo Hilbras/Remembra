@@ -8,6 +8,7 @@ import {
   evaluateAuthorization,
 } from "../authorization.js";
 import { formatToolError, RemembraError } from "../errors.js";
+import { defaultMemoryPolicy } from "../policy.js";
 import { createSignedSnapshot } from "../snapshot-integrity.js";
 import { planTenantMigration } from "../tenant-migration-runner.js";
 import { SNAPSHOT_FORMAT } from "../types.js";
@@ -153,6 +154,31 @@ test("SEC-AUTH-002: the central evaluator default-denies and maps capabilities t
     reason: "missing_capability",
   });
   assert.deepEqual(evaluateAuthorization(admin, "tenant.manage"), { allowed: true });
+});
+
+test("SEC-AUTH-002: default sensitive-data redaction is applied by service store and update paths", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v502-redaction-"));
+  const policy = defaultMemoryPolicy();
+  policy.sensitiveData.action = "redact";
+  const service = new MemoryService(new MemoryStore(root), { embeddingProvider: "none", policy });
+  try {
+    const stored = (await service.store(input("key sk-abc123def456ghi789jkl012mno345pqr"))).memory;
+    assert.equal(stored.content.includes("sk-abc123def456ghi789jkl012mno345pqr"), false);
+    const updated = await service.update(stored.id, { content: "password: super-secret-value" });
+    assert.equal(updated.memory.content.includes("super-secret-value"), false);
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SEC-DOC-001: encryption documentation distinguishes file, SQLite, snapshot, and transport planes", async () => {
+  const security = await fs.readFile("docs/security.md", "utf8");
+  const storage = await fs.readFile("docs/storage.md", "utf8");
+  assert.match(security, /does not encrypt SQLite/);
+  assert.match(security, /Snapshot HMAC/);
+  assert.match(storage, /not\s+application-level encrypted/);
+  assert.doesNotMatch(storage, /Immutable audit log/);
 });
 
 test("SEC-AUTH-005: public tool errors sanitize provider diagnostics", () => {

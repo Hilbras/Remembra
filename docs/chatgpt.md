@@ -27,7 +27,9 @@ curl http://localhost:8787/health
 
 ## 2. HTTP API reference
 
-All endpoints except `/health` require the key via `x-api-key` or `Authorization: Bearer`.
+All data endpoints require the key via `x-api-key` or `Authorization: Bearer`.
+`/health`, `/`, and `/ui/*` are intentionally public shell/readiness routes;
+they do not return memory data.
 
 ### Store a memory
 

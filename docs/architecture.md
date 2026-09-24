@@ -29,10 +29,11 @@ How Remembra is put together, and where the extension seams are.
 ## MemoryBackend: the swap seam (audit Phase 3)
 
 `MemoryService` never touches the filesystem directly — it talks to the
-`MemoryBackend` interface (`src/backend.ts`). Today's implementation is
-`MemoryStore` (markdown files). A future SQLite/vector-DB backend only has to
-satisfy that interface; the tests include an `InMemoryBackend` proving the
-service runs unchanged against a non-file implementation.
+`MemoryBackend` interface (`src/backend.ts`). The shipped implementations are
+`SqliteBackend` (the default runtime) and `MemoryStore` (file/legacy/export
+backend). A future vector/database backend must satisfy the same contract; the
+tests include non-file implementations proving the service boundary is
+portable.
 
 Contract highlights:
 
@@ -157,11 +158,14 @@ The file and SQLite backends now
 accept optional tenant filters, hide tenant rows from unscoped legacy reads,
 and apply tenant predicates to point/candidate/history/audit paths. The strict
 service path now requires opaque contexts, and HTTP/MCP transports bind them
-through trusted host resolvers. Queued handlers can re-check host membership,
-and embedding calls accept tenant-safe cache partitions. The CLI binds strict
-mode to an explicit local operator context and refuses legacy global recovery
-commands. Broader derived-cache invalidation remains staged in
-[v5-tenant-spec.md](v5-tenant-spec.md).
+through trusted host resolvers. V5.0.2 adds the pure centralized evaluator in
+`src/authorization.ts`, exact user/agent/project filtering, and explicit
+`tenant:export` authority. Queued handlers can re-check host membership, and
+embedding calls accept tenant-safe cache partitions. The CLI binds strict mode
+to an explicit local operator context and refuses legacy global recovery
+commands. See [v5.0.2 authorization](v5.0.2-authorization.md) and the
+[final threat model](v5-threat-model.md). Broader derived-cache invalidation
+remains staged in [v5-tenant-spec.md](v5-tenant-spec.md).
 
 ## Schema versioning
 

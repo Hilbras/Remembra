@@ -156,6 +156,20 @@ There is no platform-wide memory that bypasses organization matching. A memory
 with `scope: "global"` means global **within its organization**, not global
 across tenants.
 
+### V5.0.2 user/agent isolation clarification
+
+The effective selector rule is conjunctive. If a trusted principal carries a
+`projectId`, `userId`, or `agentId`, the resource must carry the same value.
+If the principal omits a selector, a scoped principal does not automatically
+gain access to resources carrying that dimension. Only an explicitly
+organization-wide trusted principal (no optional selectors plus the required
+capability) can cross optional dimensions within its organization.
+`tenant:admin` does not erase explicit selectors, and
+`provenance.agentId` remains attribution rather than authorization.
+
+The V5.0.2 permission mapping and migration rule are documented in
+[`v5.0.2-authorization.md`](v5.0.2-authorization.md).
+
 ## V4.9 compatibility matrix
 
 V5 preserves the following V4.9 behavior in `legacy` mode and during a staged

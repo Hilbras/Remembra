@@ -6,26 +6,27 @@ The gate runner is fail-closed and stops at the first failure.
 ```bash
 npm run release:check
 # During the final release, also enforce the version:
-npm run release:check -- --expect-version 5.0.0
+npm run release:check -- --expect-version 5.0.2
 ```
 
-Run the complete command once under each supported Node runtime:
+Run the complete command once under each supported Node runtime. Rebuild the
+native `better-sqlite3` addon after switching runtimes so the ABI matches:
 
 ```bash
 nvm use 18.20.8
 npm rebuild better-sqlite3
-npm run release:check -- --expect-version 5.0.0
+npm run release:check -- --expect-version 5.0.2
 
 nvm use 24.21.0
 npm rebuild better-sqlite3
-npm run release:check -- --expect-version 5.0.0
+npm run release:check -- --expect-version 5.0.2
 ```
 
 The runner executes:
 
 1. TypeScript build and UI copy.
 2. Full Node test suite.
-3. Tenant/security adversarial matrix.
+3. Tenant/security adversarial matrix, including `SEC-AUTH-001` through `SEC-AUTH-005`.
 4. Recovery/corruption/migration matrix.
 5. Documentation-link check.
 6. High-severity dependency audit.

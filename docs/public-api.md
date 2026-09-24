@@ -89,7 +89,7 @@ content-free liveness check.
 | POST | `/api/v1/context` | V5 deterministic token-bounded context assembly |
 | POST | `/maintain` | decay sweep + backfill |
 | GET | `/snapshot` | full export |
-| POST | `/import` | idempotent, atomic import |
+| POST | `/import` | preflighted, idempotent import; per-record operational failures can leave a partial application |
 | DELETE | `/memories/:id` | forget |
 
 ### Versioned API
@@ -126,6 +126,11 @@ metadata may still be stored as untrusted provenance, and the SDK rejects
 server-managed `owner`/`access` and agent-attribution fields before
 transmission. Provenance IDs used for ordinary audit correlation remain
 non-authenticating metadata.
+
+V5.0.2 routes use the same centralized operation policy: project/user/agent
+selectors cannot widen visibility, export requires `tenant:export`, and
+ordinary restore cannot assign tenantless records. See
+[`v5.0.2-authorization.md`](v5.0.2-authorization.md).
 
 ### V5 context assembly
 
@@ -187,7 +192,9 @@ limit) completes before any write. Valid mutations then run sequentially;
 operational failures are returned per item and successful/failed rows retain
 input order. The first batch slice is **not** a cross-item transaction. Export
 returns a normal import-compatible snapshot plus per-item selection outcomes;
-relations to unselected memories are omitted.
+relations to unselected memories are omitted. In strict mode the export branch
+requires the explicit `tenant:export` capability and signs its result when a
+snapshot key is configured.
 
 Batch limits are 100 items and 10 MiB. HTTP mixed results use status `200`;
 top-level malformed requests use the normal `INVALID_INPUT` envelope.
@@ -205,7 +212,7 @@ top-level malformed requests use the normal `INVALID_INPUT` envelope.
 | `IO_ERROR` | 500 | filesystem failure |
 | `LLM_ERROR` | 502 | provider failure after bounded retries / malformed provider response / cancelled |
 | `PROVIDER_TIMEOUT` | 504 | provider exceeded the timeout or overall budget (4.0.1, plan §3.7) |
-| `ENCRYPTED_NO_KEY` | 503 | files encrypted, key missing/wrong |
+| `ENCRYPTED_NO_KEY` | 503 | file-backend memory/history is encrypted and the key is missing/wrong; SQLite/snapshot encryption is not implied |
 | `QUEUE_FULL` | 429 | bounded background job queue is full |
 | `QUEUE_CLOSED` | 503 | background job queue is shutting down |
 | `INTERNAL` | 500 | anything unclassified |
@@ -245,18 +252,22 @@ Envelope written by `remembra export` and `GET /snapshot`:
   UUIDv7); ≤ 100 000 memories per file.
 - Pre-4.1.0 snapshots (string `provenance`, untyped `related: […]`, no
   `trust`) import cleanly — those shapes are normalized on read/import.
-- Import validates the **whole file before writing** (atomic), preserves ids,
-  and is idempotent — re-importing skips existing ids (`{imported, skipped}`).
+- Import validates the **whole file before the first write** and preserves ids;
+  writes are sequential/idempotent, so a later operational failure can leave a
+  partial application. Restore from a verified backup or rerun idempotently.
 - Strict tenant services add an `integrity` object with an HMAC-SHA256 value
-  over the canonical envelope. Unsigned, tampered, or wrongly keyed snapshots
-  return `SNAPSHOT_INVALID` before any record is read or written. Legacy mode
-  continues to accept unsigned V4 snapshots during migration.
+  over the canonical envelope. This authenticates plaintext content; it does
+  not encrypt it or provide anti-replay freshness. Unsigned, tampered, or
+  wrongly keyed snapshots return `SNAPSHOT_INVALID` before any record is
+  written. Legacy mode continues to accept unsigned V4 snapshots during
+  migration.
 - Strict HTTP data requests reject tenant-bearing headers, query parameters,
   and body fields with `400`; signed snapshot records are the only permitted
   exception and are still bound to the authenticated tenant context.
-- Keyed CLI export/import uses atomic signed snapshot files (temporary file,
-  fsync, rename); readers reject symlinks, oversized files, and tampering before
-  invoking the service.
+- Keyed CLI export/import uses signed snapshot files (temporary file, fsync,
+  rename); readers reject symlinks, oversized files, and tampering before
+  invoking the service. Snapshot JSON and SQLite backups remain plaintext
+  artifacts unless the surrounding storage/transport protects them.
 
 ## CLI
 
@@ -264,15 +275,15 @@ Envelope written by `remembra export` and `GET /snapshot`:
 |---------|----------|
 | `remembra` | MCP server on stdio (default) |
 | `remembra --http [--port N]` | HTTP API + dashboard |
-| `remembra export [file]` | write a snapshot (stdout if omitted) |
-| `remembra import [file]` | atomic, idempotent import |
+| `remembra export <file>` | write a snapshot; a filename is required |
+| `remembra import <file>` | preflighted, idempotent import; later per-record failures can be partial |
 | `remembra maintain` | one-shot decay sweep + backfill, prints JSON |
-| `remembra encrypt` / `remembra decrypt` | convert the tree at rest (needs `REMEMBRA_ENCRYPT_KEY`) |
-| `remembra migrate` | manually trigger file → SQLite migration (V4.3.0) |
-| `remembra export-markdown <dir>` | dump active memories as `.md` files (V4.3.0) |
-| `remembra import-markdown <dir>` | import `.md` files into SQLite (V4.3.0) |
-| `remembra backup <file>` | copy DB + write SHA-256 sidecar (V4.3.0) |
-| `remembra restore <file>` | verify checksum and atomically replace DB (V4.3.0) |
+| `remembra encrypt` / `remembra decrypt` | legacy/non-tenant file-root conversion (needs `REMEMBRA_ENCRYPT_KEY`; strict mode refuses it) |
+| `remembra migrate` | manually trigger file → SQLite migration (V4.3.0; strict mode uses signed tenant migration) |
+| `remembra export-markdown <dir>` | legacy file-backend Markdown export; strict mode refuses it |
+| `remembra import-markdown <dir>` | legacy Markdown import; strict mode refuses it |
+| `remembra backup <file>` | plaintext SQLite copy + SHA-256 sidecar (not application encryption) |
+| `remembra restore <file>` | verify checksum and atomically replace DB (V4.3.0; strict mode uses recovery workflow) |
 
 ## Provider policy (4.0.1, plan §3.7)
 

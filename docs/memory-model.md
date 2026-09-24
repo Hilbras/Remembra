@@ -295,8 +295,9 @@ Digest extraction dedupes in three tiers:
 
 ## Storage format
 
-Memories are plain markdown files with frontmatter — greppable, editable by hand,
-git-friendly:
+The file backend represents memories as Markdown with frontmatter —
+greppable, editable by hand, and git-friendly. SQLite is the default runtime
+backend; the Markdown tree remains the portable/legacy representation:
 
 ```markdown
 ---
@@ -335,9 +336,9 @@ $REMEMBRA_HOME/            # defaults to ~/.remembra
 └── .history/<id>/          # superseded pre-images + reasons.json (version history)
 ```
 
-> Opt-in: with `REMEMBRA_ENCRYPT_KEY` set, every file above is written as
-> AES-256-GCM ciphertext instead (same names, detected by magic bytes) —
-> see [security.md](security.md#encryption-at-rest-opt-in-380). With
-> `REMEMBRA_REDACT=1`, PII patterns are replaced with typed placeholders
-> (`<EMAIL>`, `<CARD>`, …) *before* this file is ever written — see
-> [security.md](security.md#pii-redaction-opt-in-380).
+> Opt-in file-backend encryption: with `REMEMBRA_ENCRYPT_KEY` set, covered
+> file-backend memory/history files are written as AES-256-GCM ciphertext
+> (same names, detected by magic bytes). This does not encrypt SQLite pages,
+> exports, or transport — see [security.md](security.md#file-backend-encryption-opt-in).
+> With `REMEMBRA_REDACT=1`, PII patterns are replaced on normal ingest paths
+> before storage — see [security.md](security.md#pii-redaction-opt-in-380).

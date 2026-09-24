@@ -112,7 +112,7 @@ metrics, export/import. See **[ui.md](ui.md)**; disable with
 | `REMEMBRA_CACHE_SIZE` | `10000` | Parse-cache LRU capacity (entries); `0` disables caching |
 | `REMEMBRA_HISTORY_LIMIT` | `20` | Max version snapshots kept per memory; `0` disables history |
 | `REMEMBRA_REDACT` | *(unset)* | `1` enables PII redaction at ingest (irreversible) — see [security.md](security.md#pii-redaction-opt-in-380) |
-| `REMEMBRA_ENCRYPT_KEY` | *(unset)* | 64-hex 32-byte key → AES-256-GCM at rest; run `remembra encrypt` — see [security.md](security.md#encryption-at-rest-opt-in-380) |
+| `REMEMBRA_ENCRYPT_KEY` | *(unset)* | 64-hex key for covered file-backend memory/history encryption; not SQLite/snapshot/transport — see [security.md](security.md#file-backend-encryption-opt-in) |
 | `REMEMBRA_PROVIDER_TIMEOUT_MS` | `60000` | Per-attempt timeout for LLM/embedding calls (4.0.1) |
 | `REMEMBRA_PROVIDER_RETRIES` | `2` | Bounded provider retries (network/408/429/5xx) |
 | `REMEMBRA_PROVIDER_BUDGET_MS` | `180000` | Wall-clock cap across all provider attempts |
@@ -124,9 +124,9 @@ LLM/embedding key setup: see **[providers.md](providers.md)**.
 
 Strict mode is local-operator configuration, not a public tenant selector. The
 HTTP/MCP server binds the resulting context to the process; backup, restore,
-migration, and encryption commands refuse their legacy global forms until the
-tenant-aware recovery workflow is enabled. See
-[v5-tenant-spec.md](v5-tenant-spec.md).
+migration, Markdown, and encryption commands refuse their legacy global forms
+in strict mode. See [v5-tenant-spec.md](v5-tenant-spec.md) and
+[v5.0.2-authorization.md](v5.0.2-authorization.md).
 
 ## Tips
 

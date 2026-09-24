@@ -391,7 +391,7 @@ remembra import backup.json --dry-run
 remembra import backup.json
 ```
 
-In strict mode, exports and imports use a canonical HMAC envelope and require `REMEMBRA_SNAPSHOT_KEY`. The complete snapshot/reference preflight happens before any write. Tenant migration adds a signed manifest, checksum preflight, durable checkpoints, verified resume, failure records, and an explicit publication marker. For the V5.0.1 analyze/plan/apply commands, see the [security and migration guide](docs/v5.0.1-security-and-migration.md).
+In strict mode, exports and imports use a canonical HMAC envelope and require `REMEMBRA_SNAPSHOT_KEY`. The complete snapshot/reference preflight happens before any write; per-record restore is idempotent but an operational failure after preflight can leave a partial application, so keep a verified backup. Tenant migration adds a signed manifest, checksum preflight, durable checkpoints, verified resume, failure records, and an explicit publication marker. For the V5.0.1 analyze/plan/apply commands, see the [security and migration guide](docs/v5.0.1-security-and-migration.md).
 
 SQLite operators can use the verified recovery helpers from `@hilbras/remembra/sqlite-recovery` for online backup, integrity/schema checks, atomic restore, and retained-previous rollback. Close the live service before restoring and reject active SQLite sidecars.
 
@@ -433,7 +433,7 @@ Remembra is designed to fail closed at the boundaries that matter:
 - Public identity fields and tenant headers are rejected rather than trusted.
 - Snapshots, migrations, directories, and SQLite restores reject symlinks, oversized inputs, tampering, and invalid references.
 - Audit, structured logs, and Prometheus metrics are available for operational review.
-- Optional PII redaction (`REMEMBRA_REDACT=1`) and AES-256-GCM encryption at rest (`REMEMBRA_ENCRYPT_KEY`) are available for higher-risk deployments.
+- Optional PII redaction (`REMEMBRA_REDACT=1`) and AES-256-GCM file-backend encryption (`REMEMBRA_ENCRYPT_KEY`) are available for higher-risk deployments; SQLite, snapshots, and transport need separate volume/backup/TLS controls.
 
 ### Deployment checklist
 
@@ -446,7 +446,7 @@ Remembra is designed to fail closed at the boundaries that matter:
 - [ ] Monitor `/health`, `/metrics`, structured logs, and queue/provider failures.
 - [ ] Use filesystem encryption and OS process isolation in addition to application-level controls.
 
-Read [security](docs/security.md), [self-hosting](docs/self-hosting.md), and [observability](docs/observability.md) before exposing a deployment.
+Read [security](docs/security.md), [self-hosting](docs/self-hosting.md), [V5.0.2 authorization](docs/v5.0.2-authorization.md), the [final V5 threat model](docs/v5-threat-model.md), and [observability](docs/observability.md) before exposing a deployment.
 
 ---
 
@@ -460,7 +460,7 @@ Read [security](docs/security.md), [self-hosting](docs/self-hosting.md), and [ob
 | `REMEMBRA_PORT` | `8787` | HTTP port; `--port` overrides it |
 | `REMEMBRA_UI` | enabled | Set `0` to disable dashboard routes |
 | `REMEMBRA_REDACT` | disabled | Set `1` for irreversible ingest-time PII redaction |
-| `REMEMBRA_ENCRYPT_KEY` | disabled | 32-byte hex key for AES-256-GCM at rest |
+| `REMEMBRA_ENCRYPT_KEY` | disabled | 32-byte hex key for AES-256-GCM file-backend memory/history encryption (not SQLite/snapshots/transport) |
 | `REMEMBRA_LLM` | `openai` | Digest provider |
 | `REMEMBRA_EMBEDDINGS` | `none` | Embedding provider; `none` keeps keyword mode |
 | `REMEMBRA_TENANT_MODE` | `legacy` | `legacy` or fail-closed `strict` |
@@ -490,7 +490,7 @@ Additional limits and provider controls are documented in [self-hosting](docs/se
                            ▼
 ┌──────────────────────────────────────────────────────────────┐
 │ MemoryBackend                                               │
-│ SqliteBackend (default CLI) · MemoryStore (Markdown)         │
+│ SqliteBackend (default CLI) · MemoryStore (file backend)     │
 └──────────────────────────┬───────────────────────────────────┘
                            │
        ┌───────────────────┴───────────────────┐
@@ -504,6 +504,7 @@ Additional limits and provider controls are documented in [self-hosting](docs/se
 Key design properties:
 
 - transports are thin; policy and authorization live in the service/backend boundary;
+- V5.0.2 makes project/user/agent selectors conjunctive and requires explicit export authority;
 - SQLite and file backends implement the same tenant-aware contract;
 - atomic writes, advisory locking, and crash recovery protect local durability;
 - relation/history/audit/job paths apply the same tenant filter as primary reads;
@@ -550,7 +551,7 @@ The release gate includes build, tests, security/recovery matrices, documentatio
 | Clients and MCP setup | [Clients](docs/clients.md) · [Tools](docs/tools.md) |
 | HTTP and SDK | [Public API](docs/public-api.md) · [SDK](docs/sdk.md) |
 | V5 context | [Context contract](docs/v5-context-spec.md) · [Policy](docs/v5-policy.md) |
-| Tenants and migration | [Tenant contract](docs/v5-tenant-spec.md) · [V4.9 migration](docs/migration-v4.9.md) · [V5.0.1 migration guide](docs/v5.0.1-security-and-migration.md) |
+| Tenants and migration | [Tenant contract](docs/v5-tenant-spec.md) · [V5.0.2 authorization](docs/v5.0.2-authorization.md) · [V4.9 migration](docs/migration-v4.9.md) · [V5.0.1 migration guide](docs/v5.0.1-security-and-migration.md) |
 | Security | [Security model](docs/security.md) · [Threat model](docs/v5-threat-model.md) |
 | Storage and recovery | [Storage](docs/storage.md) · [Architecture](docs/architecture.md) |
 | Providers | [Providers](docs/providers.md) |

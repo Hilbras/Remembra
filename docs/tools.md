@@ -243,14 +243,16 @@ Returns counts + affected ids. Also available as `POST /maintain` and the
 
 ```bash
 remembra maintain            # decay sweep + vector backfill (one-shot, prints JSON)
-remembra export <file>.json  # full backup snapshot incl. archived memories
-remembra import <file>.json  # restore; validates whole file first (atomic), idempotent
-remembra encrypt             # migrate the whole tree to ciphertext at rest (needs REMEMBRA_ENCRYPT_KEY)
-remembra decrypt             # migrate back to plain markdown (also needs the key)
+remembra export <file>.json  # plaintext snapshot; strict mode signs it when keyed
+remembra import <file>.json  # preflighted/idempotent; later write failures can be partial
+remembra encrypt             # legacy/non-tenant file-root encryption migration
+remembra decrypt             # legacy/non-tenant file-root decryption migration
 ```
 
-Import skips existing ids and exact-duplicate contents, so running it twice —
-or importing into a machine that already has the data — is always safe.
+Import skips existing ids and exact-duplicate contents, so running it twice is
+safe. It is not a cross-item transaction: a later operational write failure can
+leave a partial application. In strict mode use the signed tenant migration
+workflow; legacy Markdown/encryption commands are refused.
 
 ---
 

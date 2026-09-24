@@ -1,6 +1,6 @@
 # Security & Trust Model
 
-Remembra v3.1.0 hardening notes — what's protected, what's a trust decision,
+Remembra V5.0.2 hardening notes — what's protected, what's a trust decision,
 and how to deploy safely.
 
 ## Trust model
@@ -69,7 +69,26 @@ tenant snapshot import as security boundaries:
 See the [V5.0.1 security and migration guide](v5.0.1-security-and-migration.md)
 for commands and permanent regression IDs.
 
-## Enforced protections (3.1.0)
+## V5.0.2 authorization consistency
+
+V5.0.2 makes the optional tenant dimensions explicit and routes protected
+operations through one decision layer:
+
+- organization, project, user, and agent selectors are conjunctive; an absent
+  selector never widens a scoped principal;
+- `tenant:admin` does not erase explicit selectors, and export requires the
+  separate `tenant:export` capability;
+- file/SQLite point reads, candidate SQL/counts, history, entities, batches,
+  snapshots, and scoped migration use the same effective-visibility rule;
+- provider, service, and transport authorization occurs before provider work or
+  mutation; public provider errors remain generic;
+- normal service calls and queued work recheck a configured membership
+  verifier before use.
+
+See [V5.0.2 authorization](v5.0.2-authorization.md) and the finalized
+[V5 threat model](v5-threat-model.md).
+
+## Enforced protections (V5.0.2)
 
 | Protection | Mechanism |
 |------------|-----------|
@@ -85,8 +104,9 @@ for commands and permanent regression IDs.
 | **ID collisions** | UUIDv7 ids (4.1.0) — unique from entropy, no existence scan |
 | **Content-Length** | Set on every response |
 | **Metrics auth (3.7.0)** | `GET /metrics` sits *after* the API-key check — counters and latencies never leak without the key (`/health` stays exempt for readiness probes) |
-| **PII redaction (3.8.0, opt-in)** | `REMEMBRA_REDACT=1` strips emails, Luhn-valid card numbers, SSNs, phone numbers and high-entropy secrets at the *ingest layer* (`memory_store`, digest items, merge output) — raw patterns never reach disk, embeddings, or export snapshots |
-| **Encryption at rest (3.8.0, opt-in)** | `REMEMBRA_ENCRYPT_KEY` → AES-256-GCM per file; reading an encrypted file without the key fails **loudly** (`ENCRYPTED_NO_KEY`, HTTP 503, `/health` 503) — never warn-skipped as if the data didn't exist |
+| **PII redaction (opt-in)** | `REMEMBRA_REDACT=1` applies the configured pattern filter on the normal store/digest ingest paths; it is pattern-based, not a compliance control, and update/snapshot paths require separate review |
+| **File-backend encryption (opt-in)** | `REMEMBRA_ENCRYPT_KEY` → AES-256-GCM per covered file; missing/wrong key fails loudly (`ENCRYPTED_NO_KEY`). It does not encrypt SQLite, snapshots, or transport |
+| **Central tenant authorization (V5.0.2)** | Pure operation/capability decisions plus exact organization/project/user/agent filters; export is separately authorized; stale membership fails closed when a verifier is configured |
 | **Web UI static routes (4.0.0)** | `/` + `/ui/*` serve a fixed extension whitelist (`.html/.css/.js/.map`) with decode-then-containment path checks inside `dist/ui`, regular files only, `nosniff`, and a **CSP with no `unsafe-inline`** (`default-src 'none'`, same-origin scripts/styles/API only). The shell is unauthenticated like `/health` (it holds no data — every API call the page makes still carries the key); `REMEMBRA_UI=0` disables serving entirely |
 | **Rate limiting (4.4.0)** | Per-API-key sliding window (`REMEMBRA_RATE_LIMIT`/`REMEMBRA_RATE_WINDOW_MS`). Exceeded → 429 + `Retry-After`. `/health`, unkeyed `/metrics`, UI exempt |
 | **Secure response headers (4.4.0)** | Every JSON response includes `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Strict-Transport-Security`, `X-XSS-Protection: 0`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`. Toggle off with `REMEMBRA_SECURE_HEADERS=0` |
@@ -95,7 +115,7 @@ for commands and permanent regression IDs.
 | **Concurrency limits (4.4.0)** | `REMEMBRA_MAX_CONCURRENT` (default 32); when the cap is reached new requests get 503 |
 | **Prompt injection detection (4.4.0)** | Pattern-based scan on every `memory_store` call flags role overrides, system prompt leaks, jailbreak patterns. Flagged memories carry `meta.injected: true` — informational, not blocked |
 | **Sensitive data policies (4.4.0)** | `REMEMBRA_SENSITIVE_POLICY` (`allow` · `redact` · `reject` · `quarantine`). Detects API keys, AWS creds, private keys, passwords, financial secrets. `reject` → 400; `quarantine` → stored with `trust: unverified` + `meta.quarantined: true` |
-| **Audit event stream (4.4.0)** | `GET /audit` returns recent audit events (`memory.created`, `memory.updated`, `memory.archived`, etc.) with pagination; also emitted to the structured log sink |
+| **Audit event stream (best effort)** | `GET /audit` returns recent backend mutation events when the selected backend provides them; SQLite actions are backend-specific and the file backend has no audit table. This is not an immutable or complete anti-repudiation ledger |
 
 ## Web dashboard (4.0.0)
 
@@ -118,15 +138,16 @@ for commands and permanent regression IDs.
 
 Full page-by-page guide: [ui.md](ui.md).
 
-## Encryption at rest (opt-in, 3.8.0)
+## File-backend encryption (opt-in)
 
-Plain markdown stays the default (you can read and edit your memories —
-that's the point). Setting a key flips storage to ciphertext:
+SQLite is the default runtime backend and is not application-level encrypted.
+The file backend remains human-readable by default. Setting a key encrypts
+covered file-backend memory/history writes:
 
 ```bash
 export REMEMBRA_ENCRYPT_KEY="$(node -p 'require("node:crypto").randomBytes(32).toString("hex")')"
-remembra encrypt    # migrate the existing tree (memories + history) in place
-remembra --http     # from here on, writes are AES-256-GCM
+remembra encrypt    # legacy/non-tenant file-root migration (memories + history)
+remembra --http     # covered file-backend writes are AES-256-GCM
 ```
 
 | | |
@@ -160,8 +181,9 @@ copy of the data is encrypted.
 export REMEMBRA_REDACT=1
 ```
 
-Everything that enters storage — `memory_store` calls, every digest-extracted
-item, and merge output — runs through a pattern filter first:
+The normal `memory_store`, update, digest-item, and snapshot-import paths
+apply the configured sensitive-data policy. Pattern matching is not a complete
+DLP control, and provider transcripts can still leave the process:
 
 | Matches | Placeholder | Guard against false positives |
 |---------|-------------|------------------------------|
@@ -205,20 +227,22 @@ remembra --http
 - [ ] LLM/embedding keys scoped to least privilege
 - [ ] Consider `REMEMBRA_REDACT=1` before storing content derived from other
       people's data (redaction is irreversible — decide once, up front)
-- [ ] Consider `REMEMBRA_ENCRYPT_KEY` when the store leaves your machine
-      (backups, shared filesystems) — generate 32 random bytes, store the key
-      in your secret manager, run `remembra encrypt`
+- [ ] Consider `REMEMBRA_ENCRYPT_KEY` for a **file backend** that leaves your
+      machine; use encrypted volumes/backups for SQLite and TLS for transport.
+      The CLI encryption migration is legacy/non-tenant scoped.
 
 ## Known non-goals (current version)
 
-- **No multi-tenancy** — one store per installation; scope isolates *projects*,
-  not *users*. Never share one instance between mutually untrusting users.
+- **Legacy mode is single-tenant** — strict V5 mode provides organization,
+  project, user, and agent isolation only when a host supplies trusted identity
+  and membership resolution. Never share a legacy-mode instance between
+  mutually untrusting users.
 - **Single-writer assumption per store, now cross-process safe** — mutations
   take an advisory lockfile (`O_EXCL`, stale-steal, typed `LOCK_TIMEOUT`), so
   an MCP server, the `remembra maintain` CLI, and a session digest can run
   against one store concurrently on one machine. Network filesystems with
   unreliable `O_EXCL` semantics are untested; `remembra export` for backups
   across machines.
-- Encryption-at-rest and PII redaction are **off by default** (both since
-  3.8.0, both opt-in above) — defaults keep files human-readable and
-  byte-faithful to what you stored.
+- File-backend encryption and PII redaction are **off by default** — defaults
+  keep the selected file backend human-readable; SQLite confidentiality and
+  transport protection remain separate operator responsibilities.

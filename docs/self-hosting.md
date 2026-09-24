@@ -30,8 +30,10 @@ remembra --http
 ```
 
 The fallback emits a warning and appears in `/health` as
-`{"backend":"file","fallback":true}`. Do not use it to conceal corruption or
-permission failures. See the [V5.0.1 security and migration guide](v5.0.1-security-and-migration.md).
+`{"backend":"file","fallback":true}`. It is permission to fall back after a
+SQLite startup failure, not a backend selector. Do not use it to conceal
+corruption or permission failures. See the [V5.0.1 security and migration
+guide](v5.0.1-security-and-migration.md).
 
 ## Storage and backups
 
@@ -51,9 +53,12 @@ memory data.
 
 `REMEMBRA_ENCRYPT_KEY` encrypts file-backend memory and history files; it does
 not encrypt SQLite pages, decrypted export JSON, process memory, or network
-transport. Snapshot HMAC signing provides integrity/authenticity, not
-confidentiality. For a non-loopback deployment, terminate TLS at the proxy and
-use encrypted volumes or backups for the selected backend.
+transport. The `remembra encrypt`/`decrypt` migration is a legacy/non-tenant
+file-root operation and strict mode refuses it; use a tenant-aware storage
+and key-management design for strict deployments. Snapshot HMAC signing
+provides integrity/authenticity, not confidentiality. For a non-loopback
+deployment, terminate TLS at the proxy and use encrypted volumes or backups
+for the selected backend.
 
 ## Resource limits
 

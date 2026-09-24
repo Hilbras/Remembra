@@ -33,7 +33,7 @@ const SENSITIVE_PATTERNS: Array<{ regex: RegExp; category: string }> = [
   // API keys / tokens
   { regex: /\b(?:sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|ghu_[a-zA-Z0-9]{20,}|github_pat_[a-zA-Z0-9]+)\b/g, category: "api_key" },
   { regex: /\bAKIA[A-Z0-9]{16}\b/g, category: "aws_key" },
-  { regex: /\b(?:Bearer\s+)?[a-zA-Z0-9\-._~+\/]{20,}={0,2}\b/g, category: "token" },
+  { regex: /\b(?:Bearer\s+)?[a-zA-Z0-9\-._~+\/]{20,512}={0,2}\b/g, category: "token" },
   // Private keys
   { regex: /-----BEGIN\s+(?:RSA|EC|DSA|OPENSSH|PGP)?\s*PRIVATE KEY-----/g, category: "private_key" },
   // Passwords in common formats

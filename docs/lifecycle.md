@@ -1,4 +1,4 @@
-# Memory Lifecycle & Maintenance (v3)
+# Memory Lifecycle & Maintenance (V5)
 
 Remembra memories age. Instead of the store growing forever and stale facts
 competing with current ones, memories move through a lifecycle — and nothing
@@ -17,7 +17,7 @@ active ──(unused 90d)──► archived ──(365d past archive)──► d
 | **Active** | normal storage | fully searchable |
 | **Downrank** | age (recency score decays naturally) | older memories rank lower |
 | **Archived** | unused for `REMEMBRA_ARCHIVE_AFTER_DAYS` (default **90**) | moved to `archived/` — out of search, still visible via `memory_list {includeArchived: true}` |
-| **Deleted** | `REMEMBRA_ARCHIVE_TTL_DAYS` (default **365**) after archiving | file removed permanently |
+| **Deleted** | `REMEMBRA_ARCHIVE_TTL_DAYS` (default **365**) after archiving | current file/backend row removed; this is not secure erasure of history, exports, backups, replicas, or provider copies |
 
 ### Rules
 
@@ -34,8 +34,9 @@ active ──(unused 90d)──► archived ──(365d past archive)──► d
   survive the full 90 + 365 days of neglect first.
 - **Revival is automatic** — digesting an exact duplicate of an archived memory
   brings it back to active with a fresh clock.
-- **Reversible until deleted** — archived files sit in plain markdown under
-  `~/.remembra/archived/`; move one back by hand or re-store it.
+- **Reversible until deleted** — file-backend records sit under the selected
+  backend's archived namespace; move one back by hand or re-store it. SQLite
+  lifecycle operations follow the same service policy.
 
 ## When maintenance runs
 
