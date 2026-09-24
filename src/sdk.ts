@@ -87,6 +87,8 @@ export interface ListOptions {
   includeExpired?: boolean;
   includeFuture?: boolean;
   offset?: number;
+  /** Opaque keyset cursor; do not combine with offset. */
+  cursor?: string;
   limit?: number;
 }
 
@@ -195,7 +197,9 @@ export interface ListResponse {
   memories: Memory[];
   total: number;
   offset?: number;
+  cursor?: string;
   limit?: number;
+  nextCursor?: string;
 }
 
 export type SnapshotDocument = SnapshotInput;

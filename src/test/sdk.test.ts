@@ -303,6 +303,32 @@ test("SDK forwards AbortSignal", async () => {
   assert.equal(seenSignal, controller.signal);
 });
 
+test("SDK list follows an opaque cursor without duplicate pages", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-sdk-cursor-"));
+  const service = new MemoryService(new MemoryStore(dir));
+  const server = createHttpServer(service, { port: 0, apiKey: "cursor-key" });
+  try {
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const address = server.address() as { port: number };
+    const client = new Remembra({ endpoint: `http://127.0.0.1:${address.port}`, apiKey: "cursor-key" });
+    await client.store({ type: "fact", content: "cursor one" });
+    await client.store({ type: "fact", content: "cursor two" });
+    await client.store({ type: "fact", content: "cursor three" });
+
+    const first = await client.list({ limit: 1 });
+    assert.equal(first.memories.length, 1);
+    assert.ok(first.nextCursor);
+    const second = await client.list({ limit: 1, cursor: first.nextCursor });
+    assert.equal(second.memories.length, 1);
+    assert.notEqual(second.memories[0].id, first.memories[0].id);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("SDK completes an authenticated store/search/get/forget round trip", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-sdk-http-"));
   const service = new MemoryService(new MemoryStore(dir));

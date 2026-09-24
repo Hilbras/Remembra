@@ -52,7 +52,7 @@ opaque tenant contract is available from `@hilbras/remembra/tenant`.
 - `store(input)`
 - `search(params)`
 - `context({ query, scope, maxTokens })` — deterministic token-bounded context (V5)
-- `list(params)`
+- `list(params)` — supports legacy `offset` pagination or stable opaque `cursor` pagination (do not combine them)
 - `get(id)`
 - `update(id, patch)`
 - `forget(id)`

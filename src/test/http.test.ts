@@ -87,6 +87,11 @@ test("v1 API namespace preserves auth, headers, and legacy handler behavior", as
     code: "INVALID_INPUT",
   };
   assert.deepEqual(await invalid.json(), invalidBody);
+  const badCursor = await fetch(`${base}/api/v1/memories?cursor=not-a-valid-cursor`, {
+    headers: { "x-api-key": "test-key" },
+  });
+  assert.equal(badCursor.status, 400);
+  assert.equal((await badCursor.json() as { code?: string }).code, "INVALID_INPUT");
   const legacyInvalid = await fetch(`${base}/memories/batch`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": "test-key" },

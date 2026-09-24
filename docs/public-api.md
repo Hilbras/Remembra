@@ -80,7 +80,7 @@ content-free liveness check.
 | POST | `/memories/batch` | bounded store/update/delete/selected-export batch |
 | PUT | `/memories/:id` | patch |
 | GET | `/memories/search` | search (`query`/`q`, `scope`, `type`, `limit`, `explain`) |
-| GET | `/memories` | list (`scope`, `type`, `includeArchived`, pagination) |
+| GET | `/memories` | list (`scope`, `type`, `includeArchived`, legacy `offset` or stable opaque `cursor` pagination) |
 | POST | `/memories/compress` | bounded compression of selected/scope memories |
 | GET | `/memories/:id` | one memory + related + backlinks |
 | POST | `/memories/:id/relate` | link / unlink |

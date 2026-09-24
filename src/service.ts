@@ -184,6 +184,44 @@ function batchSummary(results: readonly BatchOutcome[]): BatchSummary {
   return { requested: results.length, succeeded, failed: results.length - succeeded };
 }
 
+interface ListCursor {
+  version: 1;
+  updatedAt: string;
+  id: string;
+}
+
+function encodeListCursor(memory: Memory): string {
+  const cursor: ListCursor = { version: 1, updatedAt: memory.updatedAt, id: memory.id };
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeListCursor(value: string): ListCursor {
+  if (value.length < 1 || value.length > 512) throw new RemembraError("INVALID_INPUT", "cursor is invalid");
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("shape");
+    const record = parsed as Record<string, unknown>;
+    if (
+      record.version !== 1
+      || typeof record.updatedAt !== "string"
+      || !Number.isFinite(Date.parse(record.updatedAt))
+      || typeof record.id !== "string"
+      || record.id.length < 1
+      || record.id.length > 128
+      || !/^[A-Za-z0-9._-]+$/.test(record.id)
+    ) throw new Error("fields");
+    return { version: 1, updatedAt: record.updatedAt, id: record.id };
+  } catch {
+    throw new RemembraError("INVALID_INPUT", "cursor is invalid");
+  }
+}
+
+function compareMemoryDescending(left: Memory, right: Memory | ListCursor): number {
+  if (left.updatedAt !== right.updatedAt) return left.updatedAt < right.updatedAt ? 1 : -1;
+  if (left.id === right.id) return 0;
+  return left.id < right.id ? 1 : -1;
+}
+
 function recordBatchMetrics(operation: string, results: readonly BatchOutcome[]): void {
   for (const result of results) {
     metrics.inc("remembra_batch_items_total", { operation, result: result.ok ? "success" : "failure" });
@@ -1081,6 +1119,8 @@ export class MemoryService {
     type?: MemoryType;
     includeArchived?: boolean;
     offset?: number;
+    /** Opaque stable cursor for keyset pagination. */
+    cursor?: string;
     limit?: number;
     /** V4.5: include quarantined memories. */
     includeQuarantined?: boolean;
@@ -1104,18 +1144,27 @@ export class MemoryService {
     if (q.type) memories = memories.filter((m) => m.type === q.type);
     const visibleIds = new Set(memories.map((memory) => memory.id));
     memories = memories.map((memory) => this.sanitizeMemory(memory, q, visibleIds));
-    memories.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    memories.sort(compareMemoryDescending);
     const total = memories.length;
+    if (q.cursor && q.offset !== undefined) {
+      throw new RemembraError("INVALID_INPUT", "cursor and offset cannot be combined");
+    }
+    const cursor = q.cursor ? decodeListCursor(q.cursor) : undefined;
+    if (cursor) memories = memories.filter((memory) => compareMemoryDescending(memory, cursor) > 0);
+    const remaining = memories.length;
 
-    // Pagination is opt-in: without offset/limit the full list is returned
-    // (unchanged behavior — existing clients depend on it).
-    const paginated = q.offset !== undefined || q.limit !== undefined;
+    // Pagination is opt-in: without offset/limit/cursor the full list is
+    // returned (unchanged behavior — existing clients depend on it).
+    const paginated = q.offset !== undefined || q.limit !== undefined || q.cursor !== undefined;
     const start = q.offset ?? 0;
     const page = paginated ? memories.slice(start, q.limit !== undefined ? start + q.limit : undefined) : memories;
+    const nextCursor = paginated && page.length > 0 && start + page.length < remaining
+      ? encodeListCursor(page[page.length - 1])
+      : undefined;
 
     const header =
-      paginated && total > 0
-        ? `Showing ${Math.min(start + 1, total)}–${Math.min(start + page.length, total)} of ${total}\n\n`
+      paginated && remaining > 0
+        ? `Showing ${Math.min(start + 1, remaining)}–${Math.min(start + page.length, remaining)} of ${remaining}\n\n`
         : "";
     const body =
       total === 0
@@ -1134,6 +1183,7 @@ export class MemoryService {
       total,
       ...(q.offset !== undefined ? { offset: q.offset } : {}),
       ...(q.limit !== undefined ? { limit: q.limit } : {}),
+      ...(nextCursor ? { nextCursor } : {}),
     };
   }
 
