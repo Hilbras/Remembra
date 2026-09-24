@@ -3,6 +3,14 @@
 Remembra exposes thirteen MCP tools. All of them work the same way across every
 MCP-compatible client.
 
+The V4.9 stable manifest is version `1` and contains exactly these names:
+`memory_store`, `memory_batch`, `memory_digest`, `memory_maintain`,
+`memory_search`, `memory_list`, `memory_forget`, `memory_get`,
+`memory_relate`, `memory_history`, `memory_update`, `memory_archive`, and
+`memory_revive`. Existing names are not renamed or removed; aliases are only
+introduced through an explicit compatibility table in a future minor release.
+The manifest is covered by an automated `tools/list` test.
+
 ## `memory_store`
 
 Persist a memory so it survives context-window resets.

@@ -61,6 +61,8 @@ provenance → trust → pinned → importance → recency → keyword overlap.
 
 ## Quick start
 
+Requires Node.js `18.14.1` or newer.
+
 ```bash
 npm install -g @hilbras/remembra
 ```
@@ -135,12 +137,32 @@ light-mode toggle. Guide: **[docs/ui.md](docs/ui.md)**.
 All data routes require `x-api-key` (or `Authorization: Bearer`) when
 `REMEMBRA_API_KEY` is set — only `/health` and the static dashboard shell are
 exempt (the shell holds no data; every API call it makes still carries the
-key). `REMEMBRA_UI=0` disables serving the UI entirely.
+key). New integrations should use the additive `/api/v1/*` namespace; legacy
+unversioned routes remain supported. `/api/v1/health` is public and v1
+responses include `X-Remembra-API-Version: v1`. `REMEMBRA_UI=0` disables
+serving the UI entirely.
 
 > 🔒 **Auth is now default-deny**: without `REMEMBRA_API_KEY` the server binds
 > to `127.0.0.1` only, and a non-loopback `REMEMBRA_HOST` without a key refuses
 > to start. Public deployments (ChatGPT) must set a key. See
 > [security.md](docs/security.md).
+
+### TypeScript SDK
+
+```ts
+import { Remembra } from "@hilbras/remembra/sdk";
+
+const memory = new Remembra({
+  endpoint: "http://127.0.0.1:8787",
+  apiKey: process.env.REMEMBRA_API_KEY,
+});
+
+await memory.store({ type: "fact", content: "The project uses /api/v1" });
+const results = await memory.search({ query: "api", limit: 5 });
+```
+
+The SDK is side-effect-free, uses the versioned HTTP namespace, and supports
+pagination, cancellation, and structured API errors. See [docs/sdk.md](docs/sdk.md).
 
 ## Backup & restore
 
@@ -179,6 +201,11 @@ Full reference: **[docs/tools.md](docs/tools.md)**
 
 | Doc | What's inside |
 |-----|--------------|
+| [Getting started](docs/getting-started.md) | Install, first MCP/HTTP/SDK setup |
+| [Migration](docs/migration-v4.9.md) | Upgrade from 4.8 and compatibility notes |
+| [Self-hosting](docs/self-hosting.md) | Deployment, backups, limits, agent mode |
+| [Troubleshooting](docs/troubleshooting.md) | Common auth, provider, import, and SDK issues |
+| [V4.9 compatibility](docs/v4.9-compatibility.md) | Release matrix and verification results |
 | [Memory model](docs/memory-model.md) | Types, scopes, ranking, storage format |
 | [Tool reference](docs/tools.md) | Every MCP tool with arguments |
 | [Public API](docs/public-api.md) | Stability contract: tools, HTTP routes, error codes, snapshot format, CLI |

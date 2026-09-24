@@ -7,6 +7,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 > (3.0.0 = v3, 4.0.0 = v4). Earlier releases used independent semver:
 > 0.1.0 = v1, 0.2.0 = v1.5, 0.3.0 = v2, 0.4.0 = v3.
 
+## [Unreleased] — V4.9.0 development
+
+**API, SDK & Compatibility Stabilization** — plan §12 of the Master
+Development Plan. This section remains unreleased until the compatibility
+matrix, Node 18 check, package audit, and release review are complete.
+
+### Added
+- **Versioned HTTP namespace**: additive `/api/v1/*` aliases for the existing
+  routes, with `X-Remembra-API-Version: v1` on success and transport errors,
+  public health behavior, bounded CORS exposure, and legacy parity tests.
+- **TypeScript SDK**: side-effect-free `@hilbras/remembra/sdk` fetch client with
+  typed store/search/list/item/lifecycle/relation/digest/batch methods,
+  pagination, cancellation, structured errors, and server-managed identity
+  rejection.
+- **Stable MCP manifest**: the 13 current tool names are centralized and tested
+  through an in-memory `tools/list` contract without renaming legacy tools.
+- **Provider adapters**: vendor-neutral LLM and embedding interfaces plus
+  OpenAI-compatible, Anthropic, Ollama, and injected-local factories. Built-in
+  adapters retain the bounded `providerFetch` policy and legacy environment
+  configuration.
+- **V4.9 documentation**: getting started, migration, self-hosting,
+  troubleshooting, SDK, MCP manifest, and provider-adapter guidance.
+
+### Compatibility notes
+- Existing unversioned HTTP routes and MCP names remain supported.
+- V1 preserves route-specific legacy response bodies; the SDK retains the raw
+  body and supplies `HTTP_<status>` only when a server code is absent.
+- Trusted agent context remains host-resolved; public identity fields are not
+  authentication. The SDK rejects server-managed identity/access fields before
+  transmission.
+
+### Verification
+
+- Full suite on Node 24: **340 passed, 0 failed**.
+- Full suite on Node 18.20.8: **340 passed, 0 failed**.
+- TypeScript build and SDK/provider import smoke tests pass on both runtimes.
+- `npm run docs:check`: **27 Markdown files, no missing relative links**.
+- `npm audit --omit=dev --audit-level=high`: **0 vulnerabilities**.
+- `npm publish --dry-run`: package contents and prepublish checks passed; tests
+  are excluded from the tarball.
+- 10K/50K V4.8 scale benchmark remains the retrieval baseline; V4.9 does not
+  change candidate planning or storage formats.
+
+The release is prepared as a candidate and is not tagged or published until the
+maintainer review gate is approved.
+
+---
+
 ## [4.8.0] — 2026-09-24
 
 **Performance & Scalability** — plan §11 of the Master Development Plan.

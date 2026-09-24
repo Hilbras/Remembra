@@ -31,7 +31,10 @@ const results = await memory.search({
 - `headers` — additional headers sent with every request.
 
 The SDK sends API credentials only. It does not accept or synthesize a trusted
-agent identity; agent context remains server-side.
+agent identity; agent context remains server-side. Server-managed
+`owner`/`access` and agent-attribution fields are rejected before a request is
+sent. Ordinary provenance IDs are audit metadata and do not authenticate a
+caller.
 
 ## Methods
 
@@ -50,7 +53,8 @@ agent identity; agent context remains server-side.
 
 All methods return typed decoded JSON. Non-2xx responses throw
 `RemembraApiError`, which exposes `status`, machine-readable `code`, and the
-decoded response `body`.
+decoded response `body`. If a legacy-compatible response has no machine-readable
+`code`, the SDK uses `HTTP_<status>` as a fallback while retaining the raw body.
 
 ```ts
 try {

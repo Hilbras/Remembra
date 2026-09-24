@@ -46,7 +46,7 @@ stays exempt so unauthenticated readiness probes keep working.
 
 | Series | Type | Labels | Meaning |
 |---|---|---|---|
-| `remembra_http_requests_total` | counter | `route`, `method`, `status` | Requests. `route` is a fixed low-cardinality label (`health`/`metrics`/`memories`/`search`/`digest`/`maintain`/`memory_item`/`memory_sub`/`data_io`/`ui`/`other`) — never the raw path. `memory_sub` = the `relate`/`history`/`archive`/`revive` sub-routes (3.8.0 + 4.0.0); `data_io` = `/snapshot`,`/import` and `ui` = the static dashboard shell (4.0.0). |
+| `remembra_http_requests_total` | counter | `route`, `method`, `status` | Requests. Legacy `route` labels are bounded (`health`/`metrics`/`memories`/`search`/`digest`/`batch`/`maintain`/`compress`/`audit`/`quality`/`agents`/`memory_item`/`memory_sub`/`data_io`/`ui`/`other`). Versioned requests add the bounded `api_v1_` prefix (for example, `api_v1_search`); raw paths and memory IDs are never used. `memory_sub` = the `relate`/`history`/`archive`/`revive` sub-routes; `data_io` = `/snapshot`/`/import`; `ui` = the static dashboard shell. |
 | `remembra_http_request_duration_seconds` | histogram | `route` | Request latency. |
 | `remembra_errors_total` | counter | `code`, `transport` | Classified errors (`http`/`mcp`). Codes: the [error codes](architecture.md#error-classification-audit-phase-2) plus `INVALID_INPUT`, `PAYLOAD_TOO_LARGE`, `INTERNAL`. |
 | `remembra_searches_total` | counter | — | `memory_search` invocations. |

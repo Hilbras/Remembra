@@ -18,7 +18,7 @@ files with a **higher** version are refused on read, never served partially —
 older readers skip newer files (logged, never deleted) instead of serving
 them half-understood.
 
-## MCP tools (12)
+## MCP tools (13)
 
 One stdio server, identical behavior in every MCP client. Full argument
 tables: [tools.md](tools.md).
@@ -35,11 +35,15 @@ tables: [tools.md](tools.md).
 | `memory_history` | version history with line diffs |
 | `memory_digest` | LLM extraction from a transcript |
 | `memory_maintain` | decay sweep + vector backfill |
+| `memory_batch` | bounded store/update/delete/selected-export batch |
 | `memory_forget` | delete by id |
 
-**Error envelope:** failures come back as a text result
-`[CODE] message` with `isError: true` — the codes below are the same across
-transports.
+**Error envelope:** service failures generally come back as a text result
+`[CODE] message` with `isError: true`. `memory_forget` preserves its legacy
+missing-id response (`isError: true` with the service message rather than a
+`[NOT_FOUND]` prefix); protocol/schema validation is handled by the MCP SDK.
+The V4.9 contract does not rename existing tools or change those legacy error
+shapes.
 
 ## HTTP API
 
@@ -59,12 +63,15 @@ Remembra does not trust an `agentId` JSON field or public agent header. See
 | GET | `/` · `/ui/*` | dashboard shell + assets (static, no auth) |
 | GET | `/health` | liveness/readiness (no auth) |
 | GET | `/metrics` | Prometheus text (auth when keyed) |
+| GET | `/audit` | bounded audit-event listing |
+| GET | `/quality` | memory quality/health summary |
 | GET | `/agents/:id` | agent attribution and memory counts (no memory content) |
 | POST | `/memories` | store |
 | POST | `/memories/batch` | bounded store/update/delete/selected-export batch |
 | PUT | `/memories/:id` | patch |
 | GET | `/memories/search` | search (`query`/`q`, `scope`, `type`, `limit`, `explain`) |
 | GET | `/memories` | list (`scope`, `type`, `includeArchived`, pagination) |
+| POST | `/memories/compress` | bounded compression of selected/scope memories |
 | GET | `/memories/:id` | one memory + related + backlinks |
 | POST | `/memories/:id/relate` | link / unlink |
 | GET | `/memories/:id/history` | versions + unified diffs |
@@ -77,19 +84,38 @@ Remembra does not trust an `agentId` JSON field or public agent header. See
 
 ### Versioned API
 
-V4.9 introduces the additive `/api/v1` namespace. Requests such as
-`POST /api/v1/memories`, `GET /api/v1/memories/search`, and
+V4.9 introduces the additive `/api/v1` namespace. Every legacy HTTP route
+listed above is also available with the `/api/v1` prefix; this includes the
+administrative, snapshot, import, quality, and compression routes. Requests
+such as `POST /api/v1/memories`, `GET /api/v1/memories/search`, and
 `POST /api/v1/memories/batch` use the same authentication, trusted agent
-resolver, limits, and response shapes as their legacy unversioned equivalents.
-Every `/api/v1` response includes:
+resolver, limits, and route-specific response shapes as their unversioned
+equivalents. Every `/api/v1` response, including transport errors, includes:
 
 ```http
-X-Rembra-API-Version: v1
+X-Remembra-API-Version: v1
 ```
 
+`/api/v1/health` is intentionally public, matching `/health`; all other v1
+routes retain the legacy auth requirements. The UI is not served below the v1
+prefix. When CORS is enabled, the version and `Retry-After` headers are exposed
+to browser clients.
+
+The v1 stabilization release deliberately preserves legacy response bodies
+rather than introducing a breaking wrapper. Typed service errors normally use
+`{ "error": "...", "code": "..." }`; authentication, rate-limit, overload,
+unknown-route, and timeout responses may contain only `error`. A missing
+`DELETE /memories/:id` remains the legacy `{ "ok": false, "text": "..." }`
+result. The SDK exposes the raw body and uses `HTTP_<status>` only when a
+server response has no `code`.
+
 Legacy routes remain supported for compatibility. The v1 namespace does not
-accept a client-supplied agent identity; trusted host resolution remains the
-only source of agent context.
+**authenticate** a client-supplied agent identity; trusted host resolution
+remains the only source of agent context. Existing non-agent attribution
+metadata may still be stored as untrusted provenance, and the SDK rejects
+server-managed `owner`/`access` and agent-attribution fields before
+transmission. Provenance IDs used for ordinary audit correlation remain
+non-authenticating metadata.
 
 ### Batches
 
@@ -130,9 +156,18 @@ top-level malformed requests use the normal `INVALID_INPUT` envelope.
 | `QUEUE_CLOSED` | 503 | background job queue is shutting down |
 | `INTERNAL` | 500 | anything unclassified |
 
+Transport-only responses (for example authentication `401`, request-size
+`413`, unknown-route `404`, concurrency `503`, and handler timeout `504`) may
+contain only `error` for legacy compatibility; the metrics label is the
+operational classification. The SDK retains the raw body and uses
+`HTTP_<status>` when no service code is present.
+
 Metrics count these under `remembra_errors_total{code}` and requests under
-`remembra_http_requests_total{route,…}` with a fixed route enum
-(`health|metrics|memories|search|digest|maintain|audit|memory_item|memory_sub|data_io|ui|other`).
+`remembra_http_requests_total{route,…}`. Legacy labels use the fixed enum
+(`health|metrics|memories|search|digest|batch|maintain|compress|audit|quality|agents|memory_item|memory_sub|data_io|ui|other`).
+Versioned requests use the bounded `api_v1_` prefix on the corresponding label
+(for example, `api_v1_search` and `api_v1_memories`); raw paths and memory IDs
+are never used.
 
 ## Snapshot format (export / import)
 

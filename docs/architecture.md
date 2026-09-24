@@ -105,6 +105,17 @@ All actionable failures are `RemembraError` with a stable `code`
   searches fail with 503 and `/health` reports
   `storage: "ENCRYPTED_NO_KEY"` instead of silently serving partial results.
 
+## Provider boundary
+
+LLM and embedding calls sit behind vendor-neutral adapters
+(`src/provider-adapters.ts`). Built-in OpenAI-compatible, Anthropic, and
+Ollama adapters translate their request/response shapes, while injected local
+adapters can use any runtime implementation. Every HTTP adapter delegates to
+`providerFetch` for timeout, cancellation, retry, budget, and normalized error
+handling. The service only depends on the adapter interfaces, so provider
+selection does not leak into memory storage or retrieval policy. See
+[providers.md](providers.md).
+
 ## Schema versioning
 
 Every memory file carries `version: <n>` in frontmatter (`SCHEMA_VERSION` in

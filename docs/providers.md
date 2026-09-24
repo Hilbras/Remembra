@@ -39,7 +39,48 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export REMEMBRA_LLM=anthropic
 ```
 
-## Session digest
+## Provider adapter contract
+
+Provider integrations can be implemented without depending on a vendor SDK.
+The public adapter types and built-in factories are available from the
+side-effect-free `@hilbras/remembra/providers` subpath:
+
+```ts
+import {
+  createInjectedEmbeddingAdapter,
+  createInjectedLlmAdapter,
+  createOpenAICompatibleLlmAdapter,
+} from "@hilbras/remembra/providers";
+
+const llm = createInjectedLlmAdapter("my-local-model", async ({ system, user }) => {
+  return myModel.complete({ system, user });
+});
+
+const embeddings = createInjectedEmbeddingAdapter("my-local-embeddings", async (text) => {
+  return myModel.embed(text);
+});
+```
+
+`LlmAdapter` exposes `complete({ system, user }, context)` and
+`EmbeddingAdapter` exposes `embed(text, context)`. A context carries an optional
+`AbortSignal`, injectable `fetchImpl`, and `ProviderPolicy` override. Every
+built-in HTTP adapter uses the same bounded `providerFetch` policy as the
+legacy environment configuration; adapters do not retry or weaken policy on
+their own.
+
+Built-in factories are available for OpenAI-compatible chat/embedding APIs,
+Anthropic messages, and Ollama chat/embeddings. `createLlmAdapter("openai")` and
+`createEmbeddingAdapter("ollama")` select the corresponding legacy-compatible
+implementation. The service accepts the same adapters through
+`new MemoryService(backend, { llmAdapter, embeddingAdapter })`; adapter `id`
+values are used for digest provenance while vendor credentials remain server
+configuration.
+
+OpenAI-compatible adapters accept `endpoint`, `apiKey`, `model`, and extra
+headers, making local gateways and self-hosted implementations possible.
+Anthropic and Ollama factories retain their existing environment defaults and
+request/response validation.
+
 
 Instead of the model remembering to call `memory_store` for every little thing,
 hand the whole conversation to one tool at the end of a session:
