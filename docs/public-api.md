@@ -49,6 +49,10 @@ shapes.
 
 ## HTTP API
 
+The machine-readable contract lives in [`openapi.yaml`](openapi.yaml) (OpenAPI
+3.1). A regression test keeps it aligned with the routes the HTTP layer
+actually serves, with the batch limits, and with the idempotency rules.
+
 Server: `remembra --http` (same binary). Auth: `x-api-key` or
 `Authorization: Bearer` when `REMEMBRA_API_KEY` is set; `/health` and the
 static dashboard shell (`/`, `/ui/*`) are exempt. Errors are JSON with an

@@ -1,0 +1,1329 @@
+openapi: 3.1.0
+info:
+  title: Remembra API
+  version: "1.0.0"
+  summary: External memory for AI assistants over the stable /api/v1 namespace.
+  description: |
+    Remembra stores memories with explicit type, scope, provenance, and trust
+    semantics and exposes them through HTTP, MCP, and SDK clients.
+
+    This document describes the versioned `/api/v1` surface. The legacy routes
+    remain available and are not documented here; see `docs/public-api.md`.
+
+    Authentication happens before rate limiting. Send `x-api-key` on a
+    protected route. A host that authenticates without a static API key must
+    resolve a trusted tenant context itself and, for keyed batches, provide a
+    post-authentication credential scope.
+  license:
+    name: MIT
+    url: https://github.com/Hilbras/Remembra/blob/main/LICENSE
+  contact:
+    name: Hilbras
+    url: https://github.com/Hilbras/Remembra/issues
+servers:
+  - url: http://127.0.0.1:8787
+    description: Local default
+  - url: https://memory.example.com
+    description: TLS deployment (set REMEMBRA_API_KEY)
+tags:
+  - name: contract
+    description: Version and capability metadata
+  - name: memories
+    description: Memory CRUD, search, history, and relations
+  - name: batch
+    description: Bounded batch operations and idempotency
+  - name: snapshots
+    description: Export and import envelopes
+  - name: context
+    description: Deterministic token-bounded context assembly
+  - name: operations
+    description: Health, metrics, and audit
+security:
+  - ApiKeyAuth: []
+paths:
+  /api/v1/capabilities:
+    get:
+      tags: [contract]
+      operationId: getCapabilities
+      summary: Published API capabilities and compatibility metadata
+      responses:
+        "200":
+          description: Capability manifest
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+  /api/v1/memories:
+    post:
+      tags: [memories]
+      operationId: storeMemory
+      summary: Store a memory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StoreRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/MemoryStored"
+        "400":
+          $ref: "#/components/responses/InvalidInput"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    get:
+      tags: [memories]
+      operationId: listMemories
+      summary: List memories with opaque cursor pagination
+      parameters:
+        - $ref: "#/components/parameters/Scope"
+        - name: type
+          in: query
+          schema:
+            $ref: "#/components/schemas/MemoryType"
+        - name: cursor
+          in: query
+          description: Opaque keyset cursor. Do not combine with offset.
+          schema:
+            type: string
+            maxLength: 512
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - $ref: "#/components/parameters/Limit"
+        - name: includeArchived
+          in: query
+          schema:
+            type: boolean
+        - name: includeQuarantined
+          in: query
+          schema:
+            type: boolean
+        - name: includeExpired
+          in: query
+          schema:
+            type: boolean
+        - name: includeFuture
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: One page of memories
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryPage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/memories/search:
+    get:
+      tags: [memories]
+      operationId: searchMemories
+      summary: Ranked keyword search
+      parameters:
+        - $ref: "#/components/parameters/Query"
+        - $ref: "#/components/parameters/Scope"
+        - $ref: "#/components/parameters/Limit"
+        - name: explain
+          in: query
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Ranked results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/memories/{id}:
+    parameters:
+      - $ref: "#/components/parameters/MemoryId"
+    get:
+      tags: [memories]
+      operationId: getMemory
+      summary: Read one memory
+      responses:
+        "200":
+          description: The memory, or an inaccessible id reported as not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryEnvelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [memories]
+      operationId: updateMemory
+      summary: Patch a memory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateRequest"
+      responses:
+        "200":
+          description: The updated memory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryEnvelope"
+        "400":
+          $ref: "#/components/responses/InvalidInput"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [memories]
+      operationId: deleteMemory
+      summary: Delete a memory
+      responses:
+        "200":
+          description: Deletion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TextResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /api/v1/memories/{id}/history:
+    parameters:
+      - $ref: "#/components/parameters/MemoryId"
+    get:
+      tags: [memories]
+      operationId: getMemoryHistory
+      summary: Version history with supersede reasons
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: History entries, newest first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HistoryResponse"
+  /api/v1/memories/{id}/archive:
+    parameters:
+      - $ref: "#/components/parameters/MemoryId"
+    post:
+      tags: [memories]
+      operationId: archiveMemory
+      summary: Archive a memory
+      responses:
+        "200":
+          description: The archived memory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryEnvelope"
+  /api/v1/memories/{id}/revive:
+    parameters:
+      - $ref: "#/components/parameters/MemoryId"
+    post:
+      tags: [memories]
+      operationId: reviveMemory
+      summary: Restore an archived memory
+      responses:
+        "200":
+          description: The revived memory
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryEnvelope"
+  /api/v1/memories/{id}/relate:
+    parameters:
+      - $ref: "#/components/parameters/MemoryId"
+    post:
+      tags: [memories]
+      operationId: relateMemory
+      summary: Add or remove a typed relation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [relatedId, kind]
+              properties:
+                relatedId:
+                  type: string
+                  maxLength: 128
+                kind:
+                  type: string
+                  maxLength: 32
+                action:
+                  type: string
+                  enum: [add, remove]
+                  default: add
+      responses:
+        "200":
+          description: Relation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TextResult"
+  /api/v1/memories/digest:
+    post:
+      tags: [memories]
+      operationId: digestSession
+      summary: Extract and merge memories from a session transcript
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transcript]
+              properties:
+                transcript:
+                  type: string
+                  maxLength: 200000
+                scope:
+                  type: string
+                source:
+                  type: string
+      responses:
+        "200":
+          description: Digest counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DigestResponse"
+  /api/v1/memories/batch:
+    post:
+      tags: [batch]
+      operationId: batchMemories
+      summary: Bounded per-item batch operation
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchRequest"
+      responses:
+        "200":
+          description: Per-item outcomes with explicit transaction policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchResponse"
+        "400":
+          $ref: "#/components/responses/InvalidInput"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/context:
+    post:
+      tags: [context]
+      operationId: buildContext
+      summary: Deterministic token-bounded context assembly
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                query:
+                  type: string
+                scope:
+                  type: string
+                maxTokens:
+                  type: integer
+                  minimum: 1
+                limit:
+                  type: integer
+                  minimum: 1
+                  maximum: 50
+      responses:
+        "200":
+          description: Assembled context and its accounting
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextResponse"
+  /api/v1/snapshot:
+    get:
+      tags: [snapshots]
+      operationId: exportSnapshot
+      summary: Export an import-compatible snapshot envelope
+      responses:
+        "200":
+          description: Snapshot, HMAC-signed when a snapshot key is configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Snapshot"
+  /api/v1/import:
+    post:
+      tags: [snapshots]
+      operationId: importSnapshot
+      summary: Restore a validated snapshot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Snapshot"
+      responses:
+        "200":
+          description: Import counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportResult"
+        "400":
+          $ref: "#/components/responses/InvalidInput"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/health:
+    get:
+      tags: [operations]
+      operationId: getHealth
+      security: []
+      summary: Recovery-aware readiness
+      responses:
+        "200":
+          description: Healthy, degraded, or unready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  /api/v1/metrics:
+    get:
+      tags: [operations]
+      operationId: getMetrics
+      security: []
+      summary: Prometheus exposition
+      responses:
+        "200":
+          description: Metrics in text format
+          content:
+            text/plain:
+              schema:
+                type: string
+  /api/v1/audit:
+    get:
+      tags: [operations]
+      operationId: getAudit
+      summary: Bounded audit events
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - name: since
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Audit events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+  /api/v1/quality:
+    get:
+      tags: [operations]
+      operationId: getQuality
+      summary: Memory quality signals (duplicates, conflicts, staleness)
+      responses:
+        "200":
+          description: Quality report
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/v1/maintain:
+    post:
+      tags: [operations]
+      operationId: runMaintenance
+      summary: One-shot decay, archival, and backfill pass
+      responses:
+        "200":
+          description: Maintenance result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DigestResponse"
+  /api/v1/memories/compress:
+    post:
+      tags: [memories]
+      operationId: compressMemories
+      summary: Consolidate related memories into canonical statements
+      responses:
+        "200":
+          description: Compression result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DigestResponse"
+  /api/v1/agents/{agentId}:
+    parameters:
+      - name: agentId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 128
+    get:
+      tags: [memories]
+      operationId: getAgentSummary
+      summary: Per-agent memory summary
+      responses:
+        "200":
+          description: Agent summary
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/v1/tenant/organization:
+    get:
+      tags: [operations]
+      operationId: getTenantOrganization
+      summary: Organization the trusted tenant context belongs to
+      responses:
+        "200":
+          description: Organization identity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organizationId:
+                    type: string
+                  membershipVersion:
+                    type: string
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/tenant/entities/{kind}:
+    parameters:
+      - $ref: "#/components/parameters/EntityKind"
+    get:
+      tags: [operations]
+      operationId: listTenantEntities
+      summary: List tenant entities of one kind
+      parameters:
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: One page of entities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EntityPage"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [operations]
+      operationId: createTenantEntity
+      summary: Create a tenant entity with an opaque server id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntityWrite"
+      responses:
+        "200":
+          description: The created entity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantEntity"
+        "400":
+          $ref: "#/components/responses/InvalidInput"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/tenant/entities/{kind}/{id}:
+    parameters:
+      - $ref: "#/components/parameters/EntityKind"
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [operations]
+      operationId: getTenantEntity
+      summary: Read one tenant entity
+      responses:
+        "200":
+          description: The entity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantEntity"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [operations]
+      operationId: updateTenantEntity
+      summary: Update a tenant entity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EntityWrite"
+      responses:
+        "200":
+          description: The updated entity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantEntity"
+    delete:
+      tags: [operations]
+      operationId: deleteTenantEntity
+      summary: Delete a tenant entity
+      responses:
+        "200":
+          description: Deletion result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TextResult"
+  /api/v1/tenant/memberships/{organizationId}:
+    parameters:
+      - name: organizationId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 128
+    get:
+      tags: [operations]
+      operationId: listTenantMemberships
+      summary: List memberships for an organization
+      parameters:
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: One page of memberships
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MembershipPage"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/tenant/memberships/{organizationId}/{userId}:
+    parameters:
+      - name: organizationId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 128
+      - name: userId
+        in: path
+        required: true
+        schema:
+          type: string
+          maxLength: 128
+    get:
+      tags: [operations]
+      operationId: getTenantMembership
+      summary: Read one membership
+      responses:
+        "200":
+          description: Membership state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MembershipPage"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [operations]
+      operationId: createTenantMembership
+      summary: Grant a membership
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                capabilities:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Membership result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+    put:
+      tags: [operations]
+      operationId: updateTenantMembership
+      summary: Replace scopes and capabilities for a membership
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                capabilities:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Membership result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+      description: Static API key. Rate limiting is charged after authentication.
+  parameters:
+    MemoryId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        maxLength: 128
+    Query:
+      name: q
+      in: query
+      schema:
+        type: string
+    Scope:
+      name: scope
+      in: query
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+    RequestId:
+      name: x-remembra-request-id
+      in: header
+      description: Correlation id, 1-128 safe ASCII characters.
+      schema:
+        type: string
+        maxLength: 128
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      description: |
+        Replay-safe key for batch mutations only. 1-128 safe ASCII characters.
+        A keyed response never contains a failed item.
+      schema:
+        type: string
+        maxLength: 128
+    EntityKind:
+      name: kind
+      in: path
+      required: true
+      description: Tenant entity kind. Only these three kinds exist.
+      schema:
+        type: string
+        enum: [user, project, agent]
+  responses:
+    MemoryStored:
+      description: Stored memory
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [id, message]
+            properties:
+              id:
+                type: string
+              message:
+                type: string
+              memory:
+                $ref: "#/components/schemas/Memory"
+    InvalidInput:
+      description: Validation failure
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Missing or inaccessible resource
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: The trusted tenant context is required or insufficient
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Version or idempotency conflict
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    RateLimited:
+      description: Rate limit exceeded after authentication
+      headers:
+        retry-after:
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unavailable:
+      description: Recovery, restore gate, idempotency, or capacity failure
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    MemoryType:
+      type: string
+      enum:
+        [
+          "fact",
+          "preference",
+          "decision",
+          "constraint",
+          "instruction",
+          "role",
+          "entity",
+          "relationship",
+          "observation",
+          "episode",
+          "pattern",
+        ]
+    TrustLevel:
+      type: string
+      enum: [unverified, trusted, verified, system]
+    RetentionMode:
+      type: string
+      enum: [decaying, pinned, neverExpire, ephemeral]
+    Memory:
+      type: object
+      required: [id, type, content, scope, version, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        type:
+          $ref: "#/components/schemas/MemoryType"
+        content:
+          type: string
+        scope:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        importance:
+          type: integer
+          minimum: 1
+          maximum: 10
+        confidence:
+          type: number
+        trust:
+          $ref: "#/components/schemas/TrustLevel"
+        owner:
+          type: string
+        access:
+          type: string
+        retention:
+          $ref: "#/components/schemas/RetentionMode"
+        version:
+          type: integer
+          minimum: 1
+        provenance:
+          type: object
+          additionalProperties: true
+        relations:
+          type: array
+          items:
+            type: object
+        createdAt:
+          type: string
+        updatedAt:
+          type: string
+        embedding:
+          description: Never present in a public response.
+          type: array
+          items:
+            type: number
+    StoreRequest:
+      type: object
+      required: [type, content]
+      additionalProperties: false
+      description: |
+        Server-managed fields (`id`, `tenantId`, `organizationId`, `userId`,
+        `agentId`, `embedding`) are rejected.
+      properties:
+        type:
+          $ref: "#/components/schemas/MemoryType"
+        content:
+          type: string
+          minLength: 1
+        scope:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        importance:
+          type: integer
+          minimum: 1
+          maximum: 10
+        confidence:
+          type: number
+        trust:
+          $ref: "#/components/schemas/TrustLevel"
+        owner:
+          type: string
+        access:
+          type: string
+        retention:
+          $ref: "#/components/schemas/RetentionMode"
+        source:
+          type: string
+        validFrom:
+          type: string
+        validUntil:
+          type: string
+        meta:
+          type: object
+          additionalProperties: true
+        provenance:
+          type: object
+          additionalProperties: true
+    UpdateRequest:
+      type: object
+      minProperties: 1
+      description: A patch. `expectedVersion` guards against a lost update.
+      properties:
+        content:
+          type: string
+        scope:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        importance:
+          type: integer
+          minimum: 1
+          maximum: 10
+        trust:
+          $ref: "#/components/schemas/TrustLevel"
+        retention:
+          $ref: "#/components/schemas/RetentionMode"
+        expectedVersion:
+          type: integer
+          minimum: 1
+        reason:
+          type: string
+          maxLength: 200
+    MemoryEnvelope:
+      type: object
+      properties:
+        text:
+          type: string
+        memory:
+          $ref: "#/components/schemas/Memory"
+    TextResult:
+      type: object
+      properties:
+        text:
+          type: string
+        ok:
+          type: boolean
+    MemoryPage:
+      type: object
+      properties:
+        memories:
+          type: array
+          items:
+            $ref: "#/components/schemas/Memory"
+        count:
+          type: integer
+        next_cursor:
+          type: string
+          nullable: true
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              memory:
+                $ref: "#/components/schemas/Memory"
+              score:
+                type: number
+        query:
+          type: string
+        explanations:
+          type: array
+          items:
+            type: object
+    HistoryResponse:
+      type: object
+      properties:
+        versions:
+          type: array
+          items:
+            type: object
+            properties:
+              version:
+                type: integer
+              content:
+                type: string
+              reason:
+                type: string
+              createdAt:
+                type: string
+    DigestResponse:
+      type: object
+      properties:
+        extracted:
+          type: integer
+        stored:
+          type: integer
+        merged:
+          type: integer
+        skipped:
+          type: integer
+        durationMs:
+          type: number
+    ContextResponse:
+      type: object
+      properties:
+        context:
+          type: string
+        tokenCount:
+          type: integer
+        memories:
+          type: array
+          items:
+            $ref: "#/components/schemas/Memory"
+        retrievalMetadata:
+          type: object
+          additionalProperties: true
+    BatchRequest:
+      oneOf:
+        - type: object
+          required: [operation, items]
+          properties:
+            operation:
+              type: string
+              enum: [store]
+            items:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items:
+                $ref: "#/components/schemas/StoreRequest"
+        - type: object
+          required: [operation, items]
+          properties:
+            operation:
+              type: string
+              enum: [update]
+            items:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/UpdateRequest"
+                  - type: object
+                    required: [id]
+                    properties:
+                      id:
+                        type: string
+        - type: object
+          required: [operation, ids]
+          properties:
+            operation:
+              type: string
+              enum: [delete, export]
+            ids:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items:
+                type: string
+        - type: object
+          required: [operation, items]
+          properties:
+            operation:
+              type: string
+              enum: [search]
+            items:
+              type: array
+              minItems: 1
+              maxItems: 100
+              description: The summed per-item limit may not exceed 1,000.
+              items:
+                type: object
+                properties:
+                  query:
+                    type: string
+                  scope:
+                    type: string
+                  limit:
+                    type: integer
+                    minimum: 1
+                    maximum: 50
+      description: |
+        At most 100 items and 10 MiB of compact JSON. `search` and `export` are
+        read-only and reject an idempotency key. There is no public batch
+        embedding operation in V5.4.
+    BatchResponse:
+      type: object
+      required: [operation, summary, results, execution]
+      properties:
+        operation:
+          type: string
+        summary:
+          type: object
+          required: [requested, succeeded, failed]
+          properties:
+            requested:
+              type: integer
+            succeeded:
+              type: integer
+            failed:
+              type: integer
+        results:
+          type: array
+          items:
+            type: object
+            required: [index, ok]
+            properties:
+              index:
+                type: integer
+              id:
+                type: string
+              ok:
+                type: boolean
+              result:
+                type: object
+                additionalProperties: true
+              error:
+                $ref: "#/components/schemas/Error"
+        execution:
+          type: object
+          description: Explicit transaction and idempotency policy.
+          properties:
+            transactionPolicy:
+              type: string
+              enum: [per-item, read-only]
+            idempotency:
+              type: string
+              enum: [stored, replayed, unsupported, read-only]
+    Snapshot:
+      type: object
+      required: [format, version, exportedAt, memories]
+      properties:
+        format:
+          type: string
+        version:
+          type: integer
+        exportedAt:
+          type: string
+        memories:
+          type: array
+          items:
+            $ref: "#/components/schemas/Memory"
+        signature:
+          type: string
+          description: Present when the deployment signs snapshots.
+    ImportResult:
+      type: object
+      properties:
+        imported:
+          type: integer
+        skipped:
+          type: integer
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, unready]
+        state:
+          type: string
+          enum: [Healthy, Degraded, Recovering, Failed, ReadOnly]
+        storage:
+          type: string
+        version:
+          type: string
+    TenantEntity:
+      type: object
+      description: |
+        Entities are tenant-owned. `userRef`, `projectRef`, and `agentRef` are
+        non-authoritative references used for operator correlation; the server
+        owns the identity.
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          enum: [user, project, agent]
+        displayName:
+          type: string
+        userRef:
+          type: string
+        projectRef:
+          type: string
+        agentRef:
+          type: string
+        organizationId:
+          type: string
+    EntityWrite:
+      type: object
+      required: [displayName]
+      additionalProperties: false
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 200
+        userRef:
+          type: string
+          maxLength: 200
+        projectRef:
+          type: string
+          maxLength: 200
+        agentRef:
+          type: string
+          maxLength: 200
+    EntityPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TenantEntity"
+        offset:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+    MembershipPage:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              organizationId:
+                type: string
+              userId:
+                type: string
+              scopes:
+                type: array
+                items:
+                  type: string
+              capabilities:
+                type: array
+                items:
+                  type: string
+        offset:
+          type: integer
+        limit:
+          type: integer
+        total:
+          type: integer
+    Capabilities:
+      required: [apiVersion, basePath, capabilities, compatibility]
+      properties:
+        apiVersion:
+          type: string
+          const: v1
+        basePath:
+          type: string
+          const: /api/v1
+        capabilities:
+          type: array
+          items:
+            type: string
+        compatibility:
+          type: object
+          properties:
+            legacyRoutes:
+              type: boolean
+            versionHeader:
+              type: string
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          description: Machine-readable code; legacy responses may omit it.
