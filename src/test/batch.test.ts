@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { MemoryService } from "../service.js";
 import { MemoryStore } from "../store.js";
-import { MAX_BATCH_ITEMS, MAX_BATCH_BYTES } from "../types.js";
+import { MAX_BATCH_ITEMS, MAX_BATCH_BYTES, MAX_BATCH_SEARCH_RESULTS } from "../types.js";
 import { createTenantContext } from "../tenant.js";
 
 async function service(): Promise<MemoryService> {
@@ -51,6 +51,13 @@ test("batch validates the complete request before writing", async () => {
     () => svc.batch({
       operation: "search",
       items: Array.from({ length: MAX_BATCH_ITEMS + 1 }, () => ({ query: "x" })),
+    }),
+    expectCode("INVALID_INPUT"),
+  );
+  await assert.rejects(
+    () => svc.batch({
+      operation: "search",
+      items: Array.from({ length: Math.floor(MAX_BATCH_SEARCH_RESULTS / 50) + 1 }, () => ({ limit: 50 })),
     }),
     expectCode("INVALID_INPUT"),
   );
@@ -146,6 +153,33 @@ test("batch search fans out through the authorized read path with ordered result
   assert.equal(second.result.results[0]?.content.includes("Postgres"), true);
 });
 
+test("batch search omits internal embeddings from public results", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-batch-search-public-"));
+  const svc = new MemoryService(new MemoryStore(root), {
+    embedFn: async () => [0.1, 0.2, 0.3],
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+  });
+  try {
+    await svc.store({ type: "fact", content: "public batch search result" });
+    const result = await svc.batch({ operation: "search", items: [{ query: "public" }] });
+    if (result.operation !== "search" || !result.results[0]?.ok) assert.fail("expected search result");
+    assert.equal(result.results[0].result.results[0]?.embedding, undefined);
+  } finally {
+    await svc.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("batch search stops before fan-out when its caller is already cancelled", async () => {
+  const svc = await service();
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    () => svc.batch({ operation: "search", items: [{ query: "cancelled" }] }, { signal: controller.signal }),
+    expectCode("SERVICE_UNAVAILABLE"),
+  );
+});
+
 test("batch search rechecks tenant authorization before each item", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-batch-search-auth-"));
   let authorizationChecks = 0;
@@ -162,22 +196,29 @@ test("batch search rechecks tenant authorization before each item", async () => 
     },
     decayIntervalMs: Number.MAX_SAFE_INTEGER,
   });
-  const tenant = createTenantContext({
+  const writer = createTenantContext({
     organizationId: "org-a",
     userId: "user-a",
     membershipVersion: "membership-1",
     scopes: ["global"],
     capabilities: ["tenant:read", "tenant:write"],
   });
+  const reader = createTenantContext({
+    organizationId: "org-a",
+    userId: "user-a",
+    membershipVersion: "membership-1",
+    scopes: ["global"],
+    capabilities: ["tenant:read"],
+  });
   try {
-    await svc.store({ type: "fact", content: "tenant batch search secret" }, { tenant });
+    await svc.store({ type: "fact", content: "tenant batch search secret" }, { tenant: writer });
     authorizationChecks = 0;
     embeddingCalls = 0;
 
     const result = await svc.batch({
       operation: "search",
       items: [{ query: "secret", limit: 5 }, { query: "secret", limit: 5 }],
-    }, { tenant });
+    }, { tenant: reader });
     if (result.operation !== "search") assert.fail("expected search result");
     assert.deepEqual(result.summary, { requested: 2, succeeded: 1, failed: 1 });
     assert.equal(result.results[0].ok, true);
@@ -208,6 +249,32 @@ test("batch search caps its serialized response at the shared batch limit", asyn
       (error: unknown) => {
         assert.equal((error as { code?: string }).code, "INVALID_INPUT");
         assert.match((error as { message?: string }).message ?? "", /batch search response exceeds/);
+        return true;
+      },
+    );
+  } finally {
+    await svc.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("batch export caps the final signed response envelope", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-batch-export-size-"));
+  const svc = new MemoryService(new MemoryStore(root), {
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+    snapshotKey: Buffer.from("v54 batch export response size key"),
+  });
+  try {
+    const stored = await svc.store({
+      type: "fact",
+      content: "x".repeat(MAX_BATCH_BYTES - 450),
+    });
+    await assert.rejects(
+      () => svc.batch({ operation: "export", ids: [stored.id] }),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "INVALID_INPUT");
+        assert.match((error as { message?: string }).message ?? "", /batch export response exceeds/);
         return true;
       },
     );

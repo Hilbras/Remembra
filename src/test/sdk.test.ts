@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Remembra, RemembraApiError, RemembraNetworkError, RemembraTimeoutError, type FetchLike } from "../sdk.js";
+import { Remembra, RemembraApiError, RemembraNetworkError, RemembraTimeoutError, type FetchLike, type LegacyBatchRequest } from "../sdk.js";
 import { MemoryStore } from "../store.js";
 import { MemoryService } from "../service.js";
 import { createHttpServer } from "../http.js";
@@ -15,6 +15,13 @@ function jsonResponse(body: unknown, status = 200): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+type SearchIsLegacyBatchOperation = "search" extends LegacyBatchRequest["operation"] ? true : false;
+const searchIsLegacyBatchOperation: SearchIsLegacyBatchOperation = false;
+
+test("the deprecated SDK batch type stays frozen at the pre-V5.4 operations", () => {
+  assert.equal(searchIsLegacyBatchOperation, false);
+});
 
 test("SDK uses the v1 namespace, API key, typed paths, and query encoding", async () => {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
@@ -129,6 +136,40 @@ test("SDK sends bounded idempotency keys for batch mutations", async () => {
     /only supported for batch mutations/i,
   );
 
+  const headerKeyClient = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async () => jsonResponse({
+      operation: "store",
+      summary: { requested: 1, succeeded: 1, failed: 0 },
+      results: [{ index: 0, id: "m1", ok: true, result: { id: "m1", message: "stored" } }],
+      execution: { transactionPolicy: "per-item", idempotency: "stored" },
+    }),
+  });
+  await headerKeyClient.batch(
+    { operation: "store", items: [{ type: "fact", content: "header key" }] },
+    { headers: { "Idempotency-Key": "sdk-header-batch-001" } },
+  );
+
+  const partialKeyed = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async () => jsonResponse({
+      operation: "delete",
+      summary: { requested: 2, succeeded: 1, failed: 1 },
+      results: [
+        { index: 0, id: "m1", ok: true, result: { text: "Deleted memory m1." } },
+        { index: 1, id: "m2", ok: false, error: { code: "NOT_FOUND", message: "No memory with id m2." } },
+      ],
+      execution: { transactionPolicy: "per-item", idempotency: "stored" },
+    }),
+  });
+  await assert.rejects(
+    () => partialKeyed.batch(
+      { operation: "delete", ids: ["m1", "m2"] },
+      { idempotencyKey: "partial-keyed-batch" },
+    ),
+    /invalid batch response/i,
+  );
+
   const malformed = new Remembra({
     endpoint: "https://memory.example.test",
     fetch: async () => jsonResponse({
@@ -201,6 +242,36 @@ test("SDK exposes validated read-only batch search", async () => {
     () => malformed.batch({ operation: "search", items: [{ query: "invalid" }] }),
     /invalid batch response/i,
   );
+
+  const extraKey = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async () => jsonResponse({
+      operation: "search",
+      summary: { requested: 1, succeeded: 1, failed: 0 },
+      results: [{ index: 0, ok: true, result: { text: "invalid", results: [], extra: true } }],
+      execution: { transactionPolicy: "read-only", idempotency: "read-only" },
+    }),
+  });
+  await assert.rejects(
+    () => extraKey.batch({ operation: "search", items: [{ query: "invalid" }] }),
+    /invalid batch response/i,
+  );
+
+  const partial = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async () => jsonResponse({
+      operation: "search",
+      summary: { requested: 1, succeeded: 0, failed: 1 },
+      results: [{
+        index: 0,
+        ok: false,
+        error: { code: "TENANT_REQUIRED", message: "a trusted tenant context is required" },
+      }],
+      execution: { transactionPolicy: "read-only", idempotency: "read-only" },
+    }),
+  });
+  const partialResponse = await partial.batch({ operation: "search", items: [{ query: "denied" }] });
+  assert.equal(partialResponse.operation === "search" && partialResponse.results[0]?.ok, false);
 });
 
 test("SDK retries only opted-in read requests and never retries writes", async () => {

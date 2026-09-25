@@ -611,8 +611,13 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         if (idempotencyKey && !opts.apiKey && credentialScope === undefined) {
           throw new RemembraError("INVALID_INPUT", "idempotency keys require a static API key or trusted credential scope resolver");
         }
+        const ac = new AbortController();
+        res.on("close", () => {
+          if (!res.writableEnded) ac.abort();
+        });
         const result = await service.batch(body, {
           ...agentOptions,
+          signal: ac.signal,
           idempotencyKey,
           ...(idempotencyKey
             ? { idempotencyScope: idempotencyScopeFor(opts.apiKey, credentialScope, tenant, agent) }

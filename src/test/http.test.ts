@@ -8,6 +8,7 @@ import { MemoryStore } from "../store.js";
 import { MemoryService } from "../service.js";
 import { createHttpServer } from "../http.js";
 import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION, REQUEST_ID_HEADER } from "../api-contract.js";
+import { createTenantContext } from "../tenant.js";
 
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-http-"));
 const service = new MemoryService(new MemoryStore(dir));
@@ -276,6 +277,66 @@ test("POST /memories/batch returns ordered outcomes and validates structure", as
   });
   assert.equal(invalid.status, 400);
   assert.equal((await invalid.json()).code, "INVALID_INPUT");
+});
+
+test("POST /memories/batch exposes sanitized per-item search failures", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-http-batch-search-partial-"));
+  let authorizationChecks = 0;
+  const writer = createTenantContext({
+    organizationId: "org-a",
+    membershipVersion: "membership-1",
+    scopes: ["global"],
+    capabilities: ["tenant:read", "tenant:write"],
+  });
+  const reader = createTenantContext({
+    organizationId: "org-a",
+    membershipVersion: "membership-1",
+    scopes: ["global"],
+    capabilities: ["tenant:read"],
+  });
+  const service = new MemoryService(new MemoryStore(dir), {
+    tenantMode: "strict",
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+    verifyTenantContext: () => {
+      authorizationChecks++;
+      return authorizationChecks < 2;
+    },
+  });
+  await service.store({ type: "fact", content: "HTTP partial batch search" }, { tenant: writer });
+  authorizationChecks = 0;
+  const server = createHttpServer(service, {
+    port: 0,
+    apiKey: "batch-partial-key",
+    resolveTenantContext: () => reader,
+  });
+  try {
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const response = await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1/memories/batch`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "batch-partial-key" },
+      body: JSON.stringify({
+        operation: "search",
+        items: [{ query: "partial" }, { query: "partial" }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json() as {
+      summary: { requested: number; succeeded: number; failed: number };
+      results: Array<{ index: number; ok: boolean; error?: { code: string; message: string } }>;
+    };
+    assert.deepEqual(body.summary, { requested: 2, succeeded: 1, failed: 1 });
+    assert.equal(body.results[0]?.ok, true);
+    assert.equal(body.results[1]?.ok, false);
+    assert.deepEqual(Object.keys(body.results[1]?.error ?? {}).sort(), ["code", "message"]);
+    assert.equal(body.results[1]?.error?.code, "TENANT_REQUIRED");
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    await service.shutdownBackgroundJobs();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("invalid JSON body returns 400", async () => {

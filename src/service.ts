@@ -156,6 +156,8 @@ export interface AgentReadOptions {
 }
 
 export interface BatchOptions extends AgentReadOptions {
+  /** Cancels bounded read-only fan-out when the caller disconnects. */
+  signal?: AbortSignal;
   /** Validated Idempotency-Key supplied by the host/HTTP boundary. */
   idempotencyKey?: string;
   /** 64-character host-derived scope digest; never a raw API key or tenant identifier. */
@@ -166,6 +168,7 @@ export interface SearchExecutionOptions {
   /** Internal read-only mode used by context assembly. */
   touch?: boolean;
   runDecay?: boolean;
+  signal?: AbortSignal;
 }
 
 function envNumber(name: string, fallback: number): number {
@@ -176,6 +179,10 @@ function envNumber(name: string, fallback: number): number {
     throw new RemembraError("INVALID_INPUT", `${name} must be a number`);
   }
   return value;
+}
+
+function assertSearchNotCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new RemembraError("SERVICE_UNAVAILABLE", "search was cancelled");
 }
 
 function batchFailure(index: number, id: string | undefined, error: unknown): BatchFailure {
@@ -962,9 +969,13 @@ export class MemoryService {
     execution: SearchExecutionOptions = {},
   ) {
     const t0 = performance.now();
+    assertSearchNotCancelled(execution.signal);
     const tenant = await this.freshTenantFilter(q, "read");
     let queryVec: number[] | null = null;
-    if (q.query && this.embedFn) queryVec = (await this.maybeEmbed(q.query, undefined, tenant?.organizationId)) ?? null;
+    if (q.query && this.embedFn) {
+      queryVec = (await this.maybeEmbed(q.query, execution.signal, tenant?.organizationId)) ?? null;
+      assertSearchNotCancelled(execution.signal);
+    }
 
     // V4.8: let capable backends generate a bounded keyword candidate set.
     // Agent mode deliberately stays on the full path until a backend can
@@ -1034,6 +1045,7 @@ export class MemoryService {
     }
 
     // V4.5: temporal and lifecycle filtering before search.
+    assertSearchNotCancelled(execution.signal);
     pool ??= (await this.#backend.all(q.includeArchived, tenant)).filter(eligible);
 
     let { results: ranked, explanations } = searchQ(
@@ -1325,18 +1337,34 @@ export class MemoryService {
 
       if (request.operation === "search") {
         const results: BatchOutcome<BatchSearchItemResult>[] = [];
+        let responseBytes = 0;
         for (const [index, item] of request.items.entries()) {
+          assertSearchNotCancelled(options.signal);
+          let outcome: BatchOutcome<BatchSearchItemResult>;
           try {
             const result = await this.search(
               { ...item, ...options },
-              { touch: false, runDecay: false },
+              { touch: false, runDecay: false, signal: options.signal },
             );
-            results.push({ index, ok: true, result });
+            outcome = {
+              index,
+              ok: true,
+              result: {
+                text: result.text,
+                results: result.results.map(({ embedding: _embedding, ...memory }) => memory as Memory),
+                ...(result.explanations ? { explanations: result.explanations } : {}),
+              },
+            };
           } catch (err) {
-            results.push(batchFailure(index, undefined, err));
+            outcome = batchFailure(index, undefined, err);
           }
+          assertSearchNotCancelled(options.signal);
+          responseBytes += Buffer.byteLength(JSON.stringify(outcome), "utf8") + 1;
+          if (responseBytes > MAX_BATCH_BYTES) {
+            throw new RemembraError("INVALID_INPUT", `batch search response exceeds ${MAX_BATCH_BYTES} bytes`);
+          }
+          results.push(outcome);
         }
-        recordBatchMetrics("search", results);
         const response: BatchSearchResult = {
           operation: "search",
           summary: batchSummary(results),
@@ -1346,6 +1374,10 @@ export class MemoryService {
         if (Buffer.byteLength(JSON.stringify(response), "utf8") > MAX_BATCH_BYTES) {
           throw new RemembraError("INVALID_INPUT", `batch search response exceeds ${MAX_BATCH_BYTES} bytes`);
         }
+        if (!isBatchResult(response, "search", request.items.length)) {
+          throw new RemembraError("SERVICE_UNAVAILABLE", "batch search response failed integrity validation");
+        }
+        recordBatchMetrics("search", results);
         return response;
       }
 
@@ -1355,7 +1387,7 @@ export class MemoryService {
       for (const [index, id] of request.ids.entries()) {
         const memory = await this.#backend.get(id, tenant);
         if (!memory || !this.canRead(memory, options)) {
-          results.push(batchFailure(index, id, new RemembraError("NOT_FOUND", `No memory with id ${id}`)) as BatchFailure);
+          results.push(batchFailure(index, id, new RemembraError("NOT_FOUND", `No memory with id ${id}`)));
           continue;
         }
         selected.push(memory);
@@ -1378,14 +1410,18 @@ export class MemoryService {
         if (!this.snapshotKey) throw new RemembraError("SNAPSHOT_INVALID", "signed batch export requires a configured HMAC key");
         output = createSignedSnapshot(snapshot, this.snapshotKey);
       }
-      recordBatchMetrics("export", results);
-      return {
+      const response = {
         ...output,
         operation: "export" as const,
         summary: batchSummary(results),
         results,
         execution: BATCH_READ_ONLY_EXECUTION,
       } as BatchResult;
+      if (Buffer.byteLength(JSON.stringify(response), "utf8") > MAX_BATCH_BYTES) {
+        throw new RemembraError("INVALID_INPUT", `batch export response exceeds ${MAX_BATCH_BYTES} bytes`);
+      }
+      recordBatchMetrics("export", results);
+      return response;
     };
 
     if (!idempotencyKey) return execute();

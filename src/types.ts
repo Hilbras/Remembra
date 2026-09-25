@@ -405,6 +405,7 @@ export type UpdateInput = z.infer<typeof UpdateInput>;
 // V4.8 batch limits are deliberately shared by SDK, HTTP, and MCP callers.
 export const MAX_BATCH_ITEMS = 100;
 export const MAX_BATCH_BYTES = 10 * 1024 * 1024;
+export const MAX_BATCH_SEARCH_RESULTS = 1_000;
 
 const batchIds = z
   .array(z.string().min(1))
@@ -431,12 +432,21 @@ const batchUpdateItems = z
     message: "batch update ids must be unique",
   });
 
+const batchSearchItems = z
+  .array(SearchInput)
+  .min(1)
+  .max(MAX_BATCH_ITEMS)
+  .refine(
+    (items) => items.reduce((total, item) => total + (item.limit ?? 10), 0) <= MAX_BATCH_SEARCH_RESULTS,
+    { message: `batch search results must not exceed ${MAX_BATCH_SEARCH_RESULTS}` },
+  );
+
 export const BatchRequest = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("store"), items: z.array(StoreInput).min(1).max(MAX_BATCH_ITEMS) }),
   z.object({ operation: z.literal("update"), items: batchUpdateItems }),
   z.object({ operation: z.literal("delete"), ids: batchIds }),
   z.object({ operation: z.literal("export"), ids: batchIds }),
-  z.object({ operation: z.literal("search"), items: z.array(SearchInput).min(1).max(MAX_BATCH_ITEMS) }),
+  z.object({ operation: z.literal("search"), items: batchSearchItems }),
 ]);
 export type BatchRequest = z.infer<typeof BatchRequest>;
 

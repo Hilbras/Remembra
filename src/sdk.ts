@@ -4,16 +4,19 @@ import type { ContextResult } from "./context.js";
 import type { TenantEntity, TenantEntityKind, TenantEntityPage, TenantMembershipPage } from "./tenant-entities.js";
 export type { TenantEntity, TenantEntityKind, TenantEntityPage, TenantMembershipPage } from "./tenant-entities.js";
 export type { ContextMemory, ContextResult } from "./context.js";
+export type { BatchSearchResult } from "./types.js";
 import type {
   BatchExecutionMetadata,
   BatchOutcome,
   BatchRequest,
+  BatchSearchResult,
   BatchSummary,
   DigestInput,
   Memory,
   MemoryType,
   RelationKind,
   RetrievalExplanation,
+  SearchInput,
   StoreInput,
   UpdateInput,
   SnapshotInput,
@@ -58,8 +61,12 @@ export type SdkBatchRequestInput =
   | { operation: "export"; ids: string[] }
   | { operation: "search"; items: SearchOptions[] };
 
-/** Preserve the pre-V5.4 full input type as a deprecated compile-time overload. */
-export type LegacyBatchRequest = BatchRequest;
+/** Preserve the pre-V5.4 four-operation input type as a deprecated compile-time overload. */
+export type LegacyBatchRequest =
+  | Extract<BatchRequest, { operation: "store" }>
+  | Extract<BatchRequest, { operation: "update" }>
+  | Extract<BatchRequest, { operation: "delete" }>
+  | Extract<BatchRequest, { operation: "export" }>;
 
 /** SDK batch input excludes server-managed identity fields. */
 export type SafeSdkBatchRequest = SdkBatchRequestInput;
@@ -89,17 +96,7 @@ export interface RequestOptions {
   retry?: RetryOptions;
 }
 
-export interface SearchOptions {
-  query?: string;
-  scope?: string;
-  type?: MemoryType;
-  limit?: number;
-  explain?: boolean;
-  includeExpired?: boolean;
-  includeFuture?: boolean;
-  includeQuarantined?: boolean;
-  includeArchived?: boolean;
-}
+export type SearchOptions = SearchInput;
 
 export interface ListOptions {
   scope?: string;
@@ -322,16 +319,7 @@ export type BatchResponse =
       results: BatchOutcome[];
       execution: BatchExecutionMetadata;
     }
-  | {
-      operation: "search";
-      summary: BatchSummary;
-      results: BatchOutcome<{
-        text: string;
-        results: Memory[];
-        explanations?: RetrievalExplanation[];
-      }>[];
-      execution: BatchExecutionMetadata;
-    };
+  | BatchSearchResult;
 
 /**
  * Side-effect-free TypeScript client for the versioned Remembra HTTP API.
@@ -538,7 +526,10 @@ export class Remembra {
   batch(input: SdkBatchRequest, options?: RequestOptions): Promise<BatchResponse>;
   async batch(input: SdkBatchRequest | LegacyBatchRequest, options?: RequestOptions): Promise<BatchResponse> {
     const response = await this.request<unknown>("POST", "/memories/batch", input, options);
-    if (!isBatchResponse(response, input, options?.idempotencyKey !== undefined)) {
+    const headerKey = Object.entries({ ...this.defaultHeaders, ...options?.headers })
+      .find(([name, value]) => name.toLowerCase() === IDEMPOTENCY_KEY_HEADER.toLowerCase() && typeof value === "string");
+    const keyed = options?.idempotencyKey !== undefined || headerKey !== undefined;
+    if (!isBatchResponse(response, input, keyed)) {
       throw new TypeError("server returned an invalid batch response");
     }
     return response as BatchResponse;
@@ -562,7 +553,7 @@ export class Remembra {
       throw new TypeError("retry is only supported for read-only requests");
     }
     if (options.idempotencyKey !== undefined
-      && (method !== "POST" || path !== "/memories/batch" || !isBatchMutationRequest(body))) {
+      && (method !== "POST" || path !== "/memories/batch" || rejectsBatchIdempotency(body))) {
       throw new TypeError("idempotencyKey is only supported for batch mutations");
     }
     if (options.idempotencyKey !== undefined && !isValidIdempotencyKey(options.idempotencyKey)) {
@@ -619,7 +610,7 @@ export class Remembra {
     headers.set(REQUEST_ID_HEADER, requestId);
     const idempotencyKey = options.idempotencyKey ?? headers.get(IDEMPOTENCY_KEY_HEADER) ?? undefined;
     if (idempotencyKey !== undefined) {
-      if (method !== "POST" || path !== "/memories/batch" || !isBatchMutationRequest(body)) {
+      if (method !== "POST" || path !== "/memories/batch" || rejectsBatchIdempotency(body)) {
         throw new TypeError("idempotencyKey is only supported for batch mutations");
       }
       if (!isValidIdempotencyKey(idempotencyKey)) {
@@ -702,6 +693,7 @@ function isBatchResponse(value: unknown, request: SdkBatchRequest | LegacyBatchR
   const succeeded = counts.succeeded as number;
   const failed = counts.failed as number;
   if (requested < 1 || requested > 100 || succeeded < 0 || failed < 0 || succeeded + failed !== requested || requested !== expectedCount || body.results.length !== requested) return false;
+  if (keyed && failed !== 0) return false;
   let actualSucceeded = 0;
   for (const [index, raw] of body.results.entries()) {
     if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return false;
@@ -730,6 +722,10 @@ function isBatchResponse(value: unknown, request: SdkBatchRequest | LegacyBatchR
       && (typeof details.text !== "string"
         || !Array.isArray(details.results)
         || (details.explanations !== undefined && !Array.isArray(details.explanations)))) return false;
+    if (operation === "search") {
+      const detailKeys = Object.keys(details).sort().join(",");
+      if (detailKeys !== "results,text" && detailKeys !== "explanations,results,text") return false;
+    }
   }
   if (actualSucceeded !== succeeded || requested - actualSucceeded !== failed) return false;
   if (operation === "export"
@@ -749,10 +745,10 @@ function isBatchResponse(value: unknown, request: SdkBatchRequest | LegacyBatchR
   return policyMatches;
 }
 
-function isBatchMutationRequest(value: unknown): boolean {
+function rejectsBatchIdempotency(value: unknown): boolean {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const operation = (value as { operation?: unknown }).operation;
-  return operation === "store" || operation === "update" || operation === "delete";
+  return operation === "export" || operation === "search";
 }
 
 function shouldRetryRequest(error: unknown): boolean {
