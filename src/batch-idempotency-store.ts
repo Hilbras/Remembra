@@ -402,13 +402,6 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
     return value === undefined ? undefined : parseRow(value, this.integrityKey);
   }
 
-  private allRows(): ClaimRow[] {
-    const values = this.db.prepare(
-      "SELECT scope_hash AS scopeHash, key_hash AS keyHash, fingerprint, state, created_at AS createdAt, completed_at AS completedAt, response, response_bytes AS responseBytes, reserved_bytes AS reservedBytes, mac, generation FROM batch_idempotency_claims",
-    ).all() as unknown[];
-    return values.map((value) => parseRow(value, this.integrityKey));
-  }
-
   async claim(input: BatchIdempotencyInput): Promise<BatchIdempotencyClaim> {
     if (this.restorePending) throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
     validateInput(input);
@@ -429,10 +422,17 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
         return { status: "replay" as const, response: parseResponse(existing) };
       }
 
-      const rows = this.allRows();
-      const totalBytes = rows.reduce((sum, row) => sum + (row.state === "in_progress" ? row.reservedBytes : row.responseBytes), 0);
-      const scopeCount = rows.reduce((sum, row) => sum + (row.scopeHash === scopeHash ? 1 : 0), 0);
-      if (rows.length >= this.maxEntries || totalBytes + this.maxBytes > this.maxTotalBytes || scopeCount >= this.maxEntriesPerScope) {
+      const totals = this.db.prepare(
+        "SELECT COUNT(*) AS entryCount, COALESCE(SUM(CASE WHEN state = 'in_progress' THEN reserved_bytes ELSE response_bytes END), 0) AS totalBytes FROM batch_idempotency_claims",
+      ).get() as { entryCount: number; totalBytes: number };
+      const scopeCount = this.db.prepare(
+        "SELECT COUNT(*) AS scopeCount FROM batch_idempotency_claims WHERE scope_hash = ?",
+      ).get(scopeHash) as { scopeCount: number };
+      if (
+        totals.entryCount >= this.maxEntries
+        || totals.totalBytes + this.maxBytes > this.maxTotalBytes
+        || scopeCount.scopeCount >= this.maxEntriesPerScope
+      ) {
         invalid("claim capacity is exhausted");
       }
       const createdAt = this.now();
