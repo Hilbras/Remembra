@@ -559,7 +559,7 @@ The release gate includes build, tests, security/recovery matrices, documentatio
 | Storage and recovery | [Storage](docs/storage.md) · [Architecture](docs/architecture.md) |
 | Providers | [Providers](docs/providers.md) |
 | Operations | [Self-hosting](docs/self-hosting.md) · [Observability](docs/observability.md) · [UI](docs/ui.md) |
-| Project process | [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [V5 gates](docs/v5-release-gates.md) |
+| Project process | [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [V5 gates](docs/v5-release-gates.md) · [V5.4.0 compatibility](docs/v5.4.0-compatibility.md) |
 | Future architecture | [V6 architecture specification](docs/v6-architecture-spec.md) |
 
 ---
