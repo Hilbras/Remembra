@@ -155,6 +155,9 @@ console.log(context.tokenCount, context.retrievalMetadata.selectedCount);
 
 The SDK supports pagination, cancellation, structured errors, lifecycle operations, history, relations, batch operations, and the trusted tenant entity methods documented in [docs/sdk.md](docs/sdk.md).
 
+A dependency-free Python client with synchronous and asynchronous surfaces is
+available as `hilbras-remembra`; see [docs/python.md](docs/python.md).
+
 ---
 
 ## The memory model
@@ -549,7 +552,7 @@ The release gate includes build, tests, security/recovery matrices, documentatio
 |---|---|
 | First install | [Getting started](docs/getting-started.md) |
 | Clients and MCP setup | [Clients](docs/clients.md) · [Tools](docs/tools.md) |
-| HTTP and SDK | [Public API](docs/public-api.md) · [SDK](docs/sdk.md) |
+| HTTP and SDK | [Public API](docs/public-api.md) · [TypeScript SDK](docs/sdk.md) · [Python SDK](docs/python.md) |
 | V5 context | [Context contract](docs/v5-context-spec.md) · [Policy](docs/v5-policy.md) |
 | Tenants and migration | [Tenant contract](docs/v5-tenant-spec.md) · [V5.0.2 authorization](docs/v5.0.2-authorization.md) · [V4.9 migration](docs/migration-v4.9.md) · [V5.0.1 migration guide](docs/v5.0.1-security-and-migration.md) |
 | Security | [Security model](docs/security.md) · [Threat model](docs/v5-threat-model.md) |

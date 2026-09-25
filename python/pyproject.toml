@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hilbras-remembra"
+version = "5.4.0"
+description = "Dependency-free Python client for the Remembra memory API"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Hilbras" }]
+keywords = ["memory", "remembrance", "ai", "agents", "mcp", "rag"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "License :: OSI Approved :: MIT License",
+  "Intended Audience :: Developers",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
+# No runtime dependencies: the client uses the standard library only.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Hilbras/Remembra#readme"
+Repository = "https://github.com/Hilbras/Remembra"
+Issues = "https://github.com/Hilbras/Remembra/issues"
+
+[tool.setuptools]
+packages = ["remembra"]

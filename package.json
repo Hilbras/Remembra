@@ -101,6 +101,7 @@
     "test": "node scripts/run-tests.mjs --test dist/test/*.test.js",
     "test:raw": "node --test dist/test/*.test.js",
     "docs:check": "node scripts/check-docs.mjs",
+    "python:test": "python3 -m unittest discover -s python/tests -t python",
     "prepublishOnly": "npm run build && npm test && npm run docs:check"
   },
   "repository": {

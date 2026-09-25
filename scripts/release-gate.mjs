@@ -22,6 +22,7 @@ const commands = [
   ["tests", "npm", ["test"]],
   ["security matrix", "npm", ["run", "security:check"]],
   ["recovery matrix", "npm", ["run", "recovery:check"]],
+  ["python sdk", "npm", ["run", "python:test"]],
   ["docs", "npm", ["run", "docs:check"]],
   ["audit", "npm", ["audit", "--audit-level=high"]],
   ["package", "npm", ["pack", "--dry-run"]],

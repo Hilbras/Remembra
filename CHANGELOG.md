@@ -45,6 +45,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   items, over 1,000 aggregate search results, over 10 MiB, or not serializable)
   throws locally instead of spending a request. The shared limits now live in the
   dependency-free `@hilbras/remembra/api-contract` entry point.
+- Added a dependency-free Python SDK (`hilbras-remembra`) with synchronous and
+  asynchronous clients: the same `/api/v1` paths, `x-api-key` authentication,
+  typed error hierarchy, read-only retry policy, bounded timeouts and request
+  IDs, opaque cursor pagination, and mutation-only `Idempotency-Key` handling.
+  The client uses only the standard library, ships its own tests, and a parity
+  suite reads the published TypeScript contract so the two SDKs cannot drift
+  apart silently.
 - Added signed webhook delivery as an opt-in host integration, exported from
   `@hilbras/remembra/webhooks`: a closed event set, allowlist-only payloads with
   no embedding vectors or credential-like fields, HMAC-SHA256 `t,v1` signatures
