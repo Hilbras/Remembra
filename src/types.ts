@@ -436,13 +436,14 @@ export const BatchRequest = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("update"), items: batchUpdateItems }),
   z.object({ operation: z.literal("delete"), ids: batchIds }),
   z.object({ operation: z.literal("export"), ids: batchIds }),
+  z.object({ operation: z.literal("search"), items: z.array(SearchInput).min(1).max(MAX_BATCH_ITEMS) }),
 ]);
 export type BatchRequest = z.infer<typeof BatchRequest>;
 
 /** MCP-facing shape; the service performs the discriminated structural parse. */
 export const batchInputShape = {
-  operation: z.enum(["store", "update", "delete", "export"]).describe("Batch operation"),
-  items: z.array(z.unknown()).optional().describe("Store or update items"),
+  operation: z.enum(["store", "update", "delete", "export", "search"]).describe("Batch operation"),
+  items: z.array(z.unknown()).optional().describe("Store, update, or search items"),
   ids: z.array(z.string()).optional().describe("Delete/export ids"),
 };
 
@@ -491,7 +492,20 @@ export interface BatchExportResult {
   execution: BatchExecutionMetadata;
 }
 
-export type BatchResult = BatchMutationResult | BatchExportResult;
+export interface BatchSearchItemResult {
+  text: string;
+  results: Memory[];
+  explanations?: RetrievalExplanation[];
+}
+
+export interface BatchSearchResult {
+  operation: "search";
+  summary: BatchSummary;
+  results: BatchOutcome<BatchSearchItemResult>[];
+  execution: BatchExecutionMetadata;
+}
+
+export type BatchResult = BatchMutationResult | BatchExportResult | BatchSearchResult;
 
 
 export const getInputShape = {

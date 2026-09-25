@@ -112,6 +112,28 @@ test("batch update and delete report item-local failures", async () => {
   await assert.rejects(() => svc.get(first.id), expectCode("NOT_FOUND"));
 });
 
+test("batch search fans out through the authorized read path with ordered results", async () => {
+  const svc = await service();
+  await svc.store({ type: "fact", content: "Redis is the queue backend" });
+  await svc.store({ type: "fact", content: "Postgres stores durable data" });
+  const result = await svc.batch({
+    operation: "search",
+    items: [
+      { query: "Redis", limit: 5 },
+      { query: "Postgres", limit: 5 },
+    ],
+  });
+  if (result.operation !== "search") assert.fail("expected search result");
+  assert.deepEqual(result.summary, { requested: 2, succeeded: 2, failed: 0 });
+  assert.deepEqual(result.execution, { transactionPolicy: "read-only", idempotency: "read-only" });
+  assert.deepEqual(result.results.map((item) => item.index), [0, 1]);
+  const first = result.results[0];
+  const second = result.results[1];
+  if (!first?.ok || !second.ok) assert.fail("expected both searches to succeed");
+  assert.equal(first.result.results[0]?.content.includes("Redis"), true);
+  assert.equal(second.result.results[0]?.content.includes("Postgres"), true);
+});
+
 test("batch export selects visible records and remains import-compatible", async () => {
   const svc = await service();
   const first = await svc.store({ type: "fact", content: "selected" });

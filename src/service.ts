@@ -1,6 +1,6 @@
 import type { MemoryBackend } from "./backend.js";
 import { extractQuery, searchQ, expandRelationCandidates } from "./retrieval.js";
-import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, TENANT_SCHEMA_VERSION, Provenance, defaultTrust, CompressInput, BatchRequest, MAX_BATCH_BYTES, BatchOutcome, BatchSummary, BatchFailure, BatchResult } from "./types.js";
+import { StoreInput, MemoryType, Memory, SnapshotInput, SNAPSHOT_FORMAT, SCHEMA_VERSION, TENANT_SCHEMA_VERSION, Provenance, defaultTrust, CompressInput, BatchRequest, MAX_BATCH_BYTES, BatchOutcome, BatchSummary, BatchFailure, BatchResult, BatchSearchItemResult, BatchSearchResult } from "./types.js";
 import { RemembraError, inputError, errorLabel, publicErrorMessage } from "./errors.js";
 import {
   ContextInput,
@@ -179,7 +179,7 @@ function envNumber(name: string, fallback: number): number {
   return value;
 }
 
-function batchFailure(index: number, id: string | undefined, error: unknown): BatchOutcome {
+function batchFailure(index: number, id: string | undefined, error: unknown): BatchFailure {
   return {
     index,
     ...(id ? { id } : {}),
@@ -237,7 +237,7 @@ function compareMemoryDescending(left: Memory, right: Memory | ListCursor): numb
 const BATCH_PER_ITEM_EXECUTION = { transactionPolicy: "per-item", idempotency: "unsupported" } as const;
 const BATCH_READ_ONLY_EXECUTION = { transactionPolicy: "read-only", idempotency: "read-only" } as const;
 
-function isBatchOutcome(value: unknown, index: number, operation: "store" | "update" | "delete" | "export"): boolean {
+function isBatchOutcome(value: unknown, index: number, operation: "store" | "update" | "delete" | "export" | "search"): boolean {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   if (record.index !== index || typeof record.ok !== "boolean") return false;
@@ -263,7 +263,12 @@ function isBatchOutcome(value: unknown, index: number, operation: "store" | "upd
   if (operation === "store") return typeof result.id === "string" && typeof result.message === "string" && result.message.length <= 2048;
   if (operation === "update") return Number.isInteger(result.version) && typeof result.text === "string" && result.text.length <= 2048;
   if (operation === "delete") return typeof result.text === "string" && result.text.length <= 2048;
-  return typeof result.id === "string" && result.id.length <= 255;
+  if (operation === "export") return typeof result.id === "string" && result.id.length <= 255;
+  const searchKeys = Object.keys(result).sort().join(",");
+  return (searchKeys === "results,text" || searchKeys === "explanations,results,text")
+    && Array.isArray(result.results)
+    && typeof result.text === "string"
+    && (result.explanations === undefined || Array.isArray(result.explanations));
 }
 
 function isBatchResult(
@@ -273,7 +278,7 @@ function isBatchResult(
 ): value is BatchResult {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  if (record.operation !== "store" && record.operation !== "update" && record.operation !== "delete" && record.operation !== "export") return false;
+  if (record.operation !== "store" && record.operation !== "update" && record.operation !== "delete" && record.operation !== "export" && record.operation !== "search") return false;
   if (expectedOperation !== undefined && record.operation !== expectedOperation) return false;
   if (record.execution === null || typeof record.execution !== "object" || Array.isArray(record.execution)) return false;
   const execution = record.execution as Record<string, unknown>;
@@ -292,11 +297,11 @@ function isBatchResult(
   if (succeeded + failed !== requested) return false;
   if (expectedCount !== undefined && requested !== expectedCount) return false;
   if (!Array.isArray(record.results) || record.results.length !== requested) return false;
-  if (!record.results.every((outcome, index) => isBatchOutcome(outcome, index, record.operation as "store" | "update" | "delete" | "export"))) return false;
+  if (!record.results.every((outcome, index) => isBatchOutcome(outcome, index, record.operation as "store" | "update" | "delete" | "export" | "search"))) return false;
   const actualSucceeded = record.results.filter((outcome) => outcome.ok).length;
   const actualFailed = record.results.length - actualSucceeded;
   if (actualSucceeded !== succeeded || actualFailed !== failed) return false;
-  if (record.operation !== "export" && record.results.some((outcome) => !outcome.ok)) return false;
+  if (record.operation !== "export" && record.operation !== "search" && record.results.some((outcome) => !outcome.ok)) return false;
   if (record.operation !== "export"
     && Object.keys(record).sort().join(",") !== "execution,operation,results,summary") return false;
   if (record.operation === "export") {
@@ -307,15 +312,22 @@ function isBatchResult(
       && typeof record.exportedAt === "string"
       && Array.isArray(record.memories);
   }
+  if (record.operation === "search") {
+    return execution.transactionPolicy === "read-only" && execution.idempotency === "read-only";
+  }
   return execution.transactionPolicy === "per-item" && execution.idempotency === "stored";
 }
 
 function batchHasUnresolvedFailure(result: BatchResult): boolean {
-  return result.operation !== "export" && result.results.some((outcome) => !outcome.ok);
+  return result.operation !== "export"
+    && result.operation !== "search"
+    && result.results.some((outcome) => !outcome.ok);
 }
 
 function batchRequestCount(request: ReturnType<typeof BatchRequest.parse>): number {
-  return request.operation === "store" || request.operation === "update" ? request.items.length : request.ids.length;
+  return request.operation === "store" || request.operation === "update" || request.operation === "search"
+    ? request.items.length
+    : request.ids.length;
 }
 
 function recordBatchMetrics(operation: string, results: readonly BatchOutcome[]): void {
@@ -1139,6 +1151,10 @@ export class MemoryService {
       await this.freshTenantFilter(options, "read", "snapshot.create");
       return;
     }
+    if (request.operation === "search") {
+      await this.freshTenantFilter(options, "read");
+      return;
+    }
     const tenant = await this.freshTenantFilter(options, "write");
     if (request.operation === "store" && this.agentMode) {
       for (const item of request.items) {
@@ -1181,7 +1197,7 @@ export class MemoryService {
       if (!isValidIdempotencyKey(idempotencyKey)) {
         throw new RemembraError("INVALID_INPUT", "Idempotency-Key must be 1-128 safe ASCII characters");
       }
-      if (request.operation === "export") {
+      if (request.operation === "export" || request.operation === "search") {
         throw new RemembraError("INVALID_INPUT", "Idempotency-Key is only supported for batch mutations");
       }
       if (!this.batchIdempotencyStore) {
@@ -1288,6 +1304,32 @@ export class MemoryService {
         }
         recordBatchMetrics("delete", results);
         return { operation: "delete" as const, summary: batchSummary(results), results, execution: BATCH_PER_ITEM_EXECUTION };
+      }
+
+      if (request.operation === "search") {
+        const results: BatchOutcome<BatchSearchItemResult>[] = [];
+        for (const [index, item] of request.items.entries()) {
+          try {
+            const result = await this.search(
+              { ...item, ...options },
+              { touch: false, runDecay: false },
+            );
+            results.push({ index, ok: true, result });
+          } catch (err) {
+            results.push(batchFailure(index, undefined, err));
+          }
+        }
+        recordBatchMetrics("search", results);
+        const response: BatchSearchResult = {
+          operation: "search",
+          summary: batchSummary(results),
+          results,
+          execution: BATCH_READ_ONLY_EXECUTION,
+        };
+        if (Buffer.byteLength(JSON.stringify(response), "utf8") > MAX_BATCH_BYTES) {
+          throw new RemembraError("INVALID_INPUT", `batch search response exceeds ${MAX_BATCH_BYTES} bytes`);
+        }
+        return response;
       }
 
       const selected: Memory[] = [];
