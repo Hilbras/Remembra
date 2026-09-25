@@ -51,6 +51,7 @@ import { transitionRecoveryState, type RecoveryState } from "./recovery-state.js
 import type { RecoveryStateStore } from "./recovery-state-store.js";
 import type { TenantDirectory } from "./tenant-directory.js";
 import { applyTenantMigration, preflightTenantMigration, type TenantMigrationPlan } from "./tenant-migration-runner.js";
+import { verifyTenantMigrationDestination } from "./migration-state.js";
 import { batchIdempotencyFingerprint, batchIdempotencyScope, MAX_BATCH_IDEMPOTENCY_REQUEST_BYTES, MAX_BATCH_IDEMPOTENCY_RESPONSE_BYTES, type BatchIdempotencyStore, type BatchRestoreReason } from "./batch-idempotency-store.js";
 import { isValidIdempotencyKey } from "./api-contract.js";
 import type { JobHandle } from "./job-queue.js";
@@ -2643,6 +2644,12 @@ export class MemoryService {
     // attempt skips records that already landed.
     await this.refreshAndAssertMigrationWritable();
     const result = await applyTenantMigration(plan, this.#backend, key, { destinationFilter: tenant });
+    // Publication is evidence-based: an incompletely applied destination keeps
+    // its gate so the migration is resumed instead of being reported complete.
+    const unverified = await verifyTenantMigrationDestination(plan, this.#backend);
+    if (unverified !== total) {
+      throw new RemembraError("SERVICE_UNAVAILABLE", `migration destination is incomplete at record ${unverified}; rerun the migration to resume`);
+    }
     await this.completeBatchRestore();
     return {
       total,

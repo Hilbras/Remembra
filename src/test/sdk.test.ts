@@ -7,7 +7,7 @@ import { Remembra, RemembraApiError, RemembraNetworkError, RemembraTimeoutError,
 import { MemoryStore } from "../store.js";
 import { MemoryService } from "../service.js";
 import { createHttpServer } from "../http.js";
-import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION, REQUEST_ID_HEADER } from "../api-contract.js";
+import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION, BATCH_MAX_BYTES, BATCH_MAX_ITEMS, BATCH_MAX_SEARCH_RESULTS, REQUEST_ID_HEADER } from "../api-contract.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -93,6 +93,44 @@ test("SDK exposes the shared v1 capabilities contract", async () => {
   assert.deepEqual(capabilities, API_CAPABILITY_MANIFEST);
   assert.equal(client.apiVersion, API_VERSION);
   assert.equal(calls[0], `https://memory.example.test${API_PREFIX}/capabilities`);
+});
+
+test("SDK rejects a batch the server could never accept without a round trip", async () => {
+  let called = 0;
+  const client = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async () => {
+      called++;
+      return jsonResponse({});
+    },
+  });
+  const tooManyItems = Array.from({ length: BATCH_MAX_ITEMS + 1 }, (_value, index) => ({ type: "fact" as const, content: `m${index}` }));
+  await assert.rejects(
+    () => client.batch({ operation: "store", items: tooManyItems }),
+    /at most 100 items/i,
+  );
+  await assert.rejects(
+    () => client.batch({ operation: "delete", ids: Array.from({ length: BATCH_MAX_ITEMS + 1 }, (_v, i) => `m${i}`) }),
+    /at most 100 items/i,
+  );
+  // The aggregate search budget is enforced from per-item limits.
+  await assert.rejects(
+    () => client.batch({
+      operation: "search",
+      items: Array.from({ length: 10 }, () => ({ query: "bounded", limit: BATCH_MAX_SEARCH_RESULTS / 10 + 1 })),
+    }),
+    /must not exceed 1000/i,
+  );
+  // An oversized body is refused before it is serialized onto the wire.
+  await assert.rejects(
+    () => client.batch({ operation: "store", items: [{ type: "fact", content: "x".repeat(BATCH_MAX_BYTES + 1) }] }),
+    /exceeds 10485760 bytes/i,
+  );
+  await assert.rejects(
+    () => client.batch({ operation: "store", items: [{ type: "fact", content: BigInt(1) as unknown as string }] }),
+    /JSON-serializable/i,
+  );
+  assert.equal(called, 0);
 });
 
 test("SDK sends bounded idempotency keys for batch mutations", async () => {

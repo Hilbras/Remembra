@@ -14,6 +14,16 @@ export const IDEMPOTENCY_KEY_HEADER = "Idempotency-Key" as const;
 export const IDEMPOTENCY_KEY_MAX_LENGTH = 128;
 export const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._~:+/=-]{0,127}$/;
 
+/**
+ * Bounded batch limits shared by the service, HTTP, MCP, and SDK surfaces.
+ * Declared here so a dependency-free client can reject an impossible request
+ * before it reaches the server; the service re-validates them authoritatively.
+ */
+export const BATCH_MAX_ITEMS = 100;
+export const BATCH_MAX_BYTES = 10 * 1024 * 1024;
+export const BATCH_MAX_SEARCH_RESULTS = 1_000;
+export const BATCH_SEARCH_DEFAULT_LIMIT = 10;
+
 export function isValidRequestId(value: unknown): value is string {
   return typeof value === "string"
     && value.length <= REQUEST_ID_MAX_LENGTH

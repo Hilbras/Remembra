@@ -180,6 +180,66 @@ test("SEC-SNAPSHOT-002: an interrupted tenant migration stays resumable under it
   }
 });
 
+test("SEC-SNAPSHOT-004: a migration that does not land every record keeps its gate", async () => {
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-migration-incomplete-source-"));
+  const sourceStore = new MemoryStore(sourceRoot);
+  const sources = [];
+  for (let index = 0; index < 2; index++) {
+    sources.push(await sourceStore.store(StoreInput.parse({ type: "fact", content: `incomplete ${index}` })));
+  }
+  const snapshot = createSignedSnapshot({
+    format: SNAPSHOT_FORMAT,
+    version: 3,
+    exportedAt: new Date().toISOString(),
+    memories: sources,
+  }, key);
+  const plan = planTenantMigration({
+    source: sources,
+    sourceSchemaVersion: 3,
+    organizationMappings: [{ sourceNamespace: "legacy-root", destination: "org-a" }],
+  }, key);
+  const targetRoot = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-migration-incomplete-target-"));
+  const targetStore = new MemoryStore(targetRoot);
+  const service = new MemoryService(targetStore, {
+    tenantMode: "strict",
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+    snapshotKey: key,
+    batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(targetRoot, "claims")),
+  });
+  try {
+    await service.initializeRecovery();
+    // A destination write that silently drops records must not be published.
+    const original = targetStore.importMemory.bind(targetStore);
+    let dropped = false;
+    (targetStore as unknown as { importMemory: typeof original }).importMemory = async (memory, filter) => {
+      if (!dropped) {
+        dropped = true;
+        return false;
+      }
+      return original(memory, filter);
+    };
+    await assert.rejects(
+      () => service.migrateSnapshot(snapshot, plan, key, { tenant }),
+      (error: unknown) => error instanceof RemembraError && error.code === "SERVICE_UNAVAILABLE",
+    );
+    assert.equal(service.batchIdempotencyRestorePending, true);
+    assert.equal(service.batchIdempotencyRestoreReason, "migration");
+
+    // Resuming under the retained gate completes the migration.
+    (targetStore as unknown as { importMemory: typeof original }).importMemory = original;
+    const resumed = await service.migrateSnapshot(snapshot, plan, key, { tenant });
+    assert.equal(resumed.imported, 1);
+    assert.equal(resumed.skipped, 1);
+    assert.equal(service.batchIdempotencyRestorePending, false);
+    assert.equal((await service.search({ query: "incomplete", tenant })).results.length, 2);
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(sourceRoot, { recursive: true, force: true });
+    await fs.rm(targetRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
 test("SEC-SNAPSHOT-003: a data restore gate is never resumed as a migration", async () => {
   const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-migration-restore-source-"));
   const sourceStore = new MemoryStore(sourceRoot);

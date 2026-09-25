@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { BATCH_MAX_ITEMS, BATCH_MAX_BYTES, BATCH_MAX_SEARCH_RESULTS } from "./api-contract.js";
 
 /** The eleven memory types Remembra stores (plan §4.1 — explicit semantics in docs/memory-model.md). */
 export const MemoryType = z.enum([
@@ -403,9 +404,9 @@ export const UpdateInput = z
 export type UpdateInput = z.infer<typeof UpdateInput>;
 
 // V4.8 batch limits are deliberately shared by SDK, HTTP, and MCP callers.
-export const MAX_BATCH_ITEMS = 100;
-export const MAX_BATCH_BYTES = 10 * 1024 * 1024;
-export const MAX_BATCH_SEARCH_RESULTS = 1_000;
+export const MAX_BATCH_ITEMS = BATCH_MAX_ITEMS;
+export const MAX_BATCH_BYTES = BATCH_MAX_BYTES;
+export const MAX_BATCH_SEARCH_RESULTS = BATCH_MAX_SEARCH_RESULTS;
 
 const batchIds = z
   .array(z.string().min(1))

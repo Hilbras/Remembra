@@ -1,4 +1,4 @@
-import { API_PREFIX, API_VERSION, IDEMPOTENCY_KEY_HEADER, REQUEST_ID_HEADER, isValidIdempotencyKey, isValidRequestId, type ApiCapabilitiesResponse } from "./api-contract.js";
+import { API_PREFIX, API_VERSION, BATCH_MAX_BYTES, BATCH_MAX_ITEMS, BATCH_MAX_SEARCH_RESULTS, BATCH_SEARCH_DEFAULT_LIMIT, IDEMPOTENCY_KEY_HEADER, REQUEST_ID_HEADER, isValidIdempotencyKey, isValidRequestId, type ApiCapabilitiesResponse } from "./api-contract.js";
 export type { ApiCapabilitiesResponse } from "./api-contract.js";
 import type { ContextResult } from "./context.js";
 import type { TenantEntity, TenantEntityKind, TenantEntityPage, TenantMembershipPage } from "./tenant-entities.js";
@@ -525,6 +525,7 @@ export class Remembra {
   batch(input: LegacyBatchRequest, options?: RequestOptions): Promise<BatchResponse>;
   batch(input: SdkBatchRequest, options?: RequestOptions): Promise<BatchResponse>;
   async batch(input: SdkBatchRequest | LegacyBatchRequest, options?: RequestOptions): Promise<BatchResponse> {
+    assertBatchRequestWithinBudget(input);
     const response = await this.request<unknown>("POST", "/memories/batch", input, options);
     const headerKey = Object.entries({ ...this.defaultHeaders, ...options?.headers })
       .find(([name, value]) => name.toLowerCase() === IDEMPOTENCY_KEY_HEADER.toLowerCase() && typeof value === "string");
@@ -749,6 +750,45 @@ function rejectsBatchIdempotency(value: unknown): boolean {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const operation = (value as { operation?: unknown }).operation;
   return operation === "export" || operation === "search";
+}
+
+/**
+ * Reject a request the server can never accept before spending a round trip.
+ * The service remains authoritative; this only turns an avoidable rejection
+ * into a local, typed failure and never truncates or rewrites a batch.
+ */
+function assertBatchRequestWithinBudget(input: unknown): void {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) return;
+  const { operation, items, ids } = input as { operation?: unknown; items?: unknown; ids?: unknown };
+  const list = operation === "delete" || operation === "export" ? ids : items;
+  if (!Array.isArray(list)) return;
+  if (list.length > BATCH_MAX_ITEMS) {
+    throw new TypeError(`batch ${String(operation)} accepts at most ${BATCH_MAX_ITEMS} items`);
+  }
+  if (operation === "search") {
+    const budget = list.reduce((total, item) => {
+      const limit = (item as { limit?: unknown } | null)?.limit;
+      return total + (typeof limit === "number" && Number.isFinite(limit) ? limit : BATCH_SEARCH_DEFAULT_LIMIT);
+    }, 0);
+    if (budget > BATCH_MAX_SEARCH_RESULTS) {
+      throw new TypeError(`batch search results must not exceed ${BATCH_MAX_SEARCH_RESULTS}`);
+    }
+  }
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(input);
+  } catch {
+    throw new TypeError("batch request must be JSON-serializable");
+  }
+  if (typeof serialized === "string" && utf8Length(serialized) > BATCH_MAX_BYTES) {
+    throw new TypeError(`batch request exceeds ${BATCH_MAX_BYTES} bytes`);
+  }
+}
+
+/** Exact UTF-8 size in Node and browsers; the server measurement stays authoritative. */
+function utf8Length(value: string): number {
+  if (typeof TextEncoder === "function") return new TextEncoder().encode(value).length;
+  return Buffer.byteLength(value, "utf8");
 }
 
 function shouldRetryRequest(error: unknown): boolean {

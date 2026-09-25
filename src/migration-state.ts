@@ -88,6 +88,17 @@ async function firstUnverifiedRecord(
   return end;
 }
 
+/**
+ * Index of the first destination record that is missing or does not match the
+ * signed plan, or `plan.records.length` when the whole destination is verified.
+ */
+export function verifyTenantMigrationDestination(
+  plan: TenantMigrationPlan,
+  destination: MemoryBackend,
+): Promise<number> {
+  return firstUnverifiedRecord(plan, destination, plan.records.length);
+}
+
 /** Durable JSON state file using the same no-symlink + fsync/rename discipline as snapshots. */
 export class FileMigrationStateStore implements MigrationStateStore {
   constructor(private readonly filePath: string) {}
