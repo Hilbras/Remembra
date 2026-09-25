@@ -69,6 +69,8 @@ stays exempt so unauthenticated readiness probes keep working.
 | `remembra_embedding_batch_items_total` | counter | `result` | Bounded embedding items: `success`, `failure`, or `disabled`. |
 | `remembra_embedding_batch_failures_total` | counter | — | Failed bounded embedding items. |
 | `remembra_batch_items_total` | counter | `operation`, `result` | Batch item outcomes (`store`, `update`, `delete`, `export`, `search`). |
+| `remembra_webhook_events_total` | counter | `result` | Webhook events by result: `published`, `rejected`, or `error`. |
+| `remembra_webhook_deliveries_total` | counter | `result` | Webhook deliveries by result: `queued`, `delivered`, `failed`, `dropped_capacity`, `dropped_payload`. |
 
 Keyed-batch and gate events appear in the structured log, not as metrics:
 `batch_idempotency.release_failed` when a released claim cannot be persisted,

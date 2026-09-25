@@ -50,9 +50,11 @@ import { JobQueue } from "./job-queue.js";
 import { transitionRecoveryState, type RecoveryState } from "./recovery-state.js";
 import type { RecoveryStateStore } from "./recovery-state-store.js";
 import type { TenantDirectory } from "./tenant-directory.js";
+import { randomUUID } from "node:crypto";
 import { applyTenantMigration, preflightTenantMigration, type TenantMigrationPlan } from "./tenant-migration-runner.js";
 import { verifyTenantMigrationDestination } from "./migration-state.js";
 import { batchIdempotencyFingerprint, batchIdempotencyScope, MAX_BATCH_IDEMPOTENCY_REQUEST_BYTES, MAX_BATCH_IDEMPOTENCY_RESPONSE_BYTES, type BatchIdempotencyStore, type BatchRestoreReason } from "./batch-idempotency-store.js";
+import { webhookMemoryPayload, type WebhookDispatcher, type WebhookEventType } from "./webhooks.js";
 import { isValidIdempotencyKey } from "./api-contract.js";
 import type { JobHandle } from "./job-queue.js";
 
@@ -147,6 +149,12 @@ export interface ServiceDeps {
   recoveryStateStore?: RecoveryStateStore;
   /** Durable claim/response store for opt-in batch idempotency keys. */
   batchIdempotencyStore?: BatchIdempotencyStore;
+  /**
+   * Optional signed-webhook dispatcher. Delivery is a notification concern, so
+   * a missing or failing dispatcher never fails, delays, or rolls back the
+   * write that produced the event.
+   */
+  webhooks?: WebhookDispatcher;
 }
 
 export interface AgentReadOptions {
@@ -400,6 +408,7 @@ export class MemoryService {
   private recoveryState: RecoveryState = "Recovering";
   private readonly recoveryStateStore?: RecoveryStateStore;
   private readonly batchIdempotencyStore?: BatchIdempotencyStore;
+  private readonly webhooks?: WebhookDispatcher;
   private recoveryStateInitialized: boolean;
   private readonly backendName?: "sqlite" | "file";
   private readonly backendFallback: boolean;
@@ -411,6 +420,7 @@ export class MemoryService {
     this.#backend = db;
     this.recoveryStateStore = deps.recoveryStateStore;
     this.batchIdempotencyStore = deps.batchIdempotencyStore;
+    this.webhooks = deps.webhooks;
     this.recoveryStateInitialized = !deps.recoveryStateStore;
     this.backendName = deps.backend;
     this.backendFallback = deps.backendFallback ?? false;
@@ -585,6 +595,36 @@ export class MemoryService {
     await this.batchIdempotencyStore.invalidate();
   }
 
+  /**
+   * Emit a webhook notification. Delivery is best-effort by contract: the write
+   * that produced the event is already durable, so a dispatcher failure is
+   * reported and never propagated to the caller.
+   */
+  private emitWebhook(type: WebhookEventType, data: Record<string, unknown>): void {
+    if (!this.webhooks) return;
+    try {
+      this.webhooks.publish({
+        id: randomUUID(),
+        type,
+        createdAt: new Date().toISOString(),
+        data,
+      });
+    } catch (error) {
+      metrics.inc("remembra_webhook_events_total", { result: "error" });
+      logEvent(
+        "warn",
+        "webhook.emit_failed",
+        { webhook_event: type, error: String(error).slice(0, 200) },
+        "Remembra: webhook notification could not be queued",
+      );
+    }
+  }
+
+  /** Deliver everything due; exposed for hosts that schedule their own drain. */
+  async drainWebhooks(signal?: AbortSignal): Promise<number> {
+    return this.webhooks ? this.webhooks.drain(signal) : 0;
+  }
+
   /** Load the durable recovery state before serving or mutating data. */
   async initializeRecovery(): Promise<void> {
     if (this.recoveryStateInitialized) return;
@@ -675,8 +715,7 @@ export class MemoryService {
   }
 
   /** Refresh durable recovery state before an operator-driven direct mutation. */
-  async refreshAndAssertWritable(): Promise<void> {
-    await this.ensureRecoveryInitialized();
+  async refreshAndAssertWritable(): Promise<void> {    await this.ensureRecoveryInitialized();
     await this.refreshDurableRecoveryState();
     this.assertWritable();
   }
@@ -1000,6 +1039,7 @@ export class MemoryService {
       throw new RemembraError("TENANT_REQUIRED", "tenant backend did not preserve the trusted organization");
     }
     metrics.inc("remembra_stores_total");
+    this.emitWebhook("memory.created", webhookMemoryPayload(memory));
     return {
       id: memory.id,
       message: `Stored ${memory.type} memory ${memory.id} (scope: ${memory.scope})`,
@@ -1609,6 +1649,7 @@ export class MemoryService {
     if (!existing) return { ok: false, text: `No memory with id ${id}.` };
     const ok = await this.#backend.forget(id, tenant);
     if (ok && tenant) clearEmbedCachePartition(tenant.organizationId);
+    if (ok) this.emitWebhook("memory.deleted", { id, scope: existing.scope, type: existing.type });
     return { ok, text: ok ? `Deleted memory ${id}.` : `No memory with id ${id}.` };
   }
 
@@ -1658,6 +1699,7 @@ export class MemoryService {
       next.lastValidated = new Date().toISOString();
     }
     const memory = await this.#backend.update(next, { expectedVersion, reason }, tenant);
+    this.emitWebhook("memory.updated", webhookMemoryPayload(memory));
     return { memory, text: `Updated ${id}.` };
   }
 

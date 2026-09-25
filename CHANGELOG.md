@@ -45,6 +45,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   items, over 1,000 aggregate search results, over 10 MiB, or not serializable)
   throws locally instead of spending a request. The shared limits now live in the
   dependency-free `@hilbras/remembra/api-contract` entry point.
+- Added signed webhook delivery as an opt-in host integration, exported from
+  `@hilbras/remembra/webhooks`: a closed event set, allowlist-only payloads with
+  no embedding vectors or credential-like fields, HMAC-SHA256 `t,v1` signatures
+  with a bounded timestamp window, a receiver replay guard, an
+  integrity-protected durable SQLite queue, and a dispatcher with bounded
+  exponential backoff that retries only timeouts, network errors, `408`, `429`,
+  and `5xx`. Deliveries are notifications: a failed or missing dispatcher never
+  fails the write that produced the event. `memory.created`, `memory.updated`,
+  and `memory.deleted` are emitted by the service; host configuration and the
+  remaining event types follow in the next slice.
 - Contained a pre-existing native teardown abort in the test gates. The pinned
   `better-sqlite3` 11.x binding can abort a test process while Node tears the
   environment down, after every assertion has reported, with

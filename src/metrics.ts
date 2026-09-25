@@ -130,6 +130,8 @@ metrics.counter("remembra_job_failures_total", "Background jobs that exhausted r
 metrics.counter("remembra_embedding_batch_items_total", "Embedding batch items by result");
 metrics.counter("remembra_embedding_batch_failures_total", "Embedding batch items that failed");
 metrics.counter("remembra_batch_items_total", "Batch items by operation and result");
+metrics.counter("remembra_webhook_events_total", "Webhook events by result (published|rejected|error)");
+metrics.counter("remembra_webhook_deliveries_total", "Webhook delivery attempts by result (queued|delivered|failed|dropped_capacity|dropped_payload)");
 metrics.counter("remembra_stores_total", "memory_store invocations");
 metrics.counter("remembra_digests_total", "session digest runs");
 metrics.counter("remembra_digest_items_total", "Digest items by outcome (stored|skipped|merged)");

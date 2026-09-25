@@ -314,6 +314,69 @@ development `.idempotency` directory only after confirming it holds no
 production claims. This V5.4 implementation is single-host durable storage;
 distributed idempotency remains a V5.2 concern.
 
+### Signed webhooks (V5.4)
+
+Webhooks are an opt-in host integration exported from
+`@hilbras/remembra/webhooks`. They notify a subscriber about data it already
+owns, so a delivery failure never fails, delays, or rolls back the write that
+produced the event.
+
+```ts
+import {
+  FileWebhookDeliveryStore,
+  WebhookDispatcher,
+  createFetchWebhookTransport,
+} from "@hilbras/remembra/webhooks";
+
+const store = new FileWebhookDeliveryStore(`${remembraHome}/.webhooks`);
+const dispatcher = new WebhookDispatcher(store, createFetchWebhookTransport(), {
+  maxAttempts: 5,
+  baseDelayMs: 1_000,
+  maxDelayMs: 60_000,
+});
+dispatcher.register({
+  id: "tenant-a",
+  url: "https://hooks.example.com/remembra",
+  secret: process.env.REMEMBRA_WEBHOOK_SECRET, // 32–128 bytes
+  events: ["memory.created", "memory.updated", "memory.deleted"],
+});
+
+const service = new MemoryService(store, { webhooks: dispatcher });
+await service.drainWebhooks(); // deliver everything currently due
+```
+
+- **Events** are a closed set (`memory.created`, `memory.updated`,
+  `memory.deleted`, `memory.consolidated`, `snapshot.created`,
+  `snapshot.restored`, `job.completed`, `job.failed`); a subscription receives
+  only the events it explicitly allows.
+- **Payloads** are built from a field allowlist: no embedding vectors, no
+  provenance internals, no relations, and no credential-like field. Content is
+  capped at 4,000 characters with an explicit `truncated` flag, and a body over
+  64 KiB is rejected before it is queued.
+- **Signatures** are `x-remembra-signature: t=<unix seconds>,v1=<hex HMAC-SHA256>`
+  over `<timestamp>.<body>`, with `x-remembra-event`, `x-remembra-delivery`, and
+  `x-remembra-timestamp` headers. The timestamp is inside a bounded window
+  (5 minutes by default) and compared in constant time.
+- **Replay protection** is the receiver's job: verify the signature, then reject
+  a repeated `x-remembra-delivery` id. `WebhookReplayCache` is a bounded,
+  TTL-based implementation that reports its evictions rather than silently
+  accepting a replay.
+- **Retries** are bounded: 5 attempts by default with exponential backoff capped
+  at 60 seconds, retried only for timeouts, network errors, `408`, `429`, and
+  `5xx`. A `4xx` is permanent and retires the delivery immediately.
+- **Delivery state** is durable and local (SQLite under the configured root) and
+  integrity-protected; a tampered row fails closed at startup instead of being
+  delivered under a valid signature. Capacity exhaustion drops the event with an
+  explicit `dropped_capacity` metric — it is never silent.
+- **Secrets** are used only to sign. They are never stored, logged, or
+  returned; logs carry the subscription id and a truncated secret fingerprint.
+- **Endpoints** must be `https` (plain `http` is allowed for loopback only) and
+  must not carry credentials in the URL. Redirects are refused.
+
+Distributed webhook workers, a subscription management API, and queue sharing
+across processes remain V5.2 concerns; this release ships the durable interface
+and an in-process dispatcher.
+
 ### Error codes → HTTP status
 
 | Code | Status | Meaning |
