@@ -28,7 +28,8 @@ crash-recovery mechanics, the backend interface) live in
 │   ├── claims.sqlite               HMAC-protected claim + generation metadata (0600)
 │   ├── claims.key                  local row-integrity key (0600)
 │   ├── claims.identity             ledger identity bound to that database (0600)
-│   └── restore.pending             durable data-restore gate (0600, transient)
+│   └── restore.pending             durable data gate + its owner: restore or
+│                                   migration (0600, transient)
 └── <id>.<rand>.tmp                 atomic-write staging files (transient;
                                     orphans are deleted by the recovery pass)
 ```
@@ -37,6 +38,9 @@ crash-recovery mechanics, the backend interface) live in
 fallback is used. The `.idempotency` directory is independent of the selected
 memory backend: `claims.identity` must always match `claims.sqlite`, and
 `restore.pending` blocks normal serving rather than acting as a disposable lock.
+That marker names its owner, so a data restore is completed with
+`recover verify` while an interrupted tenant migration is resumed with
+`migrate apply`; an unreadable or replaced marker is never auto-cleared.
 
 - The **id is the filename**: a **UUIDv7** since 4.1.0 (plan §3.6) — a
   48-bit millisecond timestamp plus entropy, so ids sort by creation time

@@ -118,9 +118,16 @@ verifies and explicitly invalidates the ledger. Keys supplied through the
 final `idempotencyKey` argument and through request headers follow the same
 response validation; a keyed response containing any failed item is rejected as
 invalid. Ambiguous storage/provider failures are not finalized as replayable
-responses. An all-deterministic failed batch may release its reservation, while
-a partially successful or ambiguous batch keeps it. The SDK never retries
-unsafe writes automatically. Keyed requests are limited to 256 KiB.
+responses. An all-deterministic failed batch releases its reservation, but the
+key stays bound to that operation: a different operation under the same key
+returns `CONFLICT` and the identical operation may be retried. A partially
+successful or ambiguous batch keeps its claim. The SDK never retries unsafe
+writes automatically. Keyed requests are limited to 256 KiB.
+
+`client.batch()` also applies the published limits before sending: more than 100
+items, a search aggregate above 1,000 results, a body above 10 MiB, or a body
+that cannot be serialized throws a `TypeError` without a request. The service
+re-validates every batch, and nothing is truncated for you.
 
 All methods return typed decoded JSON. Non-2xx responses throw
 `RemembraApiError`, which exposes `status`, machine-readable `code`, and the

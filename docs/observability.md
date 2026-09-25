@@ -70,6 +70,12 @@ stays exempt so unauthenticated readiness probes keep working.
 | `remembra_embedding_batch_failures_total` | counter | — | Failed bounded embedding items. |
 | `remembra_batch_items_total` | counter | `operation`, `result` | Batch item outcomes (`store`, `update`, `delete`, `export`, `search`). |
 
+Keyed-batch and gate events appear in the structured log, not as metrics:
+`batch_idempotency.release_failed` when a released claim cannot be persisted,
+and `recovery_state.refresh_failed` when the durable recovery state cannot be
+read and a write therefore failed closed. Both carry only a truncated error
+detail, never keys, scopes, or tenant identifiers.
+
 Background limits are configurable with `REMEMBRA_JOB_CONCURRENCY`,
 `REMEMBRA_JOB_QUEUE`, `REMEMBRA_JOB_MAX_ATTEMPTS`, and
 `REMEMBRA_JOB_RETRY_DELAY_MS`. Batch embedding limits use

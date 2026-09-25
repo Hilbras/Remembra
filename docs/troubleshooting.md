@@ -54,6 +54,12 @@ A `restore.pending` gate is stronger than `ReadOnly`: readiness becomes
 `unready` and data reads/writes return `SERVICE_UNAVAILABLE` until the operator
 completes verification. Startup reconciles an interrupted SQLite publication
 before `recover verify`; do not remove the gate or journal to force startup.
+The marker records its owner, and the startup error names the matching action:
+a `restore` gate needs `remembra recover verify`, while a `migration` gate needs
+`remembra migrate apply` (or a destination rollback) because
+`recover verify` refuses to publish a half-applied migration. If the marker was
+replaced or damaged, nothing is cleared automatically — move it aside and let
+the service report the gate, or restore it from a backup.
 
 ## Startup reports an unusable batch idempotency ledger
 
@@ -65,20 +71,43 @@ pair. If this is a development-only ledger that never held production claims,
 archive the entire `.idempotency` directory while the service is stopped and
 restart; new keyed claims will then start in a new namespace. Legacy `.json`
 claims and SQLite ledgers without an identity are never auto-migrated by
-deleting old keys.
+deleting old keys. A ledger written by an earlier build is verified row by row
+and rebuilt in place on open, so replay history survives an upgrade; an
+unrecognized schema or a row that fails its integrity check fails closed.
 
 ## Service reports `SERVICE_UNAVAILABLE` for a keyed batch
 
 This can mean the ledger is unavailable, its capacity is exhausted, a matching
 claim is already in progress, a restore gate is active, or the batch contained
-a failed item. An all-deterministic failed batch releases its reservation; a
-partial or ambiguous batch intentionally remains fail-closed. Check
+a failed item. An all-deterministic failed batch releases its reservation into a
+tombstone that keeps the key bound to the same operation, so a different
+operation under that key returns `CONFLICT` while the identical operation may be
+retried; a partial or ambiguous batch intentionally remains fail-closed. Check
 `<REMEMBRA_HOME>/.idempotency/restore.pending`, recovery state, and the
 `remembra_batch_items_total` metric before retrying with a new key. Never reuse
 a key with a different body.
 
-## Package import fails in TypeScript
+## A test run aborts with `RemoveEnvironmentCleanupHook`
 
+```
+# node[1234]: void node::RemoveEnvironmentCleanupHook(...) at ../src/api/hooks.cc:142
+# Assertion failed: (env) != nullptr
+```
+
+This abort comes from the pinned native SQLite binding (`better-sqlite3` 11.x)
+while Node tears the environment down — after the run has already reported its
+results. It is not an assertion failure, it is not caused by a test, and it
+depends on heap layout rather than on test content. `npm test`,
+`npm run security:check`, and `npm run recovery:check` therefore re-run only the
+aborted files, print a `[run-tests]` note for each recovery, and still fail
+immediately on any real failure. `npm run test:raw` bypasses that protection.
+
+Upgrading `better-sqlite3` past 11.x would remove the exposure, but those
+releases require Node 20 or newer, which conflicts with this release line's
+Node 18 gate. Until the dependency moves, treat a `[run-tests]` note as
+environmental and confirm a suspected regression with `npm run test:raw`.
+
+## Package import fails in TypeScript
 Use the explicit subpath:
 
 ```ts

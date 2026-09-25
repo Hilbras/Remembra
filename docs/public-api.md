@@ -240,7 +240,12 @@ retains the normal 1–50 result limit, and the sum of requested per-item limits
 may not exceed 1,000 results. Search accounts serialized bytes incrementally and
 the final signed search/export envelope may not exceed 10 MiB. HTTP mixed item
 results use status `200`; top-level malformed or oversized requests/responses
-use the normal `INVALID_INPUT` envelope.
+use the normal `INVALID_INPUT` envelope. The published limits are part of the
+`@hilbras/remembra/api-contract` entry point, and the SDK rejects an
+impossible batch (item count, aggregate search budget, serialized size, or a
+non-serializable body) before sending it. Read-only batch operations never
+consult the durable recovery-state channel, so they stay available while a
+write is failing closed on an unreadable recovery state.
 
 V5.4 does not expose a public batch embedding operation. Batch store may use the
 existing bounded internal embedding precompute path, but a public embedding
@@ -265,32 +270,49 @@ body returns `CONFLICT`, and an in-progress or ambiguous claim fails closed
 rather than risking duplicate writes. Per-item failures (including validation,
 storage, provider, and queue failures) are not finalized as replayable
 responses for a keyed batch. A batch where every item failed with a
-pre-write-deterministic code (`NOT_FOUND`, `CONFLICT`, or `INVALID_INPUT`) may
-release its reservation so it cannot be used to exhaust capacity; any successful
-item or ambiguous failure keeps the claim in progress for host/operator
-resolution. Keyed requests are limited to 256 KiB so the response can be
-persisted safely. Capacity accounting uses bounded SQL aggregates rather than
-loading every stored response. Capacity exhaustion returns
+pre-write-deterministic code (`NOT_FOUND`, `CONFLICT`, or `INVALID_INPUT`)
+releases its reservation by recording a durable released tombstone instead of
+deleting the row: the key stays bound to the operation it was first used for, so
+a different operation under that key returns `CONFLICT`, while the identical
+operation may be retried because the released attempt provably applied no
+write. Tombstones hold no response bytes and do not consume claim capacity. Any
+successful item or ambiguous failure keeps the claim in progress for
+host/operator resolution. Keyed requests are limited to 256 KiB so the response
+can be persisted safely. Capacity accounting uses bounded SQL aggregates rather
+than loading every stored response. Capacity exhaustion returns
 `SERVICE_UNAVAILABLE`.
 
 Out-of-band restores must call the store's `invalidate()` operation before
 serving requests. The built-in restore flow creates a durable `restore.pending`
 gate before publishing the replacement. The gate blocks keyed claims, ordinary
-reads and writes, and readiness; startup refuses normal serving while it exists.
-Starting a gate is refused while any mutation claim is still in progress. A
-failed restore leaves the gate in place. Startup always reconciles an interrupted
-SQLite restore journal before `recover verify` inspects the backend, and
-`recover verify` explicitly completes the gate and invalidates the old claim
-generation only after verification. Durable tenant migration uses the same
-recovery check and restore gate.
+reads and writes, and readiness; startup refuses normal serving while it exists
+and names the operator action for the recorded gate owner. Starting a gate is
+refused while any mutation claim is still in progress. A failed restore leaves
+the gate in place. The gate marker records its owner — a data `restore` or a
+tenant `migration` — and an unrecognized or replaced marker is never treated as
+clearable. The marker is verified and removed before any claim history is
+dropped, so a damaged marker cannot silently discard replay claims. Startup
+always reconciles an interrupted SQLite restore journal before `recover verify`
+inspects the backend, and `recover verify` explicitly completes the gate and
+invalidates the old claim generation only after verification.
+
+Durable tenant migration uses the same recovery check and a `migration`-owned
+gate, which makes an interrupted migration resumable: rerunning the same signed
+plan under the retained gate skips records that already landed, and publication
+requires every signed record to verify in the destination. `recover verify` is
+refused while a migration gate is held, because verifying storage must not
+publish a half-applied migration.
 
 A pre-SQLite ledger containing legacy `.json` claim files, any claim database
 without its recorded `claims.identity`, or a replacement database with missing
 or unrelated tables is rejected before normal startup; claims are never silently
-deleted to make old keys reusable. Restore the matching identity/database pair,
-or archive the entire development `.idempotency` directory only after confirming
-it holds no production claims. This V5.4 implementation is single-host durable
-storage; distributed idempotency remains a V5.2 concern.
+deleted to make old keys reusable. A claim ledger written before the
+released-state binding is verified row by row and rebuilt in place, so replay
+history survives; an unrecognized schema or a row that fails its integrity check
+fails closed. Restore the matching identity/database pair, or archive the entire
+development `.idempotency` directory only after confirming it holds no
+production claims. This V5.4 implementation is single-host durable storage;
+distributed idempotency remains a V5.2 concern.
 
 ### Error codes → HTTP status
 

@@ -27,6 +27,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   interrupted SQLite restores reconcile before verification, replaced or legacy
   ledgers are never silently reset, deterministic all-failed claims release
   capacity safely, and durable tenant migration requires the restore gate.
+- Attributed the durable batch data gate to its owner: a data `restore` gate is
+  completed with `recover verify`, while a tenant `migration` gate stays
+  resumable through `migrate apply`. Startup names the matching operator action,
+  an unsafe or unrecognized gate marker is never auto-cleared, and a damaged
+  marker can no longer discard replay claims before it is resolved.
+- Bound a released keyed-batch claim to its original operation instead of
+  freeing the key, so a different operation returns `CONFLICT` while the
+  identical operation may be retried; tombstones no longer consume capacity.
+- Migrated a pre-existing claim ledger in place after verifying every row, so
+  replay history survives an upgrade and tampered or unknown schemas still fail
+  closed.
+- Kept recovery failures local: an unreadable durable recovery state fails that
+  write closed without latching `Failed` for later writes, and read-only batch
+  operations no longer depend on the writable-state channel.
+- Added a TypeScript SDK batch budget guard: an impossible batch (over 100
+  items, over 1,000 aggregate search results, over 10 MiB, or not serializable)
+  throws locally instead of spending a request. The shared limits now live in the
+  dependency-free `@hilbras/remembra/api-contract` entry point.
+- Contained a pre-existing native teardown abort in the test gates. The pinned
+  `better-sqlite3` 11.x binding can abort a test process while Node tears the
+  environment down, after every assertion has reported, with
+  `RemoveEnvironmentCleanupHook ... Assertion failed: (env) != nullptr`. The
+  `test`, `security:check`, and `recovery:check` scripts now re-run only the
+  aborted files through `scripts/run-tests.mjs`, log every recovery, and still
+  fail immediately on any real failure. `npm run test:raw` keeps the previous
+  unguarded behavior. Upgrading the binding is blocked by the Node 18 gate.
 
 ## [5.0.3] — 2026-09-24
 
