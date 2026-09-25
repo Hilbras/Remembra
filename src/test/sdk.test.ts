@@ -144,6 +144,65 @@ test("SDK sends bounded idempotency keys for batch mutations", async () => {
   );
 });
 
+test("SDK exposes validated read-only batch search", async () => {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const client = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async (input, init) => {
+      calls.push({ url: String(input), init });
+      return jsonResponse({
+        operation: "search",
+        summary: { requested: 2, succeeded: 2, failed: 0 },
+        results: [
+          { index: 0, ok: true, result: { text: "first", results: [] } },
+          { index: 1, ok: true, result: { text: "second", results: [] } },
+        ],
+        execution: { transactionPolicy: "read-only", idempotency: "read-only" },
+      });
+    },
+  });
+
+  const response = await client.batch({
+    operation: "search",
+    items: [{ query: "first", limit: 5 }, { query: "second", limit: 5 }],
+  });
+  assert.equal(response.operation, "search");
+  if (response.operation !== "search" || !response.results[0]?.ok || !response.results[1]?.ok) {
+    assert.fail("expected two valid search outcomes");
+  }
+  assert.equal(response.results[0].result.text, "first");
+  assert.equal(response.results[1].result.text, "second");
+  assert.equal(calls[0].url, "https://memory.example.test/api/v1/memories/batch");
+  assert.equal(calls[0].init?.method, "POST");
+  assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+    operation: "search",
+    items: [{ query: "first", limit: 5 }, { query: "second", limit: 5 }],
+  });
+
+  await assert.rejects(
+    () => client.batch(
+      { operation: "search", items: [{ query: "first" }] },
+      { idempotencyKey: "search-key" },
+    ),
+    /only supported for batch mutations/i,
+  );
+  assert.equal(calls.length, 1);
+
+  const malformed = new Remembra({
+    endpoint: "https://memory.example.test",
+    fetch: async () => jsonResponse({
+      operation: "search",
+      summary: { requested: 1, succeeded: 1, failed: 0 },
+      results: [{ index: 0, ok: true, result: { text: "invalid", results: {} } }],
+      execution: { transactionPolicy: "read-only", idempotency: "read-only" },
+    }),
+  });
+  await assert.rejects(
+    () => malformed.batch({ operation: "search", items: [{ query: "invalid" }] }),
+    /invalid batch response/i,
+  );
+});
+
 test("SDK retries only opted-in read requests and never retries writes", async () => {
   let calls = 0;
   const client = new Remembra({

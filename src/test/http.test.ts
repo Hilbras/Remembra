@@ -235,6 +235,40 @@ test("POST /memories/batch returns ordered outcomes and validates structure", as
   assert.deepEqual(body.execution, { transactionPolicy: "per-item", idempotency: "unsupported" });
   assert.deepEqual(body.results.map((item: { index: number }) => item.index), [0, 1]);
 
+  const search = await fetch(`${base}/memories/batch`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": "test-key" },
+    body: JSON.stringify({
+      operation: "search",
+      items: [{ query: "batch HTTP one", limit: 5 }, { query: "batch HTTP two", limit: 5 }],
+    }),
+  });
+  assert.equal(search.status, 200);
+  const searchBody = await search.json() as {
+    operation: string;
+    summary: { requested: number; succeeded: number; failed: number };
+    execution: { transactionPolicy: string; idempotency: string };
+    results: Array<{ index: number; ok: boolean; result?: { text: string } }>;
+  };
+  assert.equal(searchBody.operation, "search");
+  assert.deepEqual(searchBody.summary, { requested: 2, succeeded: 2, failed: 0 });
+  assert.deepEqual(searchBody.execution, { transactionPolicy: "read-only", idempotency: "read-only" });
+  assert.deepEqual(searchBody.results.map((item) => item.index), [0, 1]);
+  assert.match(searchBody.results[0]?.result?.text ?? "", /batch HTTP one/);
+  assert.match(searchBody.results[1]?.result?.text ?? "", /batch HTTP two/);
+
+  const keyedSearch = await fetch(`${base}/memories/batch`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-api-key": "test-key",
+      "idempotency-key": "search-key",
+    },
+    body: JSON.stringify({ operation: "search", items: [{ query: "batch HTTP one" }] }),
+  });
+  assert.equal(keyedSearch.status, 400);
+  assert.equal((await keyedSearch.json() as { code?: string }).code, "INVALID_INPUT");
+
   const invalid = await fetch(`${base}/memories/batch`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": "test-key" },

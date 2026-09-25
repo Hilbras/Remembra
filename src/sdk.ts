@@ -55,7 +55,8 @@ export type SdkBatchRequestInput =
   | { operation: "store"; items: SdkStoreInput[] }
   | { operation: "update"; items: SdkBatchUpdateItem[] }
   | { operation: "delete"; ids: string[] }
-  | { operation: "export"; ids: string[] };
+  | { operation: "export"; ids: string[] }
+  | { operation: "search"; items: SearchOptions[] };
 
 /** Preserve the pre-V5.4 full input type as a deprecated compile-time overload. */
 export type LegacyBatchRequest = BatchRequest;
@@ -320,6 +321,16 @@ export type BatchResponse =
       summary: BatchSummary;
       results: BatchOutcome[];
       execution: BatchExecutionMetadata;
+    }
+  | {
+      operation: "search";
+      summary: BatchSummary;
+      results: BatchOutcome<{
+        text: string;
+        results: Memory[];
+        explanations?: RetrievalExplanation[];
+      }>[];
+      execution: BatchExecutionMetadata;
     };
 
 /**
@@ -551,7 +562,7 @@ export class Remembra {
       throw new TypeError("retry is only supported for read-only requests");
     }
     if (options.idempotencyKey !== undefined
-      && (method !== "POST" || path !== "/memories/batch" || isBatchExportRequest(body))) {
+      && (method !== "POST" || path !== "/memories/batch" || !isBatchMutationRequest(body))) {
       throw new TypeError("idempotencyKey is only supported for batch mutations");
     }
     if (options.idempotencyKey !== undefined && !isValidIdempotencyKey(options.idempotencyKey)) {
@@ -608,7 +619,7 @@ export class Remembra {
     headers.set(REQUEST_ID_HEADER, requestId);
     const idempotencyKey = options.idempotencyKey ?? headers.get(IDEMPOTENCY_KEY_HEADER) ?? undefined;
     if (idempotencyKey !== undefined) {
-      if (method !== "POST" || path !== "/memories/batch" || isBatchExportRequest(body)) {
+      if (method !== "POST" || path !== "/memories/batch" || !isBatchMutationRequest(body)) {
         throw new TypeError("idempotencyKey is only supported for batch mutations");
       }
       if (!isValidIdempotencyKey(idempotencyKey)) {
@@ -679,7 +690,7 @@ function isBatchResponse(value: unknown, request: SdkBatchRequest | LegacyBatchR
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const body = value as Record<string, unknown>;
   const operation = (request as { operation?: unknown }).operation;
-  const expectedCount = operation === "store" || operation === "update"
+  const expectedCount = operation === "store" || operation === "update" || operation === "search"
     ? ((request as { items?: unknown[] }).items?.length ?? -1)
     : ((request as { ids?: unknown[] }).ids?.length ?? -1);
   if (body.operation !== operation || !Array.isArray(body.results) || expectedCount < 1) return false;
@@ -715,6 +726,10 @@ function isBatchResponse(value: unknown, request: SdkBatchRequest | LegacyBatchR
     if (operation === "update" && (!Number.isInteger(details.version) || typeof details.text !== "string")) return false;
     if (operation === "delete" && typeof details.text !== "string") return false;
     if (operation === "export" && (typeof details.id !== "string" || !details.id)) return false;
+    if (operation === "search"
+      && (typeof details.text !== "string"
+        || !Array.isArray(details.results)
+        || (details.explanations !== undefined && !Array.isArray(details.explanations)))) return false;
   }
   if (actualSucceeded !== succeeded || requested - actualSucceeded !== failed) return false;
   if (operation === "export"
@@ -725,7 +740,7 @@ function isBatchResponse(value: unknown, request: SdkBatchRequest | LegacyBatchR
   const execution = body.execution;
   if (execution === null || typeof execution !== "object" || Array.isArray(execution)) return false;
   const metadata = execution as Record<string, unknown>;
-  const policyMatches = operation === "export"
+  const policyMatches = operation === "export" || operation === "search"
     ? metadata.transactionPolicy === "read-only" && metadata.idempotency === "read-only"
     : metadata.transactionPolicy === "per-item"
       && (keyed
@@ -734,9 +749,10 @@ function isBatchResponse(value: unknown, request: SdkBatchRequest | LegacyBatchR
   return policyMatches;
 }
 
-function isBatchExportRequest(value: unknown): boolean {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    && (value as { operation?: unknown }).operation === "export";
+function isBatchMutationRequest(value: unknown): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const operation = (value as { operation?: unknown }).operation;
+  return operation === "store" || operation === "update" || operation === "delete";
 }
 
 function shouldRetryRequest(error: unknown): boolean {
