@@ -51,7 +51,7 @@ import { transitionRecoveryState, type RecoveryState } from "./recovery-state.js
 import type { RecoveryStateStore } from "./recovery-state-store.js";
 import type { TenantDirectory } from "./tenant-directory.js";
 import { applyTenantMigration, preflightTenantMigration, type TenantMigrationPlan } from "./tenant-migration-runner.js";
-import { batchIdempotencyFingerprint, batchIdempotencyScope, MAX_BATCH_IDEMPOTENCY_REQUEST_BYTES, MAX_BATCH_IDEMPOTENCY_RESPONSE_BYTES, type BatchIdempotencyStore } from "./batch-idempotency-store.js";
+import { batchIdempotencyFingerprint, batchIdempotencyScope, MAX_BATCH_IDEMPOTENCY_REQUEST_BYTES, MAX_BATCH_IDEMPOTENCY_RESPONSE_BYTES, type BatchIdempotencyStore, type BatchRestoreReason } from "./batch-idempotency-store.js";
 import { isValidIdempotencyKey } from "./api-contract.js";
 import type { JobHandle } from "./job-queue.js";
 
@@ -332,6 +332,9 @@ function batchHasUnresolvedFailure(result: BatchResult): boolean {
 
 const RELEASABLE_BATCH_FAILURES = new Set(["NOT_FOUND", "CONFLICT", "INVALID_INPUT"]);
 
+/** Batch operations that can write data and therefore recheck durable recovery. */
+const MUTATING_BATCH_OPERATIONS = new Set<BatchRequest["operation"]>(["store", "update", "delete"]);
+
 function batchClaimCanBeReleased(result: BatchResult): boolean {
   return result.operation !== "export"
     && result.operation !== "search"
@@ -555,10 +558,18 @@ export class MemoryService {
     return this.batchIdempotencyStore?.restorePending === true;
   }
 
+  /**
+   * Verified owner of the durable gate. `undefined` means no gate is held or
+   * the held gate cannot be attributed, which is never auto-clearable.
+   */
+  get batchIdempotencyRestoreReason(): BatchRestoreReason | undefined {
+    return this.batchIdempotencyStore?.restoreReason;
+  }
+
   /** Establish a durable restore gate before replacing the data backend. */
-  async beginBatchRestore(): Promise<void> {
+  async beginBatchRestore(reason: BatchRestoreReason = "restore"): Promise<void> {
     if (!this.batchIdempotencyStore?.beginRestore) throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate is unavailable");
-    await this.batchIdempotencyStore.beginRestore();
+    await this.batchIdempotencyStore.beginRestore(reason);
   }
 
   /** Invalidate claims only after restore publication succeeds, then clear the gate. */
@@ -590,18 +601,26 @@ export class MemoryService {
 
   private async refreshDurableRecoveryState(): Promise<void> {
     if (!this.recoveryStateStore || !this.recoveryStateInitialized) return;
+    let persisted: RecoveryState | undefined;
     try {
-      const persisted = await this.recoveryStateStore.read();
-      if (this.recoveryState === "Failed" && persisted !== "Failed") {
-        throw new RemembraError("SERVICE_UNAVAILABLE", "recovery state is failed");
-      }
-      if (persisted) this.recoveryState = persisted;
+      persisted = await this.recoveryStateStore.read();
     } catch (error) {
-      this.recoveryState = "Failed";
-      throw error instanceof RemembraError
-        ? error
-        : new RemembraError("SERVICE_UNAVAILABLE", "recovery state could not be refreshed", { cause: error });
+      // Writability cannot be confirmed, so this write fails closed. The
+      // failure is not a state transition: latching `Failed` here would
+      // poison every later write and read for a transient channel outage.
+      const detail = String(error).slice(0, 200);
+      logEvent(
+        "warn",
+        "recovery_state.refresh_failed",
+        { error: detail },
+        "Remembra: durable recovery state could not be refreshed; the write failed closed",
+      );
+      throw new RemembraError("SERVICE_UNAVAILABLE", "recovery state could not be refreshed", { cause: error });
     }
+    if (this.recoveryState === "Failed" && persisted !== "Failed") {
+      throw new RemembraError("SERVICE_UNAVAILABLE", "recovery state is failed");
+    }
+    if (persisted) this.recoveryState = persisted;
   }
 
   private async ensureRecoveryInitialized(): Promise<void> {
@@ -661,11 +680,29 @@ export class MemoryService {
     this.assertWritable();
   }
 
-  /** Reject a direct service/CLI mutation while recovery is restrictive. */
-  assertWritable(): void {
-    if (this.batchIdempotencyStore?.restorePending) {
-      throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
-    }
+  /**
+   * Resume-safe writability check for a tenant migration, which owns its own
+   * durable gate. A pending gate is only tolerated when it is verifiably a
+   * migration gate, so an interrupted migration can be resumed while a data
+   * restore still fails closed.
+   */
+  async refreshAndAssertMigrationWritable(): Promise<void> {
+    await this.ensureRecoveryInitialized();
+    await this.refreshDurableRecoveryState();
+    this.assertNoRestoreGate(true);
+    this.assertRecoveryWritable();
+    if (!this.batchIdempotencyRestorePending) await this.beginBatchRestore("migration");
+  }
+
+  /** Reject a direct service/CLI mutation while a durable gate is held. */
+  private assertNoRestoreGate(allowMigrationGate = false): void {
+    if (!this.batchIdempotencyRestorePending) return;
+    if (allowMigrationGate && this.batchIdempotencyRestoreReason === "migration") return;
+    throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
+  }
+
+  /** Reject a mutation while the recovery state machine is restrictive. */
+  private assertRecoveryWritable(): void {
     if (!this.recoveryStateInitialized) {
       throw new RemembraError("SERVICE_UNAVAILABLE", "recovery state is not initialized");
     }
@@ -676,6 +713,12 @@ export class MemoryService {
     ) {
       throw new RemembraError("SERVICE_UNAVAILABLE", "storage is not writable");
     }
+  }
+
+  /** Reject a direct service/CLI mutation while recovery is restrictive. */
+  assertWritable(): void {
+    this.assertNoRestoreGate();
+    this.assertRecoveryWritable();
   }
 
   /** Transport hook for administrative/non-data routes such as metrics. */
@@ -705,10 +748,9 @@ export class MemoryService {
     options: AgentReadOptions,
     capability: "read" | "write" = "read",
     operation?: AuthorizationOperation,
+    allowMigrationGate = false,
   ) {
-    if (this.batchIdempotencyStore?.restorePending) {
-      throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
-    }
+    this.assertNoRestoreGate(allowMigrationGate);
     if (capability === "write") await this.refreshDurableRecoveryState();
     const filter = this.tenantFilter(options, capability, operation);
     if (filter && this.verifyTenantContext) {
@@ -1202,7 +1244,6 @@ export class MemoryService {
 
   async batch(input: unknown, options: BatchOptions = {}): Promise<BatchResult> {
     options = snapshotBatchOptions(options);
-    await this.refreshDurableRecoveryState();
     let request: ReturnType<typeof BatchRequest.parse>;
     let requestBytes = 0;
     try {
@@ -1220,6 +1261,10 @@ export class MemoryService {
     } catch (err) {
       throw inputError(err, "INVALID_INPUT");
     }
+
+    // Read-only batches never touch durable data, so they must not depend on
+    // the writable-state channel; mutations recheck it before any write.
+    if (MUTATING_BATCH_OPERATIONS.has(request.operation)) await this.refreshDurableRecoveryState();
 
     const idempotencyKey = options.idempotencyKey;
     if (idempotencyKey !== undefined) {
@@ -1431,6 +1476,7 @@ export class MemoryService {
       scope: effectiveIdempotencyScope!,
       key: idempotencyKey,
       fingerprint,
+      operation: request.operation,
     });
     if (claim.status === "replay") {
       // Replays are still a current authorization decision, not a cached grant.
@@ -1448,7 +1494,7 @@ export class MemoryService {
     if (batchHasUnresolvedFailure(result)) {
       if (batchClaimCanBeReleased(result) && store.abandon) {
         try {
-          await store.abandon({ scope: effectiveIdempotencyScope!, key: idempotencyKey, fingerprint });
+          await store.abandon({ scope: effectiveIdempotencyScope!, key: idempotencyKey, fingerprint, operation: request.operation });
         } catch (error) {
           logEvent(
             "warn",
@@ -2568,7 +2614,9 @@ export class MemoryService {
     key: Buffer | Uint8Array,
     options: AgentReadOptions & { dryRun?: boolean } = {},
   ): Promise<SnapshotMigrationResult> {
-    const tenant = await this.freshTenantFilter(options, "write", "snapshot.restore");
+    // A verifiably migration-owned gate is this operation's own, so an
+    // interrupted run stays resumable; any other gate still fails closed.
+    const tenant = await this.freshTenantFilter(options, "read", "snapshot.restore", true);
     if (!tenant) throw new RemembraError("TENANT_REQUIRED", "snapshot migration requires a trusted tenant context");
     const snapshot = verifySignedSnapshot(data, key);
     const sourceById = new Map(snapshot.memories.map((memory) => [memory.id, memory]));
@@ -2590,8 +2638,10 @@ export class MemoryService {
     preflightTenantMigration(plan, this.#backend, key, tenant);
     const total = plan.records.length;
     if (options.dryRun) return { total, planned: total, imported: 0, skipped: 0, dryRun: true };
-    await this.refreshAndAssertWritable();
-    await this.beginBatchRestore();
+    // The gate is owned by this migration, so an interrupted run stays
+    // resumable: destination writes are idempotent per record and a second
+    // attempt skips records that already landed.
+    await this.refreshAndAssertMigrationWritable();
     const result = await applyTenantMigration(plan, this.#backend, key, { destinationFilter: tenant });
     await this.completeBatchRestore();
     return {

@@ -17,20 +17,38 @@ export interface BatchIdempotencyInput {
   key: string;
   /** Stable hash of the canonical request. */
   fingerprint: string;
+  /**
+   * Batch operation this claim belongs to. A released claim keeps binding the
+   * key to its operation, so a released key can never be reused for a
+   * different operation.
+   */
+  operation?: string;
 }
 
 export type BatchIdempotencyClaim =
   | { status: "fresh" }
   | { status: "replay"; response: unknown };
 
+/**
+ * Why a durable gate is held. `restore` gates are cleared by a verified
+ * data restore; `migration` gates belong to a resumable tenant migration and
+ * must never be cleared as if the data had simply been rolled back.
+ */
+export type BatchRestoreReason = "restore" | "migration";
+
 export interface BatchIdempotencyStore {
   readonly restorePending?: boolean;
+  /**
+   * Verified owner of the durable gate. `undefined` means no gate is held or
+   * the held gate cannot be attributed, which is never auto-clearable.
+   */
+  readonly restoreReason?: BatchRestoreReason;
   claim(input: BatchIdempotencyInput): Promise<BatchIdempotencyClaim>;
   complete(input: BatchIdempotencyInput & { response: unknown }): Promise<void>;
   /** Release an in-progress claim only when the caller knows no write took effect. */
   abandon?(input: BatchIdempotencyInput): Promise<void>;
-  /** Create a durable gate before a data restore begins. */
-  beginRestore?(): Promise<void>;
+  /** Create a durable gate before a data restore or tenant migration begins. */
+  beginRestore?(reason?: BatchRestoreReason): Promise<void>;
   /** Invalidate claims and clear the restore gate after publication succeeds. */
   completeRestore?(): Promise<void>;
   /** Invalidate all claims after a data rollback/restore or operator reset. */
@@ -55,19 +73,39 @@ export interface FileBatchIdempotencyStoreOptions {
   now?: () => number;
 }
 
+type ClaimState = "in_progress" | "completed" | "released";
+
 interface ClaimRow {
   scopeHash: string;
   keyHash: string;
   fingerprint: string;
-  state: "in_progress" | "completed";
+  state: ClaimState;
   createdAt: number;
   completedAt: number | null;
   response: string | null;
   responseBytes: number;
   reservedBytes: number;
+  operation: string;
   mac: string;
   generation: number;
 }
+
+/** Claim columns without the released-state operation binding. */
+const CLAIM_COLUMNS_V1 = [
+  "scope_hash",
+  "key_hash",
+  "fingerprint",
+  "state",
+  "created_at",
+  "completed_at",
+  "response",
+  "response_bytes",
+  "reserved_bytes",
+  "mac",
+  "generation",
+] as const;
+
+const CLAIM_COLUMNS_V2 = [...CLAIM_COLUMNS_V1, "operation"] as const;
 
 function invalid(message: string): never {
   throw new RemembraError("SERVICE_UNAVAILABLE", `batch idempotency: ${message}`);
@@ -75,6 +113,28 @@ function invalid(message: string): never {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Verified owner of a durable gate marker. An unreadable, replaced, or
+ * unrecognized marker yields `undefined` so callers never auto-clear it.
+ */
+export function readRestoreMarkerReason(markerPath: string): BatchRestoreReason | undefined {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(markerPath, "utf8");
+  } catch {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed) || parsed.format !== "remembra-batch-restore" || !Number.isSafeInteger(parsed.version)) return undefined;
+  if (parsed.version === 1) return "restore";
+  return parsed.reason === "restore" || parsed.reason === "migration" ? parsed.reason : undefined;
 }
 
 function digest(value: string): string {
@@ -99,6 +159,9 @@ function validateInput(input: BatchIdempotencyInput): void {
   }
   if (typeof input.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(input.fingerprint)) {
     throw new RemembraError("INVALID_INPUT", "idempotency fingerprint must be a 64-character digest");
+  }
+  if (input.operation !== undefined && (typeof input.operation !== "string" || !/^[a-z][a-z0-9_]{0,15}$/.test(input.operation))) {
+    throw new RemembraError("INVALID_INPUT", "idempotency operation is invalid");
   }
 }
 
@@ -209,7 +272,7 @@ function metaMac(key: Buffer, identity: string, generation: number, restorePendi
   return createHmac("sha256", key).update(`identity:${identity}:generation:${generation}:restore:${restorePending ? 1 : 0}`, "utf8").digest("base64url");
 }
 
-function recordMac(key: Buffer, row: Omit<ClaimRow, "mac">): string {
+function recordMac(key: Buffer, row: Omit<ClaimRow, "mac">, legacy = false): string {
   const payload = JSON.stringify([
     row.scopeHash,
     row.keyHash,
@@ -221,34 +284,37 @@ function recordMac(key: Buffer, row: Omit<ClaimRow, "mac">): string {
     row.responseBytes,
     row.reservedBytes,
     row.generation,
+    ...(legacy ? [] : [row.operation]),
   ]);
   return createHmac("sha256", key).update(payload, "utf8").digest("base64url");
 }
 
-function parseRow(value: unknown, integrityKey: Buffer): ClaimRow {
+function parseRow(value: unknown, integrityKey: Buffer, legacy = false): ClaimRow {
   if (!isRecord(value)) invalid("claim row has an invalid shape");
   const row: ClaimRow = {
     scopeHash: String(value.scopeHash),
     keyHash: String(value.keyHash),
     fingerprint: String(value.fingerprint),
-    state: value.state as ClaimRow["state"],
+    state: value.state as ClaimState,
     createdAt: Number(value.createdAt),
     completedAt: value.completedAt === null ? null : Number(value.completedAt),
     response: value.response === null ? null : String(value.response),
     responseBytes: Number(value.responseBytes),
     reservedBytes: Number(value.reservedBytes),
+    operation: value.operation === undefined || value.operation === null ? "" : String(value.operation),
     mac: String(value.mac),
     generation: Number(value.generation),
   };
   if (!/^[a-f0-9]{64}$/.test(row.scopeHash) || !/^[a-f0-9]{64}$/.test(row.keyHash) || !/^[a-f0-9]{64}$/.test(row.fingerprint)) {
     invalid("claim row has invalid hashes");
   }
-  if (row.state !== "in_progress" && row.state !== "completed") invalid("claim row has an invalid state");
+  if (row.state !== "in_progress" && row.state !== "completed" && row.state !== "released") invalid("claim row has an invalid state");
+  if (row.operation !== "" && !/^[a-z][a-z0-9_]{0,15}$/.test(row.operation)) invalid("claim row has an invalid operation");
   if (!Number.isSafeInteger(row.createdAt) || row.createdAt < 0 || !Number.isSafeInteger(row.generation) || row.generation < 0) {
     invalid("claim row has invalid timestamps");
   }
-  if (row.state === "in_progress" && (row.completedAt !== null || row.response !== null || row.responseBytes !== 0)) {
-    invalid("in-progress claim contains a response");
+  if ((row.state === "in_progress" || row.state === "released") && (row.completedAt !== null || row.response !== null || row.responseBytes !== 0)) {
+    invalid("unfinished claim contains a response");
   }
   if (row.state === "completed" && (row.completedAt === null || !Number.isSafeInteger(row.completedAt) || row.response === null || row.responseBytes < 0)) {
     invalid("completed claim is incomplete");
@@ -259,7 +325,8 @@ function parseRow(value: unknown, integrityKey: Buffer): ClaimRow {
   if (!Number.isSafeInteger(row.responseBytes) || row.responseBytes < 0 || !Number.isSafeInteger(row.reservedBytes) || row.reservedBytes < 0) {
     invalid("claim row has invalid byte accounting");
   }
-  const expectedMac = recordMac(integrityKey, row);
+  if (legacy && row.state === "released") invalid("legacy claim rows cannot hold a released state");
+  const expectedMac = recordMac(integrityKey, row, legacy);
   if (row.mac.length < 40 || row.mac.length > 128 || row.mac !== expectedMac) invalid("claim row integrity check failed");
   return row;
 }
@@ -352,33 +419,96 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
           restore_pending INTEGER NOT NULL DEFAULT 0 CHECK (restore_pending IN (0, 1)),
           mac TEXT NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS batch_idempotency_claims (
-          scope_hash TEXT NOT NULL,
-          key_hash TEXT NOT NULL,
-          fingerprint TEXT NOT NULL,
-          state TEXT NOT NULL CHECK (state IN ('in_progress', 'completed')),
-          created_at INTEGER NOT NULL,
-          completed_at INTEGER,
-          response TEXT,
-          response_bytes INTEGER NOT NULL DEFAULT 0 CHECK (response_bytes >= 0),
-          reserved_bytes INTEGER NOT NULL DEFAULT 0 CHECK (reserved_bytes >= 0),
-          mac TEXT NOT NULL,
-          generation INTEGER NOT NULL,
-          PRIMARY KEY (scope_hash, key_hash)
-        );
+      `);
+      if (this.newLedger) {
+        this.createClaimTable("batch_idempotency_claims");
+        this.db.prepare("INSERT INTO batch_idempotency_meta (id, identity, generation, restore_pending, mac) VALUES (1, ?, 1, 0, ?)")
+          .run(this.identity, metaMac(this.integrityKey, this.identity, 1, false));
+      } else {
+        this.migrateClaimTable();
+      }
+      this.db.exec(`
         CREATE INDEX IF NOT EXISTS idx_batch_idempotency_state_time
           ON batch_idempotency_claims(state, completed_at);
       `);
-      if (this.newLedger) {
-        this.db.prepare("INSERT INTO batch_idempotency_meta (id, identity, generation, restore_pending, mac) VALUES (1, ?, 1, 0, ?)")
-          .run(this.identity, metaMac(this.integrityKey, this.identity, 1, false));
-      }
       this.currentGeneration();
       fs.chmodSync(this.databasePath, 0o600);
     } catch (error) {
       if (error instanceof RemembraError) throw error;
       throw new RemembraError("SERVICE_UNAVAILABLE", "batch idempotency database could not be opened", { cause: error });
     }
+  }
+
+  private createClaimTable(table: string): void {
+    this.db.exec(`
+      CREATE TABLE ${table} (
+        scope_hash TEXT NOT NULL,
+        key_hash TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('in_progress', 'completed', 'released')),
+        created_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        response TEXT,
+        response_bytes INTEGER NOT NULL DEFAULT 0 CHECK (response_bytes >= 0),
+        reserved_bytes INTEGER NOT NULL DEFAULT 0 CHECK (reserved_bytes >= 0),
+        mac TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        operation TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (scope_hash, key_hash)
+      );
+    `);
+  }
+
+  /**
+   * Accept only the two known claim-table shapes. A ledger written before the
+   * released-state binding is verified row by row and rebuilt in place; any
+   * other shape fails closed rather than resetting key history.
+   */
+  private migrateClaimTable(): void {
+    const columns = (this.db.prepare("PRAGMA table_info(batch_idempotency_claims)").all() as Array<{ name: string }>)
+      .map((entry) => entry.name);
+    if (columns.length === CLAIM_COLUMNS_V2.length && CLAIM_COLUMNS_V2.every((name, index) => columns[index] === name)) return;
+    if (columns.length !== CLAIM_COLUMNS_V1.length || !CLAIM_COLUMNS_V1.every((name, index) => columns[index] === name)) {
+      invalid("ledger claim table does not match a supported schema");
+    }
+    const rebuild = this.db.transaction(() => {
+      const legacyRows = this.db.prepare(
+        "SELECT scope_hash AS scopeHash, key_hash AS keyHash, fingerprint, state, created_at AS createdAt, completed_at AS completedAt, response, response_bytes AS responseBytes, reserved_bytes AS reservedBytes, mac, generation FROM batch_idempotency_claims",
+      ).all();
+      // Rows are HMAC-verified with either the pre-binding or the current
+      // payload and rewritten with the current one, so a ledger interrupted
+      // mid-upgrade still migrates without weakening integrity.
+      const verified = legacyRows.map((row) => {
+        try {
+          return { ...parseRow(row, this.integrityKey, true), operation: "" };
+        } catch {
+          return parseRow(row, this.integrityKey, false);
+        }
+      });
+      this.createClaimTable("batch_idempotency_claims_v2");
+      const insert = this.db.prepare(
+        "INSERT INTO batch_idempotency_claims_v2 (scope_hash, key_hash, fingerprint, state, created_at, completed_at, response, response_bytes, reserved_bytes, mac, generation, operation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      for (const row of verified) {
+        insert.run(
+          row.scopeHash,
+          row.keyHash,
+          row.fingerprint,
+          row.state,
+          row.createdAt,
+          row.completedAt,
+          row.response,
+          row.responseBytes,
+          row.reservedBytes,
+          recordMac(this.integrityKey, row),
+          row.generation,
+          "",
+        );
+      }
+      this.db.prepare("DROP TABLE batch_idempotency_claims").run();
+      this.db.prepare("ALTER TABLE batch_idempotency_claims_v2 RENAME TO batch_idempotency_claims").run();
+    });
+    rebuild.immediate();
   }
 
   private currentMeta(): { generation: number; restorePending: boolean } {
@@ -397,7 +527,7 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
 
   private row(scopeHash: string, keyHash: string): ClaimRow | undefined {
     const value = this.db.prepare(
-      "SELECT scope_hash AS scopeHash, key_hash AS keyHash, fingerprint, state, created_at AS createdAt, completed_at AS completedAt, response, response_bytes AS responseBytes, reserved_bytes AS reservedBytes, mac, generation FROM batch_idempotency_claims WHERE scope_hash = ? AND key_hash = ?",
+      "SELECT scope_hash AS scopeHash, key_hash AS keyHash, fingerprint, state, created_at AS createdAt, completed_at AS completedAt, response, response_bytes AS responseBytes, reserved_bytes AS reservedBytes, mac, generation, operation FROM batch_idempotency_claims WHERE scope_hash = ? AND key_hash = ?",
     ).get(scopeHash, keyHash);
     return value === undefined ? undefined : parseRow(value, this.integrityKey);
   }
@@ -409,10 +539,25 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
     const keyHash = digest(input.key);
     const transaction = this.db.transaction(() => {
       if (this.currentMeta().restorePending) throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
-      const existing = this.row(scopeHash, keyHash);
+      let existing = this.row(scopeHash, keyHash);
       if (existing) {
         if (existing.scopeHash !== scopeHash || existing.keyHash !== keyHash) invalid("claim binding mismatch");
         if (existing.generation !== this.currentGeneration()) invalid("claim generation is stale; invalidate the ledger");
+        if (existing.state === "released") {
+          // A released claim never applied a write, but the key stays bound to
+          // the operation it was first used for.
+          if (existing.operation === "") {
+            throw new RemembraError("SERVICE_UNAVAILABLE", "a released idempotency key cannot be re-executed");
+          }
+          if (input.operation !== existing.operation) {
+            throw new RemembraError("CONFLICT", "idempotency key was already used for a different operation");
+          }
+          this.db.prepare("DELETE FROM batch_idempotency_claims WHERE scope_hash = ? AND key_hash = ? AND state = 'released'")
+            .run(scopeHash, keyHash);
+          existing = undefined;
+        }
+      }
+      if (existing) {
         if (existing.fingerprint !== input.fingerprint) {
           throw new RemembraError("CONFLICT", "idempotency key was already used with a different request");
         }
@@ -423,10 +568,10 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
       }
 
       const totals = this.db.prepare(
-        "SELECT COUNT(*) AS entryCount, COALESCE(SUM(CASE WHEN state = 'in_progress' THEN reserved_bytes ELSE response_bytes END), 0) AS totalBytes FROM batch_idempotency_claims",
+        "SELECT COUNT(*) AS entryCount, COALESCE(SUM(CASE WHEN state = 'in_progress' THEN reserved_bytes ELSE response_bytes END), 0) AS totalBytes FROM batch_idempotency_claims WHERE state <> 'released'",
       ).get() as { entryCount: number; totalBytes: number };
       const scopeCount = this.db.prepare(
-        "SELECT COUNT(*) AS scopeCount FROM batch_idempotency_claims WHERE scope_hash = ?",
+        "SELECT COUNT(*) AS scopeCount FROM batch_idempotency_claims WHERE scope_hash = ? AND state <> 'released'",
       ).get(scopeHash) as { scopeCount: number };
       if (
         totals.entryCount >= this.maxEntries
@@ -447,11 +592,12 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
         response: null,
         responseBytes: 0,
         reservedBytes: this.maxBytes,
+        operation: input.operation ?? "",
         generation,
       };
       this.db.prepare(
-        "INSERT INTO batch_idempotency_claims (scope_hash, key_hash, fingerprint, state, created_at, completed_at, response, response_bytes, reserved_bytes, mac, generation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(scopeHash, keyHash, input.fingerprint, "in_progress", createdAt, null, null, 0, this.maxBytes, recordMac(this.integrityKey, row), generation);
+        "INSERT INTO batch_idempotency_claims (scope_hash, key_hash, fingerprint, state, created_at, completed_at, response, response_bytes, reserved_bytes, mac, generation, operation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(scopeHash, keyHash, input.fingerprint, "in_progress", createdAt, null, null, 0, this.maxBytes, recordMac(this.integrityKey, row), generation, row.operation);
       return { status: "fresh" as const };
     });
     try {
@@ -486,6 +632,7 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
         throw new RemembraError("CONFLICT", "idempotency key was already used with a different request");
       }
       if (existing.state === "completed") return;
+      if (existing.state === "released") invalid("a released claim cannot be completed");
       const completed: Omit<ClaimRow, "mac"> = {
         ...existing,
         state: "completed",
@@ -507,6 +654,11 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
     }
   }
 
+  /**
+   * Release a reserved claim that provably applied no write. The key is not
+   * freed: a released tombstone keeps binding the key to its operation while
+   * allowing the identical operation to be retried.
+   */
   async abandon(input: BatchIdempotencyInput): Promise<void> {
     if (this.restorePending) throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
     validateInput(input);
@@ -520,10 +672,23 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
       if (existing.fingerprint !== input.fingerprint) {
         throw new RemembraError("CONFLICT", "idempotency key was already used with a different request");
       }
+      if (existing.state === "released") {
+        if (existing.operation !== (input.operation ?? "")) {
+          throw new RemembraError("CONFLICT", "idempotency key was already used for a different operation");
+        }
+        return;
+      }
       if (existing.state !== "in_progress") invalid("only an in-progress claim can be abandoned");
+      const released: Omit<ClaimRow, "mac"> = {
+        ...existing,
+        state: "released",
+        completedAt: null,
+        reservedBytes: 0,
+        operation: input.operation ?? existing.operation,
+      };
       const result = this.db.prepare(
-        "DELETE FROM batch_idempotency_claims WHERE scope_hash = ? AND key_hash = ? AND fingerprint = ? AND state = 'in_progress'",
-      ).run(scopeHash, keyHash, input.fingerprint);
+        "UPDATE batch_idempotency_claims SET state = 'released', reserved_bytes = 0, operation = ?, mac = ? WHERE scope_hash = ? AND key_hash = ? AND fingerprint = ? AND state = 'in_progress'",
+      ).run(released.operation, recordMac(this.integrityKey, released), scopeHash, keyHash, input.fingerprint);
       if (result.changes !== 1) invalid("claim changed while it was being abandoned");
     });
     try {
@@ -553,7 +718,19 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
     }
   }
 
-  async beginRestore(): Promise<void> {
+  /**
+   * Verified owner of the durable gate. An unreadable, replaced, or legacy
+   * marker yields `undefined` so callers never auto-clear it.
+   */
+  get restoreReason(): BatchRestoreReason | undefined {
+    if (!this.restorePending) return undefined;
+    return readRestoreMarkerReason(this.restoreMarkerPath);
+  }
+
+  async beginRestore(reason: BatchRestoreReason = "restore"): Promise<void> {
+    if (reason !== "restore" && reason !== "migration") {
+      throw new RemembraError("INVALID_INPUT", "restore gate reason is invalid");
+    }
     const publish = this.db.transaction(() => {
       const current = this.currentMeta();
       if (current.restorePending) throw new RemembraError("SERVICE_UNAVAILABLE", "a restore is already pending");
@@ -569,7 +746,7 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
       throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate could not be published", { cause: error });
     }
 
-    const marker = `${JSON.stringify({ format: "remembra-batch-restore", version: 1, createdAt: new Date().toISOString() })}\n`;
+    const marker = `${JSON.stringify({ format: "remembra-batch-restore", version: 2, reason, createdAt: new Date().toISOString() })}\n`;
     let handle: number | undefined;
     try {
       if (!this.restoreMarkerExists()) {
@@ -599,10 +776,13 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
   }
 
   async completeRestore(): Promise<void> {
-    await this.invalidate();
+    // The gate marker is verified and removed before any claim history is
+    // dropped: an unsafe marker must never silently discard replay claims.
+    // The database flag stays set until invalidation succeeds, so a failure
+    // here still fails closed.
     try {
       const stat = fs.lstatSync(this.restoreMarkerPath);
-      if (stat.isSymbolicLink() || !stat.isFile()) invalid("restore gate is unsafe");
+      if (stat.isSymbolicLink() || !stat.isFile()) invalid("restore gate is unsafe; move it aside and retry");
       fs.unlinkSync(this.restoreMarkerPath);
       const directory = fs.openSync(path.dirname(this.restoreMarkerPath), fs.constants.O_RDONLY);
       try {
@@ -611,10 +791,16 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
         fs.closeSync(directory);
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      if (error instanceof RemembraError) throw error;
-      throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate could not be cleared", { cause: error });
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        // A gate held in the database without its marker is still cleared
+        // below; the durable flag keeps failing closed until then.
+      } else if (error instanceof RemembraError) {
+        throw error;
+      } else {
+        throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate could not be cleared", { cause: error });
+      }
     }
+    await this.invalidate();
   }
 
   async invalidate(): Promise<void> {

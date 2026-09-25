@@ -186,6 +186,48 @@ test("completed idempotency claims never expire into fresh mutations", async () 
   }
 });
 
+test("restore gate records whether a data restore or tenant migration owns it", async () => {
+  const root = await temporaryRoot("remembra-idempotency-gate-reason-");
+  const store = new FileBatchIdempotencyStore(path.join(root, "claims"));
+  try {
+    assert.equal(store.restoreReason, undefined);
+    await store.beginRestore("migration");
+    assert.equal(store.restoreReason, "migration");
+    await store.completeRestore();
+    assert.equal(store.restoreReason, undefined);
+  } finally {
+    store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an unsafe restore marker cannot clear claims and reports an operator action", async () => {
+  const root = await temporaryRoot("remembra-idempotency-unsafe-marker-");
+  const store = new FileBatchIdempotencyStore(path.join(root, "claims"));
+  const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "unsafe-marker", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
+  try {
+    assert.deepEqual(await store.claim(input), { status: "fresh" });
+    await store.complete({ ...input, response: { operation: "store" } });
+    await store.beginRestore();
+    const marker = path.join(root, "claims", "restore.pending");
+    await fs.unlink(marker);
+    await fs.mkdir(marker);
+    await assert.rejects(() => store.completeRestore(), /unsafe|move aside/i);
+    await assert.rejects(() => store.claim({ ...input, fingerprint: batchIdempotencyFingerprint("changed") }), expectCode("SERVICE_UNAVAILABLE"));
+    await fs.rmdir(marker);
+    await store.completeRestore();
+    assert.equal(store.restorePending, false);
+  } finally {
+    if (store.restorePending) {
+      const marker = path.join(root, "claims", "restore.pending");
+      await fs.rm(marker, { recursive: true, force: true }).catch(() => {});
+      await store.completeRestore().catch(() => {});
+    }
+    store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("restore gate blocks claims until successful completion", async () => {
   const root = await temporaryRoot("remembra-idempotency-gate-");
   const store = new FileBatchIdempotencyStore(path.join(root, "claims"));
@@ -200,6 +242,104 @@ test("restore gate blocks claims until successful completion", async () => {
     assert.deepEqual(await store.claim(input), { status: "fresh" });
   } finally {
     store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an older claim ledger is migrated in place without losing replay history", async () => {
+  const root = await temporaryRoot("remembra-idempotency-legacy-schema-");
+  const claims = path.join(root, "claims");
+  const store = new FileBatchIdempotencyStore(claims);
+  const databasePath = store.databasePath;
+  const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "legacy-key", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
+  await store.claim(input);
+  await store.complete({ ...input, response: { operation: "store", ids: ["m1"] } });
+  store.close();
+
+  // Rebuild the ledger in the released-state-less shape a previous build wrote.
+  const legacy = new Database(databasePath);
+  legacy.exec(`
+    DROP INDEX IF EXISTS idx_batch_idempotency_state_time;
+    CREATE TABLE legacy_claims (
+      scope_hash TEXT NOT NULL,
+      key_hash TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('in_progress', 'completed')),
+      created_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      response TEXT,
+      response_bytes INTEGER NOT NULL DEFAULT 0 CHECK (response_bytes >= 0),
+      reserved_bytes INTEGER NOT NULL DEFAULT 0 CHECK (reserved_bytes >= 0),
+      mac TEXT NOT NULL,
+      generation INTEGER NOT NULL,
+      PRIMARY KEY (scope_hash, key_hash)
+    );
+    INSERT INTO legacy_claims SELECT scope_hash, key_hash, fingerprint, state, created_at, completed_at, response, response_bytes, reserved_bytes, mac, generation FROM batch_idempotency_claims;
+    DROP TABLE batch_idempotency_claims;
+    ALTER TABLE legacy_claims RENAME TO batch_idempotency_claims;
+  `);
+  legacy.close();
+  await fs.chmod(databasePath, 0o600);
+
+  const migrated = new FileBatchIdempotencyStore(claims);
+  try {
+    // History survives the rebuild, so the original request still replays.
+    assert.deepEqual(await migrated.claim(input), {
+      status: "replay",
+      response: { operation: "store", ids: ["m1"] },
+    });
+    await assert.rejects(
+      () => migrated.claim({ ...input, fingerprint: batchIdempotencyFingerprint("changed") }),
+      expectCode("CONFLICT"),
+    );
+    // The migrated ledger also supports the released-state binding.
+    const released = { scope: batchIdempotencyScope("tenant:beta"), key: "legacy-release", fingerprint: batchIdempotencyFingerprint("body") };
+    assert.deepEqual(await migrated.claim(released), { status: "fresh" });
+    await migrated.abandon({ ...released, operation: "delete" });
+    await assert.rejects(
+      () => migrated.claim({ ...released, operation: "store" }),
+      expectCode("CONFLICT"),
+    );
+  } finally {
+    migrated.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a tampered legacy claim row fails the ledger closed before migration", async () => {
+  const root = await temporaryRoot("remembra-idempotency-legacy-tampered-");
+  const claims = path.join(root, "claims");
+  const store = new FileBatchIdempotencyStore(claims);
+  const databasePath = store.databasePath;
+  await store.claim({ scope: batchIdempotencyScope("tenant:alpha"), key: "forged", fingerprint: batchIdempotencyFingerprint("fingerprint-a") });
+  store.close();
+  const legacy = new Database(databasePath);
+  legacy.exec(`
+    DROP INDEX IF EXISTS idx_batch_idempotency_state_time;
+    CREATE TABLE legacy_claims (
+      scope_hash TEXT NOT NULL,
+      key_hash TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('in_progress', 'completed')),
+      created_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      response TEXT,
+      response_bytes INTEGER NOT NULL DEFAULT 0 CHECK (response_bytes >= 0),
+      reserved_bytes INTEGER NOT NULL DEFAULT 0 CHECK (reserved_bytes >= 0),
+      mac TEXT NOT NULL,
+      generation INTEGER NOT NULL,
+      PRIMARY KEY (scope_hash, key_hash)
+    );
+    INSERT INTO legacy_claims SELECT scope_hash, key_hash, fingerprint, state, created_at, completed_at, response, response_bytes, reserved_bytes, mac, generation FROM batch_idempotency_claims;
+    DROP TABLE batch_idempotency_claims;
+    ALTER TABLE legacy_claims RENAME TO batch_idempotency_claims;
+  `);
+  legacy.prepare("UPDATE batch_idempotency_claims SET fingerprint = ?").run(batchIdempotencyFingerprint("forged-body"));
+  legacy.close();
+  await fs.chmod(databasePath, 0o600);
+  try {
+    assert.throws(() => new FileBatchIdempotencyStore(claims), expectCode("SERVICE_UNAVAILABLE"));
+  } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
 });
@@ -530,6 +670,60 @@ test("ordinary writes recheck durable recovery state before any mutation", async
   }
 });
 
+test("a transient recovery-state read error fails one write closed without poisoning later work", async () => {
+  const root = await temporaryRoot("remembra-idempotency-transient-recovery-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  let reads = 0;
+  let failNextRead = false;
+  const service = new MemoryService(new MemoryStore(path.join(root, "memories")), {
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+    recoveryStateStore: {
+      read: async () => {
+        reads++;
+        if (failNextRead) {
+          failNextRead = false;
+          throw new Error("transient state read failure");
+        }
+        return "Healthy";
+      },
+      write: async () => {},
+    },
+  });
+  try {
+    await service.initializeRecovery();
+    assert.equal((await service.health()).status, "ok");
+    await svc_store(service);
+    assert.equal((await service.list({})).memories.length, 1);
+
+    // Writability cannot be confirmed, so the write fails closed and stores
+    // nothing; the failure must not latch a durable Failed state.
+    failNextRead = true;
+    await assert.rejects(() => svc_store(service), expectCode("SERVICE_UNAVAILABLE"));
+    assert.equal(reads > 1, true);
+    assert.equal((await service.list({})).memories.length, 1);
+
+    // The channel recovers on the next attempt, so writes work again.
+    await svc_store(service);
+    assert.equal((await service.list({})).memories.length, 2);
+    assert.equal((await service.health()).state, "Healthy");
+
+    // Reads never depend on the durable channel and stay available.
+    failNextRead = true;
+    assert.equal((await service.search({ query: "transient" })).results.length, 2);
+    assert.equal((await service.batch({ operation: "search", items: [{ query: "transient" }] })).summary.succeeded, 1);
+  } finally {
+    await service.shutdownBackgroundJobs();
+    // The store releases its advisory lock file asynchronously; retry so a
+    // teardown race cannot mask a real assertion failure.
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+async function svc_store(service: MemoryService): Promise<void> {
+  await service.store({ type: "fact", content: `transient recovery ${Math.random()}` });
+}
+
 test("a pending restore gate blocks reads and reports unready", async () => {
   const root = await temporaryRoot("remembra-idempotency-read-gate-");
   await fs.mkdir(path.join(root, "memories"), { recursive: true });
@@ -609,6 +803,21 @@ test("a deterministically failed keyed batch releases its reserved claim", async
     assert.deepEqual(
       await ledger.claim({ scope, key: "next-request", fingerprint: batchIdempotencyFingerprint("next") }),
       { status: "fresh" },
+    );
+    await ledger.abandon({ scope, key: "next-request", fingerprint: batchIdempotencyFingerprint("next") });
+    await assert.rejects(
+      () => service.batch(
+        { operation: "store", items: [{ type: "fact", content: "different body under released key" }] },
+        { idempotencyKey: "deterministic-failure", idempotencyScope: scope },
+      ),
+      expectCode("CONFLICT"),
+    );
+    await assert.rejects(
+      () => service.batch(
+        { operation: "delete", ids: ["still-missing"] },
+        { idempotencyKey: "deterministic-failure", idempotencyScope: scope },
+      ),
+      expectCode("SERVICE_UNAVAILABLE"),
     );
   } finally {
     await service.shutdownBackgroundJobs();

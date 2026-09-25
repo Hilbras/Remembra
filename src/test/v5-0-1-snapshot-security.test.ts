@@ -131,3 +131,94 @@ test("SEC-SNAPSHOT-001: explicit signed migration applies only through a target-
     await fs.rm(targetRoot, { recursive: true, force: true });
   }
 });
+
+test("SEC-SNAPSHOT-002: an interrupted tenant migration stays resumable under its own gate", async () => {
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-migration-resume-source-"));
+  const sourceStore = new MemoryStore(sourceRoot);
+  const source = await sourceStore.store(StoreInput.parse({ type: "fact", content: "resume me" }));
+  const snapshot = createSignedSnapshot({
+    format: SNAPSHOT_FORMAT,
+    version: 3,
+    exportedAt: new Date().toISOString(),
+    memories: [source],
+  }, key);
+  const plan = planTenantMigration({
+    source: [source],
+    sourceSchemaVersion: 3,
+    organizationMappings: [{ sourceNamespace: "legacy-root", destination: "org-a" }],
+  }, key);
+  const targetRoot = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-migration-resume-target-"));
+  const service = new MemoryService(new MemoryStore(targetRoot), {
+    tenantMode: "strict",
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+    snapshotKey: key,
+    batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(targetRoot, "claims")),
+  });
+  try {
+    await service.initializeRecovery();
+    // An interrupted migration leaves its own gate behind.
+    await service.beginBatchRestore("migration");
+    assert.equal(service.batchIdempotencyRestorePending, true);
+    assert.equal(service.batchIdempotencyRestoreReason, "migration");
+
+    // Resuming applies the plan and publishes the gate.
+    const applied = await service.migrateSnapshot(snapshot, plan, key, { tenant });
+    assert.equal(applied.imported, 1);
+    assert.equal(service.batchIdempotencyRestorePending, false);
+    assert.equal((await service.search({ query: "resume", tenant })).results.length, 1);
+
+    // A later migration starts its own gate and clears it again.
+    const second = await service.migrateSnapshot(snapshot, plan, key, { tenant });
+    assert.equal(second.skipped, 1);
+    assert.equal(second.imported, 0);
+    assert.equal(service.batchIdempotencyRestorePending, false);
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(sourceRoot, { recursive: true, force: true });
+    await fs.rm(targetRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("SEC-SNAPSHOT-003: a data restore gate is never resumed as a migration", async () => {
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-migration-restore-source-"));
+  const sourceStore = new MemoryStore(sourceRoot);
+  const source = await sourceStore.store(StoreInput.parse({ type: "fact", content: "restore gate wins" }));
+  const snapshot = createSignedSnapshot({
+    format: SNAPSHOT_FORMAT,
+    version: 3,
+    exportedAt: new Date().toISOString(),
+    memories: [source],
+  }, key);
+  const plan = planTenantMigration({
+    source: [source],
+    sourceSchemaVersion: 3,
+    organizationMappings: [{ sourceNamespace: "legacy-root", destination: "org-a" }],
+  }, key);
+  const targetRoot = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-migration-restore-target-"));
+  const service = new MemoryService(new MemoryStore(targetRoot), {
+    tenantMode: "strict",
+    embeddingProvider: "none",
+    snapshotKey: key,
+    batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(targetRoot, "claims")),
+  });
+  try {
+    await service.initializeRecovery();
+    await service.beginBatchRestore("restore");
+    assert.equal(service.batchIdempotencyRestoreReason, "restore");
+    await assert.rejects(
+      () => service.migrateSnapshot(snapshot, plan, key, { tenant }),
+      (error: unknown) => error instanceof RemembraError && error.code === "SERVICE_UNAVAILABLE",
+    );
+    // The restore gate is untouched and still blocks ordinary reads.
+    assert.equal(service.batchIdempotencyRestorePending, true);
+    await assert.rejects(
+      () => service.search({ query: "restore", tenant }),
+      (error: unknown) => error instanceof RemembraError && error.code === "SERVICE_UNAVAILABLE",
+    );
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(sourceRoot, { recursive: true, force: true });
+    await fs.rm(targetRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});

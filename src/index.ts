@@ -13,7 +13,7 @@ import { startMcp } from "./mcp.js";
 import { createOperatorTenantContext, tenantModeFromEnv } from "./operator.js";
 import { validateStartupConfiguration, validateStorageRoot } from "./startup-validation.js";
 import { FileRecoveryStateStore } from "./recovery-state-store.js";
-import { FileBatchIdempotencyStore } from "./batch-idempotency-store.js";
+import { FileBatchIdempotencyStore, readRestoreMarkerReason } from "./batch-idempotency-store.js";
 import { selectInitialBackend } from "./backend-selection.js";
 import {
   analyzeTenantSnapshot,
@@ -90,8 +90,16 @@ try {
   logEvent("warn", "idempotency.unavailable", { error: String(error).slice(0, 160) }, "Batch idempotency ledger unavailable");
 }
 if (restoreMarkerPending && !isRecoveryCommand && !isRestoreCommand) {
-  throw new Error("a data restore is pending; resolve the restore-pending gate before serving");
+  const owner = readRestoreMarkerReason(restoreMarkerPath);
+  throw new Error(
+    owner === "migration"
+      ? "a tenant migration is pending; resume `migrate apply` or roll the destination back before serving"
+      : owner === "restore"
+        ? "a data restore is pending; resolve the restore-pending gate before serving"
+        : "a durable data gate is pending and its owner could not be verified; inspect the batch idempotency ledger before serving",
+  );
 }
+
 const backendSelection = await selectInitialBackend(validatedRoot, process.env);
 const store = backendSelection.store;
 const service = new MemoryService(store, {
@@ -106,7 +114,14 @@ const service = new MemoryService(store, {
   batchIdempotencyStore,
 });
 if ((restoreMarkerPending || service.batchIdempotencyRestorePending) && !isRecoveryCommand && !isRestoreCommand) {
-  throw new Error("a data restore is pending; resolve the restore-pending gate before serving");
+  const owner = service.batchIdempotencyRestoreReason;
+  throw new Error(
+    owner === "migration"
+      ? "a tenant migration is pending; resume `migrate apply` or roll the destination back before serving"
+      : owner === "restore"
+        ? "a data restore is pending; resolve the restore-pending gate before serving"
+        : "a durable data gate is pending and its owner could not be verified; inspect the batch idempotency ledger before serving",
+  );
 }
 await service.initializeRecovery();
 const initialHealth = await service.health();
@@ -134,6 +149,11 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
   }
 } else if (argv[0] === "recover" && argv[1] === "verify") {
   try {
+    // A migration gate is never a data-rollback gate: verifying storage must
+    // not publish a half-applied tenant migration.
+    if (service.batchIdempotencyRestorePending && service.batchIdempotencyRestoreReason !== "restore") {
+      throw new Error("a tenant migration gate is pending; resume `migrate apply` or roll the destination back before verifying recovery");
+    }
     await service.verifyRecovery();
     if (service.batchIdempotencyRestorePending) await service.completeBatchRestore();
     const health = await service.health();
@@ -368,9 +388,9 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
         });
         console.log(JSON.stringify(result, null, 2));
       } else {
-        await service.refreshAndAssertWritable();
         if (!batchIdempotencyStore) throw new Error("durable migration requires a healthy batch idempotency ledger");
-        if (!service.batchIdempotencyRestorePending) await service.beginBatchRestore();
+        // A migration owns its own gate, so an interrupted run resumes here.
+        await service.refreshAndAssertMigrationWritable();
         const stateStore = new FileMigrationStateStore(path.join(validatedRoot, ".tenant-migration-state.json"));
         const result = await runDurableTenantMigration(plan, store, operatorSnapshotKey, {
           stateStore,

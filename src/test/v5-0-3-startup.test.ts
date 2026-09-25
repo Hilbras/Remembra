@@ -157,6 +157,25 @@ test("REC-ATOMIC-001: recover verify reconciles an interrupted SQLite restore be
   }
 });
 
+test("REC-ATOMIC-002: recover verify never publishes a pending tenant migration gate", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v503-verify-migration-gate-"));
+  const ledger = new FileBatchIdempotencyStore(path.join(root, ".idempotency"));
+  await ledger.beginRestore("migration");
+  ledger.close();
+  try {
+    const result = await runCli(["recover", "verify"], baseEnv(root));
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /migration/i);
+    // The gate survives the refused verification and still blocks serving.
+    assert.equal(await fs.stat(path.join(root, ".idempotency", "restore.pending")).then(() => true, () => false), true);
+    const serving = await runCli(["export", path.join(root, "export.json")], baseEnv(root));
+    assert.notEqual(serving.code, 0);
+    assert.match(serving.stderr, /migrate apply/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("REC-START-001: invalid configuration fails before legacy storage is migrated", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v503-cli-startup-"));
   const legacyDir = path.join(root, "global");
