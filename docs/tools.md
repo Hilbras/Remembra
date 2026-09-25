@@ -46,20 +46,24 @@ Returns the assigned memory id.
 
 ## `memory_batch`
 
-Run a bounded store, update, delete, or selected-export batch through one
-operation-dispatched call. The service validates the complete request before
-writing; operational failures are returned per item and the batch is not a
-cross-item transaction.
+Run a bounded store, update, delete, selected-export, or read-only search batch
+through one operation-dispatched call. The service validates the complete
+request before running an item; operational failures are returned per item and
+the batch is not a cross-item transaction.
 
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
-| `operation` | `store \| update \| delete \| export` | ✅ | Batch operation |
-| `items` | object[] | store/update | Store inputs or `{id, ...patch}` update items |
+| `operation` | `store \| update \| delete \| export \| search` | ✅ | Batch operation |
+| `items` | object[] | store/update/search | Store inputs, `{id, ...patch}` update items, or search options |
 | `ids` | string[] | delete/export | Unique memory ids to delete or export |
 
-Limits are 100 items and 10 MiB of compact JSON. Store duplicates are not
-coalesced. Missing or inaccessible ids are reported as `NOT_FOUND` inside the
-result envelope; top-level malformed requests return `[INVALID_INPUT]`.
+Limits are 100 items and 10 MiB of compact request JSON. Search retains the
+normal 1–50 result limit per item, and serialized search/export responses may
+not exceed 10 MiB. Search uses the authorized single-search path with touch and
+decay disabled and preserves input order. Store duplicates are not coalesced.
+Missing or inaccessible ids are reported as `NOT_FOUND` inside the result
+envelope; top-level malformed or oversized requests/responses return
+`[INVALID_INPUT]`. Public batch embedding is not exposed.
 
 ## `memory_update`
 

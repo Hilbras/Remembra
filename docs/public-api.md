@@ -37,7 +37,7 @@ tables: [tools.md](tools.md).
 | `memory_history` | version history with line diffs |
 | `memory_digest` | LLM extraction from a transcript |
 | `memory_maintain` | decay sweep + vector backfill |
-| `memory_batch` | bounded store/update/delete/selected-export batch |
+| `memory_batch` | bounded store/update/delete/selected-export/read-only-search batch |
 | `memory_forget` | delete by id |
 
 **Error envelope:** service failures generally come back as a text result
@@ -77,7 +77,7 @@ content-free liveness check.
 | GET | `/quality` | memory quality/health summary |
 | GET | `/agents/:id` | agent attribution and memory counts (no memory content) |
 | POST | `/memories` | store |
-| POST | `/memories/batch` | bounded store/update/delete/selected-export batch |
+| POST | `/memories/batch` | bounded store/update/delete/selected-export/read-only-search batch |
 | PUT | `/memories/:id` | patch |
 | GET | `/memories/search` | search (`query`/`q`, `scope`, `type`, `limit`, `explain`) |
 | GET | `/memories` | list (`scope`, `type`, `includeArchived`, legacy `offset` or stable opaque `cursor` pagination) |
@@ -210,23 +210,41 @@ startup rather than silently resetting the state.
 {"operation":"update","items":[{"id":"...","content":"Updated","expectedVersion":2}]}
 {"operation":"delete","ids":["..."]}
 {"operation":"export","ids":["..."]}
+{"operation":"search","items":[{"query":"queue backend","limit":5},{"query":"database","limit":5}]}
 ```
 
-Structural validation (shape, count, duplicate IDs, and the 10 MiB compact JSON
-limit) completes before any write. Valid mutations then run sequentially;
-operational failures are returned per item and successful/failed rows retain
-input order. Responses include `execution` metadata: mutation batches report
-`transactionPolicy: "per-item"`; without a key they report
+Structural validation (shape, count, duplicate IDs where applicable, and the
+10 MiB compact JSON limit) completes before any item runs. Valid items then run
+sequentially; operational failures are returned per item and successful/failed
+rows retain input order. Responses include `execution` metadata: mutation
+batches report `transactionPolicy: "per-item"`; without a key they report
 `idempotency: "unsupported"`, while keyed mutations report `"stored"` or
-`"replayed"`. Export reports read-only execution. The first batch slice is
-**not** a cross-item transaction.
-Export returns a normal import-compatible snapshot plus per-item selection outcomes;
-relations to unselected memories are omitted. In strict mode the export branch
-requires the explicit `tenant:export` capability and signs its result when a
-snapshot key is configured.
+`"replayed"`. Export and search report
+`{ transactionPolicy: "read-only", idempotency: "read-only" }`; that read-only
+metadata does not accept an `Idempotency-Key`. No batch operation is a
+cross-item transaction.
 
-Batch limits are 100 items and 10 MiB. HTTP mixed results use status `200`;
-top-level malformed requests use the normal `INVALID_INPUT` envelope.
+Search runs each item through the existing authorized single-search contract in
+input order, with touch and opportunistic decay disabled. A successful outcome
+contains the normal `text`, `results`, and optional `explanations`; an
+authorization, provider, or storage failure is sanitized into that item's error
+without exposing neighboring results. Tenant membership is rechecked before
+each item. Export returns a normal import-compatible snapshot plus per-item
+selection outcomes; relations to unselected memories are omitted. In strict
+mode the export branch requires the explicit `tenant:export` capability and
+signs its result when a snapshot key is configured.
+
+Batch limits are 100 items and 10 MiB of compact request JSON. Each search
+retains the normal 1–50 result limit, and the serialized search/export response
+may not exceed 10 MiB. HTTP mixed item results use status `200`; top-level
+malformed or oversized requests/responses use the normal `INVALID_INPUT`
+envelope.
+
+V5.4 does not expose a public batch embedding operation. Batch store may use the
+existing bounded internal embedding precompute path, but a public embedding
+operation remains unavailable until provider request-cost, quota, and embedding
+response-output policies are explicitly defined. It is not accepted by the
+HTTP, SDK, or MCP batch contracts.
 
 Mutation requests may include `Idempotency-Key` (1–128 safe ASCII
 characters). Hosts that authenticate without a static API key may provide a

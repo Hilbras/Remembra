@@ -13,6 +13,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   covering first-class trust/sensitivity/expiration policy, provider-independent
   offline operation, versioned API domains, migration gates, and release
   discipline. No V6 implementation is implied by this design document.
+- Added bounded read-only batch search across the service, HTTP, MCP, and
+  TypeScript SDK contracts. Search fans out through authorized single-search,
+  preserves per-item order and sanitized failures, caps requests/responses at
+  10 MiB, and does not accept mutation-only idempotency keys. Public batch
+  embedding remains intentionally unavailable pending provider-cost, quota, and
+  response-output policy decisions.
 
 ## [5.0.3] — 2026-09-24
 

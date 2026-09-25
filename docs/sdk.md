@@ -62,9 +62,37 @@ opaque tenant contract is available from `@hilbras/remembra/tenant`.
 - `history(id, { limit })`
 - `related(id, ids, { action, kind })`
 - `archive(id)` / `revive(id)`
-- `batch(request)` — SDK-friendly store/update/delete/export input types
+- `batch(request)` — SDK-friendly store/update/delete/export/search input types
   (the legacy full batch type remains as a deprecated compile-time overload;
   server-managed identity fields are still rejected at runtime)
+
+### Read-only batch search
+
+Batch search accepts 1–100 ordinary search option objects and preserves input
+order:
+
+```ts
+const searches = await memory.batch({
+  operation: "search",
+  items: [
+    { query: "queue backend", limit: 5 },
+    { query: "database", limit: 5 },
+  ],
+});
+```
+
+Each successful outcome contains the same `text`, `results`, and optional
+`explanations` as `search()`. The server fans out through the authorized
+single-search path with touch and decay disabled, rechecking host authorization
+for each item. The SDK validates the returned summary, order, outcomes, and
+read-only execution metadata before resolving.
+
+The request and serialized response are each limited to 10 MiB, and each search
+retains the normal 1–50 result limit. `Idempotency-Key` is rejected because it
+is a mutation-only header. Batch search uses `POST`; the SDK's opt-in retry
+option remains limited to `GET`/`HEAD`, so configure retries on single-search
+calls rather than assuming automatic batch-search retries. Public batch
+embedding is not exposed.
 
 ### Replay-safe batch mutations
 

@@ -69,9 +69,10 @@ When `REMEMBRA_AGENT_MODE=1` is set (or the service receives
 The policy applies to search, list, direct reads, updates, lifecycle changes,
 relationships, history, deletion, and every item in a batch operation. Batch
 requests never accept a public identity field: the trusted host context is
-applied to each store/update/delete/export item independently. An inaccessible
-batch id is reported as `NOT_FOUND`, and a failed item does not authorize or
-expose neighboring items.
+applied to each store/update/delete/export/search item independently. Batch
+search rechecks tenant membership before each item when a verifier is
+configured. An inaccessible batch id is reported as `NOT_FOUND`, and a failed
+item does not authorize or expose neighboring items.
 
 ## Council conventions
 

@@ -253,7 +253,7 @@ The HTTP process exposes the dashboard, health/readiness, metrics, memory operat
 | Retrieval | `GET /api/v1/memories/search`, `POST /api/v1/context` | Ranked search and bounded context |
 | Lifecycle | `POST /api/v1/memories/:id/archive`, `.../revive`, `POST /api/v1/maintain` | Archive, restore, decay, and vector backfill |
 | Graph/history | `GET .../:id/history`, `POST .../:id/relate` | Diffs, typed relations, and backlinks |
-| Batch/digest | `POST /api/v1/memories/batch`, `POST /api/v1/memories/digest` | Bounded writes and LLM extraction |
+| Batch/digest | `POST /api/v1/memories/batch`, `POST /api/v1/memories/digest` | Bounded writes/read-only search and LLM extraction |
 | Snapshots | `GET /api/v1/snapshot`, `POST /api/v1/import` | Portable backup and idempotent restore |
 | Administration | `GET /api/v1/audit`, `GET /api/v1/quality`, `GET /api/v1/agents/:id` | Audit and operational visibility |
 | Tenant entities | `/api/v1/tenant/organization`, `/tenant/entities/...`, `/tenant/memberships/...` | Trusted organization, user, project, agent, and membership administration |
@@ -271,7 +271,7 @@ The V4.9 manifest contains thirteen tools. V5 manifest version `2` adds `memory_
 | Tool | Purpose |
 |---|---|
 | `memory_store` | Persist one of eleven memory types |
-| `memory_batch` | Bounded store, update, delete, or selected export |
+| `memory_batch` | Bounded store, update, delete, selected export, or read-only search |
 | `memory_update` | Patch fields with optional optimistic concurrency |
 | `memory_archive` | Park a memory without deleting it |
 | `memory_revive` | Return an archived memory to active storage |

@@ -68,14 +68,16 @@ stays exempt so unauthenticated readiness probes keep working.
 | `remembra_job_queue_running` | gauge | — | Jobs currently executing. |
 | `remembra_embedding_batch_items_total` | counter | `result` | Bounded embedding items: `success`, `failure`, or `disabled`. |
 | `remembra_embedding_batch_failures_total` | counter | — | Failed bounded embedding items. |
-| `remembra_batch_items_total` | counter | `operation`, `result` | Batch item outcomes (`store`, `update`, `delete`, `export`). |
+| `remembra_batch_items_total` | counter | `operation`, `result` | Batch item outcomes (`store`, `update`, `delete`, `export`, `search`). |
 
 Background limits are configurable with `REMEMBRA_JOB_CONCURRENCY`,
 `REMEMBRA_JOB_QUEUE`, `REMEMBRA_JOB_MAX_ATTEMPTS`, and
 `REMEMBRA_JOB_RETRY_DELAY_MS`. Batch embedding limits use
 `REMEMBRA_MAX_BATCH_SIZE` and `REMEMBRA_MAX_CONCURRENT_EMBEDDINGS`. Invalid
 values fail closed with `INVALID_INPUT`; values are never read from request
-bodies or public headers.
+bodies or public headers. These embedding counters describe the internal
+bounded store precompute path; V5.4 does not expose a public batch embedding
+operation.
 
 ### Scrape config
 
