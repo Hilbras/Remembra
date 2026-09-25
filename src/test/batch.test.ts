@@ -6,6 +6,7 @@ import path from "node:path";
 import { MemoryService } from "../service.js";
 import { MemoryStore } from "../store.js";
 import { MAX_BATCH_ITEMS, MAX_BATCH_BYTES } from "../types.js";
+import { createTenantContext } from "../tenant.js";
 
 async function service(): Promise<MemoryService> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-batch-"));
@@ -40,6 +41,17 @@ test("batch validates the complete request before writing", async () => {
   );
   await assert.rejects(
     () => svc.batch({ operation: "store", items: [{ type: "fact", content: "x".repeat(MAX_BATCH_BYTES) }] }),
+    expectCode("INVALID_INPUT"),
+  );
+  await assert.rejects(
+    () => svc.batch({ operation: "search", items: [] }),
+    expectCode("INVALID_INPUT"),
+  );
+  await assert.rejects(
+    () => svc.batch({
+      operation: "search",
+      items: Array.from({ length: MAX_BATCH_ITEMS + 1 }, () => ({ query: "x" })),
+    }),
     expectCode("INVALID_INPUT"),
   );
   assert.equal((await svc.list({})).memories.length, 0);
@@ -132,6 +144,77 @@ test("batch search fans out through the authorized read path with ordered result
   if (!first?.ok || !second.ok) assert.fail("expected both searches to succeed");
   assert.equal(first.result.results[0]?.content.includes("Redis"), true);
   assert.equal(second.result.results[0]?.content.includes("Postgres"), true);
+});
+
+test("batch search rechecks tenant authorization before each item", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-batch-search-auth-"));
+  let authorizationChecks = 0;
+  let embeddingCalls = 0;
+  const svc = new MemoryService(new MemoryStore(root), {
+    tenantMode: "strict",
+    embedFn: async () => {
+      embeddingCalls++;
+      return [1];
+    },
+    verifyTenantContext: () => {
+      authorizationChecks++;
+      return authorizationChecks < 2;
+    },
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+  });
+  const tenant = createTenantContext({
+    organizationId: "org-a",
+    userId: "user-a",
+    membershipVersion: "membership-1",
+    scopes: ["global"],
+    capabilities: ["tenant:read", "tenant:write"],
+  });
+  try {
+    await svc.store({ type: "fact", content: "tenant batch search secret" }, { tenant });
+    authorizationChecks = 0;
+    embeddingCalls = 0;
+
+    const result = await svc.batch({
+      operation: "search",
+      items: [{ query: "secret", limit: 5 }, { query: "secret", limit: 5 }],
+    }, { tenant });
+    if (result.operation !== "search") assert.fail("expected search result");
+    assert.deepEqual(result.summary, { requested: 2, succeeded: 1, failed: 1 });
+    assert.equal(result.results[0].ok, true);
+    assert.equal(result.results[1].ok, false);
+    if (result.results[1].ok) assert.fail("expected the second authorization check to fail");
+    assert.equal(result.results[1].error.code, "TENANT_REQUIRED");
+    assert.equal(authorizationChecks, 2);
+    assert.equal(embeddingCalls, 1);
+  } finally {
+    await svc.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("batch search caps its serialized response at the shared batch limit", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-batch-search-size-"));
+  const svc = new MemoryService(new MemoryStore(root), {
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+  });
+  try {
+    await svc.store({
+      type: "fact",
+      content: "x".repeat(Math.floor(MAX_BATCH_BYTES / 2) + 1024),
+    });
+    await assert.rejects(
+      () => svc.batch({ operation: "search", items: [{ limit: 1 }] }),
+      (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "INVALID_INPUT");
+        assert.match((error as { message?: string }).message ?? "", /batch search response exceeds/);
+        return true;
+      },
+    );
+  } finally {
+    await svc.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test("batch export selects visible records and remains import-compatible", async () => {
