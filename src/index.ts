@@ -14,6 +14,8 @@ import { createOperatorTenantContext, tenantModeFromEnv } from "./operator.js";
 import { validateStartupConfiguration, validateStorageRoot } from "./startup-validation.js";
 import { FileRecoveryStateStore } from "./recovery-state-store.js";
 import { FileBatchIdempotencyStore, readRestoreMarkerReason } from "./batch-idempotency-store.js";
+import { FileWebhookDeliveryStore, WebhookDispatcher, createFetchWebhookTransport } from "./webhooks.js";
+import { parseWebhookSubscriptions, webhookDrainIntervalMs } from "./webhook-config.js";
 import { selectInitialBackend } from "./backend-selection.js";
 import {
   analyzeTenantSnapshot,
@@ -100,6 +102,22 @@ if (restoreMarkerPending && !isRecoveryCommand && !isRestoreCommand) {
   );
 }
 
+// Webhook delivery is opt-in: an absent or empty configuration disables it
+// entirely, and an invalid one fails startup instead of dropping events.
+const webhookSubscriptions = parseWebhookSubscriptions(process.env.REMEMBRA_WEBHOOKS);
+const webhookIntervalMs = webhookDrainIntervalMs(process.env.REMEMBRA_WEBHOOK_INTERVAL_MS);
+const webhookStore = webhookSubscriptions.length > 0
+  ? new FileWebhookDeliveryStore(path.join(validatedRoot, ".webhooks"))
+  : undefined;
+const webhookDispatcher = webhookStore
+  ? new WebhookDispatcher(webhookStore, createFetchWebhookTransport(), {
+      maxAttempts: Number(process.env.REMEMBRA_WEBHOOK_MAX_ATTEMPTS ?? 5),
+      baseDelayMs: Number(process.env.REMEMBRA_WEBHOOK_BASE_DELAY_MS ?? 1_000),
+      maxDelayMs: Number(process.env.REMEMBRA_WEBHOOK_MAX_DELAY_MS ?? 60_000),
+    })
+  : undefined;
+for (const subscription of webhookSubscriptions) webhookDispatcher?.register(subscription);
+
 const backendSelection = await selectInitialBackend(validatedRoot, process.env);
 const store = backendSelection.store;
 const service = new MemoryService(store, {
@@ -112,6 +130,7 @@ const service = new MemoryService(store, {
   ...(operatorSnapshotKey ? { snapshotKey: operatorSnapshotKey } : {}),
   recoveryStateStore: new FileRecoveryStateStore(path.join(validatedRoot, ".recovery-state.json")),
   batchIdempotencyStore,
+  ...(webhookDispatcher ? { webhooks: webhookDispatcher } : {}),
 });
 if ((restoreMarkerPending || service.batchIdempotencyRestorePending) && !isRecoveryCommand && !isRestoreCommand) {
   const owner = service.batchIdempotencyRestoreReason;
@@ -507,9 +526,40 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
   };
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+  startWebhookDrain();
 } else {
   // MCP mode (default): stdio transport launched by an MCP client.
   await startMcp(service, operatorOptions);
+  startWebhookDrain();
+}
+
+/**
+ * Drain due webhook deliveries on a bounded interval. A drain failure is
+ * logged and retried on the next tick; it never interrupts the write path.
+ */
+function startWebhookDrain(): void {
+  if (!webhookDispatcher) return;
+  let running = false;
+  const timer = setInterval(() => {
+    if (running) return;
+    running = true;
+    void service
+      .drainWebhooks()
+      .catch((error) => {
+        logEvent(
+          "warn",
+          "webhook.drain_failed",
+          { error: String(error).slice(0, 200) },
+          "Remembra: webhook drain failed; retrying on the next interval",
+        );
+      })
+      .finally(() => {
+        running = false;
+      });
+  }, webhookIntervalMs);
+  timer.unref();
+  // Deliver anything queued by a previous process immediately on start.
+  void service.drainWebhooks().catch(() => {});
 }
 
 // -------------------------------------------------------------------------

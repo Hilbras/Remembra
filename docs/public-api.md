@@ -377,6 +377,21 @@ Distributed webhook workers, a subscription management API, and queue sharing
 across processes remain V5.2 concerns; this release ships the durable interface
 and an in-process dispatcher.
 
+A deployment can enable delivery without a code change:
+
+```bash
+export REMEMBRA_WEBHOOKS='[{"id":"tenant-a","url":"https://hooks.example.com/x","secret":"<hex>","events":["memory.created","memory.updated"]}]'
+export REMEMBRA_WEBHOOK_INTERVAL_MS=5000   # bounded drain interval, default 5000
+```
+
+`REMEMBRA_WEBHOOK_MAX_ATTEMPTS`, `REMEMBRA_WEBHOOK_BASE_DELAY_MS`, and
+`REMEMBRA_WEBHOOK_MAX_DELAY_MS` bound the retry policy. An absent
+`REMEMBRA_WEBHOOKS` disables delivery entirely; an invalid value fails startup
+rather than silently dropping events. State lives in
+`<REMEMBRA_HOME>/.webhooks`, the long-running HTTP and MCP processes drain due
+deliveries on the interval, and a one-shot CLI invocation drains once so a
+queued event is not stranded.
+
 ### Error codes → HTTP status
 
 | Code | Status | Meaning |
@@ -459,7 +474,7 @@ Envelope written by `remembra export` and `GET /snapshot`:
 | `remembra import <file>` | preflighted, idempotent import; SQLite transaction or file-batch rollback |
 | `remembra maintain` | one-shot decay sweep + backfill, prints JSON |
 | `remembra recover read-only` | durably enter read-only recovery; reads remain available, mutations fail closed |
-| `remembra recover verify` | verify the backend, then durably return to `Healthy` |
+| `remembra recover verify` | verify the backend, then durably return to `Healthy`; refuses to publish a pending tenant-migration gate |
 | `remembra encrypt` / `remembra decrypt` | legacy/non-tenant file-root conversion (needs `REMEMBRA_ENCRYPT_KEY`; strict mode refuses it) |
 | `remembra migrate` | manually trigger file → SQLite migration (V4.3.0; strict mode uses signed tenant migration) |
 | `remembra export-markdown <dir>` | legacy file-backend Markdown export; strict mode refuses it |

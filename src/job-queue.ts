@@ -49,6 +49,12 @@ export interface JobQueueOptions {
   idGen?: () => string;
   /** Called after a job exhausts retries. */
   onError?: (error: unknown, job: { id: string; type: JobType; attempts: number }) => void;
+  /**
+   * Called once for every settled job, after the result is resolved. Job
+   * identifiers and types only — payloads and results are never passed on, so a
+   * subscriber callback cannot widen what a job exposes.
+   */
+  onSettled?: (result: { id: string; type: JobType; state: JobResult["state"]; attempts: number }) => void;
 }
 
 interface InternalJob {
@@ -77,6 +83,7 @@ export class JobQueue {
   private readonly retryDelayMs: number;
   private readonly idGen: () => string;
   private readonly onError?: JobQueueOptions["onError"];
+  private readonly onSettled?: JobQueueOptions["onSettled"];
   private readonly handlers = new Map<JobType, JobHandler<any>>();
   private readonly queue: InternalJob[] = [];
   private readonly running = new Set<InternalJob>();
@@ -90,6 +97,7 @@ export class JobQueue {
     this.retryDelayMs = nonNegativeNumber(options.retryDelayMs ?? 0, "retryDelayMs");
     this.idGen = options.idGen ?? (() => `job-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
     this.onError = options.onError;
+    this.onSettled = options.onSettled;
     metrics.gauge("remembra_job_queue_depth", "Queued background jobs", () => [{ value: this.queue.length }]);
     metrics.gauge("remembra_job_queue_running", "Running background jobs", () => [{ value: this.running.size }]);
   }
@@ -245,6 +253,16 @@ export class JobQueue {
     };
     job.resolve(result);
     metrics.inc("remembra_jobs_total", { type: job.type, outcome: state });
+    try {
+      this.onSettled?.({ id: job.id, type: job.type, state, attempts });
+    } catch (callbackError) {
+      logEvent(
+        "error",
+        "job_settled_callback_failed",
+        { job_id: job.id, error: String(callbackError).slice(0, 200) },
+        "Remembra: background job settle callback failed",
+      );
+    }
     if (state === "failed") {
       metrics.inc("remembra_job_failures_total", { type: job.type });
       try {

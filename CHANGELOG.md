@@ -52,9 +52,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   integrity-protected durable SQLite queue, and a dispatcher with bounded
   exponential backoff that retries only timeouts, network errors, `408`, `429`,
   and `5xx`. Deliveries are notifications: a failed or missing dispatcher never
-  fails the write that produced the event. `memory.created`, `memory.updated`,
-  and `memory.deleted` are emitted by the service; host configuration and the
-  remaining event types follow in the next slice.
+  fails the write that produced the event. The full event set is emitted
+  (`memory.created`, `memory.updated`, `memory.deleted`, `memory.consolidated`,
+  `snapshot.created`, `snapshot.restored`, `job.completed`, `job.failed`), and a
+  deployment can enable delivery with `REMEMBRA_WEBHOOKS`; long-running HTTP and
+  MCP processes drain due deliveries on a bounded interval.
 - Contained a pre-existing native teardown abort in the test gates. The pinned
   `better-sqlite3` 11.x binding can abort a test process while Node tears the
   environment down, after every assertion has reported, with

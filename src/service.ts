@@ -469,6 +469,13 @@ export class MemoryService {
       maxQueue: envNumber("REMEMBRA_JOB_QUEUE", 100),
       maxAttempts: envNumber("REMEMBRA_JOB_MAX_ATTEMPTS", 3),
       retryDelayMs: envNumber("REMEMBRA_JOB_RETRY_DELAY_MS", 0),
+      onSettled: (settled) => {
+        if (settled.state === "completed") {
+          this.emitWebhook("job.completed", { jobId: settled.id, type: settled.type, attempts: settled.attempts });
+        } else if (settled.state === "failed") {
+          this.emitWebhook("job.failed", { jobId: settled.id, type: settled.type, attempts: settled.attempts });
+        }
+      },
     });
     this.jobs.register("maintenance", async (options: AgentReadOptions) => {
       await this.freshTenantFilter(options, "write");
@@ -2221,6 +2228,12 @@ export class MemoryService {
             tenant,
           );
           merged++;
+          this.emitWebhook("memory.consolidated", {
+            id: candidate.id,
+            type: candidate.type,
+            scope: candidate.scope,
+            reason: "digest merge (superseded by a newer extraction)",
+          });
           // Re-index dedup set against the new content.
           seen.delete(dedupKey(candidate.type, candidate.content, candidate.scope));
           seen.add(dedupKey(candidate.type, cleanMerged.content, candidate.scope));
@@ -2505,11 +2518,24 @@ export class MemoryService {
       exportedAt: new Date().toISOString(),
       memories,
     };
+    // The notification carries counts only: a snapshot body is never
+    // duplicated into a webhook, and a signed envelope never leaves the host.
+    const published = () =>
+      this.emitWebhook("snapshot.created", {
+        count: memories.length,
+        organizationId: tenant?.organizationId ?? null,
+        exportedAt: snapshot.exportedAt,
+      });
     if (this.requireSignedSnapshots) {
       if (!this.snapshotKey) throw new RemembraError("SNAPSHOT_INVALID", "signed snapshot export requires a configured HMAC key");
+      published();
       return createSignedSnapshot(snapshot, this.snapshotKey);
     }
-    if (this.snapshotKey) return createSignedSnapshot(snapshot, this.snapshotKey);
+    if (this.snapshotKey) {
+      published();
+      return createSignedSnapshot(snapshot, this.snapshotKey);
+    }
+    published();
     return snapshot;
   }
 
@@ -2633,16 +2659,23 @@ export class MemoryService {
   /** Restore a fully preflighted snapshot; existing/duplicate IDs are skipped. */
   async importSnapshot(data: unknown, options: AgentReadOptions = {}): Promise<{ imported: number; skipped: number }> {
     const prepared = await this.prepareSnapshotImport(data, options);
-    if (this.#backend.importBatch) {
-      const result = await this.#backend.importBatch(prepared.prepared, prepared.tenant);
-      return { imported: result.imported, skipped: prepared.skipped + result.skipped };
-    }
     let imported = 0;
     let skipped = prepared.skipped;
-    for (const memory of prepared.prepared) {
-      if (await this.#backend.importMemory(memory, prepared.tenant)) imported++;
-      else skipped++;
+    if (this.#backend.importBatch) {
+      const result = await this.#backend.importBatch(prepared.prepared, prepared.tenant);
+      imported = result.imported;
+      skipped += result.skipped;
+    } else {
+      for (const memory of prepared.prepared) {
+        if (await this.#backend.importMemory(memory, prepared.tenant)) imported++;
+        else skipped++;
+      }
     }
+    this.emitWebhook("snapshot.restored", {
+      imported,
+      skipped,
+      organizationId: prepared.tenant?.organizationId ?? null,
+    });
     return { imported, skipped };
   }
 
