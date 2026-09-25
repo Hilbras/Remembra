@@ -27,6 +27,8 @@ export interface BatchIdempotencyStore {
   readonly restorePending?: boolean;
   claim(input: BatchIdempotencyInput): Promise<BatchIdempotencyClaim>;
   complete(input: BatchIdempotencyInput & { response: unknown }): Promise<void>;
+  /** Release an in-progress claim only when the caller knows no write took effect. */
+  abandon?(input: BatchIdempotencyInput): Promise<void>;
   /** Create a durable gate before a data restore begins. */
   beginRestore?(): Promise<void>;
   /** Invalidate claims and clear the restore gate after publication succeeds. */
@@ -165,7 +167,7 @@ function loadIntegrityKeySync(root: string, supplied?: Buffer): Buffer {
   return key;
 }
 
-function ledgerIdentitySync(root: string, databasePath: string): { identity: string; created: boolean; legacy: boolean } {
+function ledgerIdentitySync(root: string, databasePath: string): { identity: string; created: boolean } {
   const identityPath = path.join(root, "claims.identity");
   assertSafeFileSync(identityPath);
   let identity: string | undefined;
@@ -184,9 +186,9 @@ function ledgerIdentitySync(root: string, databasePath: string): { identity: str
   if (identity !== undefined) {
     if (!/^[a-f0-9]{64}$/.test(identity)) invalid("ledger identity is invalid");
     if (!databaseExists) invalid("ledger database is missing while its identity remains");
-    return { identity, created: false, legacy: false };
+    return { identity, created: false };
   }
-  if (databaseExists) return { identity: randomBytes(32).toString("hex"), created: false, legacy: true };
+  if (databaseExists) invalid("ledger database exists without its identity; refuse to reset claim history");
   const createdIdentity = randomBytes(32).toString("hex");
   let handle: number | undefined;
   try {
@@ -200,7 +202,7 @@ function ledgerIdentitySync(root: string, databasePath: string): { identity: str
     if ((error as NodeJS.ErrnoException).code === "EEXIST") return ledgerIdentitySync(root, databasePath);
     throw new RemembraError("SERVICE_UNAVAILABLE", "ledger identity could not be created", { cause: error });
   }
-  return { identity: createdIdentity, created: true, legacy: false };
+  return { identity: createdIdentity, created: true };
 }
 
 function metaMac(key: Buffer, identity: string, generation: number, restorePending: boolean): string {
@@ -282,7 +284,6 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
   private readonly integrityKey: Buffer;
   private readonly identity: string;
   private readonly newLedger: boolean;
-  private readonly legacyLedger: boolean;
   private readonly maxBytes: number;
   private readonly maxEntries: number;
   private readonly maxEntriesPerScope: number;
@@ -324,7 +325,6 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
     const ledger = ledgerIdentitySync(resolvedRoot, this.databasePath);
     this.identity = ledger.identity;
     this.newLedger = ledger.created;
-    this.legacyLedger = ledger.legacy;
     assertSafeFileSync(this.databasePath);
     try {
       this.db = new Database(this.databasePath, { readonly: false, fileMustExist: false });
@@ -332,8 +332,18 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
       this.db.pragma("synchronous = FULL");
       this.db.pragma("busy_timeout = 5000");
       const existingTables = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
-      if (!this.newLedger && existingTables.length === 0) invalid("ledger database was replaced with an empty database");
-      if (this.legacyLedger) this.migrateLegacyDatabase();
+      const tableNames = new Set(existingTables.map((row) => row.name));
+      if (!this.newLedger) {
+        if (
+          tableNames.size !== 2
+          || !tableNames.has("batch_idempotency_meta")
+          || !tableNames.has("batch_idempotency_claims")
+        ) {
+          invalid("ledger database does not match its recorded identity");
+        }
+        const existingMeta = this.db.prepare("SELECT id FROM batch_idempotency_meta WHERE id = 1").get();
+        if (!existingMeta) invalid("ledger generation metadata is missing");
+      }
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS batch_idempotency_meta (
           id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -359,47 +369,15 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
         CREATE INDEX IF NOT EXISTS idx_batch_idempotency_state_time
           ON batch_idempotency_claims(state, completed_at);
       `);
-      this.db.prepare("INSERT OR IGNORE INTO batch_idempotency_meta (id, identity, generation, restore_pending, mac) VALUES (1, ?, 1, 0, ?)")
-        .run(this.identity, metaMac(this.integrityKey, this.identity, 1, false));
+      if (this.newLedger) {
+        this.db.prepare("INSERT INTO batch_idempotency_meta (id, identity, generation, restore_pending, mac) VALUES (1, ?, 1, 0, ?)")
+          .run(this.identity, metaMac(this.integrityKey, this.identity, 1, false));
+      }
       this.currentGeneration();
       fs.chmodSync(this.databasePath, 0o600);
     } catch (error) {
       if (error instanceof RemembraError) throw error;
       throw new RemembraError("SERVICE_UNAVAILABLE", "batch idempotency database could not be opened", { cause: error });
-    }
-  }
-
-  private migrateLegacyDatabase(): void {
-    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
-    const names = new Set(tables.map((row) => row.name));
-    if (!names.has("batch_idempotency_meta") || !names.has("batch_idempotency_claims")) {
-      invalid("legacy ledger is missing its claim tables");
-    }
-    const columns = this.db.prepare("PRAGMA table_info(batch_idempotency_meta)").all() as Array<{ name: string }>;
-    const namesInMeta = new Set(columns.map((column) => column.name));
-    if (namesInMeta.has("identity") && !fs.existsSync(path.join(path.dirname(this.databasePath), "claims.identity"))) {
-      invalid("ledger identity is missing while its database remains");
-    }
-    const transaction = this.db.transaction(() => {
-      if (!namesInMeta.has("identity")) this.db.exec("ALTER TABLE batch_idempotency_meta ADD COLUMN identity TEXT");
-      if (!namesInMeta.has("restore_pending")) this.db.exec("ALTER TABLE batch_idempotency_meta ADD COLUMN restore_pending INTEGER NOT NULL DEFAULT 0");
-      if (!namesInMeta.has("mac")) this.db.exec("ALTER TABLE batch_idempotency_meta ADD COLUMN mac TEXT");
-      this.db.prepare("DELETE FROM batch_idempotency_claims").run();
-      this.db.prepare("UPDATE batch_idempotency_meta SET identity = ?, generation = 1, restore_pending = 0, mac = ? WHERE id = 1")
-        .run(this.identity, metaMac(this.integrityKey, this.identity, 1, false));
-    });
-    transaction.immediate();
-    const identityPath = path.join(path.dirname(this.databasePath), "claims.identity");
-    let handle: number | undefined;
-    try {
-      handle = fs.openSync(identityPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
-      fs.writeFileSync(handle, `${this.identity}\n`, "utf8");
-      fs.fsyncSync(handle);
-      fs.closeSync(handle);
-      handle = undefined;
-    } catch (error) {
-      if (handle !== undefined) fs.closeSync(handle);
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
   }
 
@@ -529,6 +507,33 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
     }
   }
 
+  async abandon(input: BatchIdempotencyInput): Promise<void> {
+    if (this.restorePending) throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
+    validateInput(input);
+    const scopeHash = input.scope;
+    const keyHash = digest(input.key);
+    const transaction = this.db.transaction(() => {
+      if (this.currentMeta().restorePending) throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
+      const existing = this.row(scopeHash, keyHash);
+      if (!existing) return;
+      if (existing.generation !== this.currentGeneration()) invalid("claim generation is stale; invalidate the ledger");
+      if (existing.fingerprint !== input.fingerprint) {
+        throw new RemembraError("CONFLICT", "idempotency key was already used with a different request");
+      }
+      if (existing.state !== "in_progress") invalid("only an in-progress claim can be abandoned");
+      const result = this.db.prepare(
+        "DELETE FROM batch_idempotency_claims WHERE scope_hash = ? AND key_hash = ? AND fingerprint = ? AND state = 'in_progress'",
+      ).run(scopeHash, keyHash, input.fingerprint);
+      if (result.changes !== 1) invalid("claim changed while it was being abandoned");
+    });
+    try {
+      transaction.immediate();
+    } catch (error) {
+      if (error instanceof RemembraError) throw error;
+      throw new RemembraError("SERVICE_UNAVAILABLE", "batch idempotency claim could not be released", { cause: error });
+    }
+  }
+
   private restoreMarkerExists(): boolean {
     try {
       fs.lstatSync(this.restoreMarkerPath);
@@ -549,6 +554,21 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
   }
 
   async beginRestore(): Promise<void> {
+    const publish = this.db.transaction(() => {
+      const current = this.currentMeta();
+      if (current.restorePending) throw new RemembraError("SERVICE_UNAVAILABLE", "a restore is already pending");
+      const active = this.db.prepare("SELECT 1 FROM batch_idempotency_claims WHERE state = 'in_progress' LIMIT 1").get();
+      if (active) throw new RemembraError("SERVICE_UNAVAILABLE", "an idempotent mutation is still in progress");
+      this.db.prepare("UPDATE batch_idempotency_meta SET restore_pending = 1, mac = ? WHERE id = 1")
+        .run(metaMac(this.integrityKey, this.identity, current.generation, true));
+    });
+    try {
+      publish.immediate();
+    } catch (error) {
+      if (error instanceof RemembraError) throw error;
+      throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate could not be published", { cause: error });
+    }
+
     const marker = `${JSON.stringify({ format: "remembra-batch-restore", version: 1, createdAt: new Date().toISOString() })}\n`;
     let handle: number | undefined;
     try {
@@ -559,29 +579,26 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
         fs.closeSync(handle);
         handle = undefined;
         fs.chmodSync(this.restoreMarkerPath, 0o600);
+      } else {
+        assertSafeFileSync(this.restoreMarkerPath);
       }
     } catch (error) {
       if (handle !== undefined) fs.closeSync(handle);
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+        const revert = this.db.transaction(() => {
+          const current = this.currentMeta();
+          if (current.restorePending) {
+            this.db.prepare("UPDATE batch_idempotency_meta SET restore_pending = 0, mac = ? WHERE id = 1")
+              .run(metaMac(this.integrityKey, this.identity, current.generation, false));
+          }
+        });
+        revert.immediate();
         throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate could not be established", { cause: error });
       }
-    }
-    const transaction = this.db.transaction(() => {
-      const current = this.currentMeta();
-      if (current.restorePending) throw new RemembraError("SERVICE_UNAVAILABLE", "a restore is already pending");
-      this.db.prepare("UPDATE batch_idempotency_meta SET restore_pending = 1, mac = ? WHERE id = 1")
-        .run(metaMac(this.integrityKey, this.identity, current.generation, true));
-    });
-    try {
-      transaction.immediate();
-    } catch (error) {
-      if (error instanceof RemembraError) throw error;
-      throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate could not be published", { cause: error });
     }
   }
 
   async completeRestore(): Promise<void> {
-    if (!this.restoreMarkerExists()) throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate is missing");
     await this.invalidate();
     try {
       const stat = fs.lstatSync(this.restoreMarkerPath);

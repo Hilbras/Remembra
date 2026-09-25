@@ -10,6 +10,7 @@ import { createSignedSnapshot } from "../snapshot-integrity.js";
 import { planTenantMigration } from "../tenant-migration-runner.js";
 import { SNAPSHOT_FORMAT, StoreInput } from "../types.js";
 import { RemembraError } from "../errors.js";
+import { FileBatchIdempotencyStore } from "../batch-idempotency-store.js";
 
 const key = Buffer.from("v501 snapshot key");
 const tenant = createTenantContext({
@@ -61,6 +62,40 @@ test("SEC-SNAPSHOT-001: strict restore rejects a signed tenantless snapshot befo
   }
 });
 
+test("SEC-SNAPSHOT-001: signed migration requires a healthy restore-gate ledger", async () => {
+  const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-migration-no-ledger-source-"));
+  const sourceStore = new MemoryStore(sourceRoot);
+  const source = await sourceStore.store(StoreInput.parse({ type: "fact", content: "must stay gated" }));
+  const snapshot = createSignedSnapshot({
+    format: SNAPSHOT_FORMAT,
+    version: 3,
+    exportedAt: new Date().toISOString(),
+    memories: [source],
+  }, key);
+  const plan = planTenantMigration({
+    source: [source],
+    sourceSchemaVersion: 3,
+    organizationMappings: [{ sourceNamespace: "legacy-root", destination: "org-a" }],
+  }, key);
+  const targetRoot = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-migration-no-ledger-target-"));
+  const service = new MemoryService(new MemoryStore(targetRoot), {
+    tenantMode: "strict",
+    embeddingProvider: "none",
+    snapshotKey: key,
+  });
+  try {
+    await assert.rejects(
+      () => service.migrateSnapshot(snapshot, plan, key, { tenant }),
+      (error: unknown) => error instanceof RemembraError && error.code === "SERVICE_UNAVAILABLE",
+    );
+    assert.equal((await service.search({ query: "gated", tenant })).results.length, 0);
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(sourceRoot, { recursive: true, force: true });
+    await fs.rm(targetRoot, { recursive: true, force: true });
+  }
+});
+
 test("SEC-SNAPSHOT-001: explicit signed migration applies only through a target-bound plan", async () => {
   const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-v501-migration-source-"));
   const sourceStore = new MemoryStore(sourceRoot);
@@ -81,6 +116,7 @@ test("SEC-SNAPSHOT-001: explicit signed migration applies only through a target-
     tenantMode: "strict",
     embeddingProvider: "none",
     snapshotKey: key,
+    batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(targetRoot, "claims")),
   });
   try {
     const dryRun = await service.migrateSnapshot(snapshot, plan, key, { tenant, dryRun: true });

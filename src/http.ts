@@ -110,11 +110,13 @@ function idempotencyScopeFor(
   if (credentialScope !== undefined && (typeof credentialScope !== "string" || credentialScope.length < 1 || credentialScope.length > 512)) {
     throw new RemembraError("INVALID_INPUT", "resolved credential scope is invalid");
   }
-  const credential = credentialScope
-    ? `host:${batchIdempotencyScope(credentialScope)}`
-    : apiKey
-      ? `api-key:${createHmac("sha256", apiKey).update("remembra-idempotency-credential", "utf8").digest("hex")}`
-      : "local";
+  let credential: string;
+  if (credentialScope) credential = `host:${batchIdempotencyScope(credentialScope)}`;
+  else if (apiKey) {
+    credential = `api-key:${createHmac("sha256", apiKey).update("remembra-idempotency-credential", "utf8").digest("hex")}`;
+  } else {
+    throw new RemembraError("INVALID_INPUT", "idempotency keys require a static API key or trusted credential scope resolver");
+  }
   const principal = tenant
     ? [
         "tenant",
@@ -605,14 +607,16 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       if (req.method === "POST" && path === "/memories/batch") {
         const body = await readBody(req, maxBody, service.isTenantStrict);
         const idempotencyKey = idempotencyKeyFor(req);
-        if (idempotencyKey && !opts.apiKey && !opts.resolveCredentialScope) {
+        const credentialScope = idempotencyKey ? await opts.resolveCredentialScope?.(req) : undefined;
+        if (idempotencyKey && !opts.apiKey && credentialScope === undefined) {
           throw new RemembraError("INVALID_INPUT", "idempotency keys require a static API key or trusted credential scope resolver");
         }
-        const credentialScope = idempotencyKey ? await opts.resolveCredentialScope?.(req) : undefined;
         const result = await service.batch(body, {
           ...agentOptions,
           idempotencyKey,
-          idempotencyScope: idempotencyScopeFor(opts.apiKey, credentialScope, tenant, agent),
+          ...(idempotencyKey
+            ? { idempotencyScope: idempotencyScopeFor(opts.apiKey, credentialScope, tenant, agent) }
+            : {}),
         });
         applySecureHeaders(res);
         applyCorsHeaders(res);

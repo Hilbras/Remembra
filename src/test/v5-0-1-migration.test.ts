@@ -143,6 +143,23 @@ test("SEC-SNAPSHOT-001: migrate plan/apply CLI is explicit, target-bound, and dr
     assert.equal(dryRun.code, 0, dryRun.stderr);
     assert.equal((JSON.parse(dryRun.stdout) as { dryRun: boolean }).dryRun, true);
 
+    const recoveryStatePath = path.join(root, "store", ".recovery-state.json");
+    await fs.writeFile(recoveryStatePath, JSON.stringify({
+      format: "remembra-recovery-state",
+      version: 1,
+      state: "ReadOnly",
+      event: "read_only",
+      updatedAt: new Date().toISOString(),
+    }), { mode: 0o600 });
+    const blocked = await runMigrationCli(["migrate", "apply", input, "--plan", planPath], env);
+    assert.notEqual(blocked.code, 0, "ReadOnly recovery must block durable tenant migration");
+    const verified = await runMigrationCli(["recover", "verify"], env);
+    assert.equal(verified.code, 0, verified.stderr);
+    const blockedExportPath = path.join(root, "blocked-export.json");
+    const blockedExport = await runMigrationCli(["export", blockedExportPath], env);
+    assert.equal(blockedExport.code, 0, blockedExport.stderr);
+    assert.equal((JSON.parse(await fs.readFile(blockedExportPath, "utf8")) as { memories: unknown[] }).memories.length, 0);
+
     const applied = await runMigrationCli(
       ["migrate", "apply", input, "--plan", planPath],
       env,

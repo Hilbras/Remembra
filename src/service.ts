@@ -33,7 +33,6 @@ import { computeHealth, getLifecycleState, agingScorePenalty } from "./lifecycle
 import { AgentContext, canReadMemory, canUseScope, defaultAccess, defaultOwner } from "./agent.js";
 import {
   assertTenantContext,
-  createTenantContext,
   memoryBelongsToTenant,
   tenantFilterFromContext,
   type TenantContext,
@@ -324,6 +323,15 @@ function batchHasUnresolvedFailure(result: BatchResult): boolean {
     && result.results.some((outcome) => !outcome.ok);
 }
 
+const RELEASABLE_BATCH_FAILURES = new Set(["NOT_FOUND", "CONFLICT", "INVALID_INPUT"]);
+
+function batchClaimCanBeReleased(result: BatchResult): boolean {
+  return result.operation !== "export"
+    && result.operation !== "search"
+    && result.results.length > 0
+    && result.results.every((outcome) => !outcome.ok && RELEASABLE_BATCH_FAILURES.has(outcome.error.code));
+}
+
 function batchRequestCount(request: ReturnType<typeof BatchRequest.parse>): number {
   return request.operation === "store" || request.operation === "update" || request.operation === "search"
     ? request.items.length
@@ -347,13 +355,8 @@ function snapshotBatchOptions(options: BatchOptions): BatchOptions {
         ...(options.agent.scopes ? { scopes: Object.freeze([...options.agent.scopes]) } : {}),
       }) as unknown as AgentContext
     : undefined;
-  const tenant = options.tenant
-    ? createTenantContext({
-        ...options.tenant.principal,
-        ...(options.tenant.principal.scopes ? { scopes: [...options.tenant.principal.scopes] } : {}),
-      })
-    : undefined;
-  return Object.freeze({ ...options, agent, tenant });
+  if (options.tenant) assertTenantContext(options.tenant);
+  return Object.freeze({ ...options, agent, tenant: options.tenant });
 }
 
 export class MemoryService {
@@ -582,6 +585,9 @@ export class MemoryService {
     if (!this.recoveryStateStore || !this.recoveryStateInitialized) return;
     try {
       const persisted = await this.recoveryStateStore.read();
+      if (this.recoveryState === "Failed" && persisted !== "Failed") {
+        throw new RemembraError("SERVICE_UNAVAILABLE", "recovery state is failed");
+      }
       if (persisted) this.recoveryState = persisted;
     } catch (error) {
       this.recoveryState = "Failed";
@@ -641,6 +647,13 @@ export class MemoryService {
     this.recoveryState = next;
   }
 
+  /** Refresh durable recovery state before an operator-driven direct mutation. */
+  async refreshAndAssertWritable(): Promise<void> {
+    await this.ensureRecoveryInitialized();
+    await this.refreshDurableRecoveryState();
+    this.assertWritable();
+  }
+
   /** Reject a direct service/CLI mutation while recovery is restrictive. */
   assertWritable(): void {
     if (this.batchIdempotencyStore?.restorePending) {
@@ -686,6 +699,10 @@ export class MemoryService {
     capability: "read" | "write" = "read",
     operation?: AuthorizationOperation,
   ) {
+    if (this.batchIdempotencyStore?.restorePending) {
+      throw new RemembraError("SERVICE_UNAVAILABLE", "data restore is pending");
+    }
+    if (capability === "write") await this.refreshDurableRecoveryState();
     const filter = this.tenantFilter(options, capability, operation);
     if (filter && this.verifyTenantContext) {
       const valid = await this.verifyTenantContext(options.tenant!);
@@ -1393,7 +1410,19 @@ export class MemoryService {
 
     const result = await execute();
     if (batchHasUnresolvedFailure(result)) {
-      throw new RemembraError("SERVICE_UNAVAILABLE", "batch contains a failed item; idempotency claim remains in progress");
+      if (batchClaimCanBeReleased(result) && store.abandon) {
+        try {
+          await store.abandon({ scope: effectiveIdempotencyScope!, key: idempotencyKey, fingerprint });
+        } catch (error) {
+          logEvent(
+            "warn",
+            "batch_idempotency.release_failed",
+            { error: String(error).slice(0, 160) },
+            "Remembra: deterministic batch claim could not be released",
+          );
+        }
+      }
+      throw new RemembraError("SERVICE_UNAVAILABLE", "batch contains a failed item and is not replayable");
     }
     const stored: BatchResult = {
       ...result,
@@ -1844,15 +1873,18 @@ export class MemoryService {
     fallback?: boolean;
     cache?: { size: number; capacity: number };
   }> {
-    let storage = "ok";
+    const restorePending = this.batchIdempotencyStore?.restorePending === true;
+    let storage = restorePending ? "SERVICE_UNAVAILABLE" : "ok";
     let stateReady = this.recoveryStateInitialized;
     try {
       await this.ensureRecoveryInitialized();
-      await this.refreshDurableRecoveryState();
-      stateReady = true;
-      await this.#backend.all();
-      await this.applyRecoveryEvent("ready");
-      if (this.backendFallback) await this.applyRecoveryEvent("degraded");
+      if (!restorePending) {
+        await this.refreshDurableRecoveryState();
+        stateReady = true;
+        await this.#backend.all();
+        await this.applyRecoveryEvent("ready");
+        if (this.backendFallback) await this.applyRecoveryEvent("degraded");
+      }
     } catch (err) {
       storage = errorLabel(err);
       const next = this.recoveryState === "ReadOnly"
@@ -2522,10 +2554,10 @@ export class MemoryService {
     preflightTenantMigration(plan, this.#backend, key, tenant);
     const total = plan.records.length;
     if (options.dryRun) return { total, planned: total, imported: 0, skipped: 0, dryRun: true };
-    const ledger = this.batchIdempotencyStore;
-    if (ledger?.beginRestore && ledger.completeRestore) await this.beginBatchRestore();
+    await this.refreshAndAssertWritable();
+    await this.beginBatchRestore();
     const result = await applyTenantMigration(plan, this.#backend, key, { destinationFilter: tenant });
-    if (ledger?.beginRestore && ledger.completeRestore) await this.completeBatchRestore();
+    await this.completeBatchRestore();
     return {
       total,
       planned: total,

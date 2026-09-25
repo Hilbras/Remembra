@@ -94,7 +94,7 @@ test("an empty replacement database cannot reset the ledger identity", async () 
   }
 });
 
-test("legacy SQLite ledgers migrate by invalidating old claims", async () => {
+test("legacy SQLite ledgers fail closed instead of resetting completed keys", async () => {
   const root = await temporaryRoot("remembra-idempotency-migrate-");
   const claimsRoot = path.join(root, "claims");
   await fs.mkdir(claimsRoot, { recursive: true, mode: 0o700 });
@@ -112,11 +112,9 @@ test("legacy SQLite ledgers migrate by invalidating old claims", async () => {
   `);
   legacy.close();
   await fs.chmod(databasePath, 0o600);
-  const store = new FileBatchIdempotencyStore(claimsRoot);
   try {
-    assert.deepEqual(await store.claim({ scope: batchIdempotencyScope("tenant:alpha"), key: "batch-migrated", fingerprint: batchIdempotencyFingerprint("fingerprint-a") }), { status: "fresh" });
+    assert.throws(() => new FileBatchIdempotencyStore(claimsRoot), expectCode("SERVICE_UNAVAILABLE"));
   } finally {
-    store.close();
     await fs.rm(root, { recursive: true, force: true });
   }
 });
@@ -443,6 +441,208 @@ test("an unavailable optional ledger preserves unkeyed batches and fails keyed c
         { operation: "store", items: [{ type: "fact", content: "keyed unavailable" }] },
         { idempotencyKey: "optional-key", idempotencyScope: batchIdempotencyScope("optional") },
       ),
+      expectCode("SERVICE_UNAVAILABLE"),
+    );
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("batch options cannot mint a trusted tenant context from a tenant-shaped object", async () => {
+  const root = await temporaryRoot("remembra-idempotency-forged-tenant-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  const service = new MemoryService(new MemoryStore(path.join(root, "memories")), {
+    tenantMode: "strict",
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+  });
+  const forged = {
+    principal: {
+      organizationId: "org-forged",
+      membershipVersion: "membership-1",
+      scopes: ["global"],
+      capabilities: ["tenant:read", "tenant:write"],
+    },
+  };
+  try {
+    await assert.rejects(
+      () => service.batch(
+        { operation: "store", items: [{ type: "fact", content: "forged tenant" }] },
+        { tenant: forged as never },
+      ),
+      expectCode("TENANT_REQUIRED"),
+    );
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a configured credential resolver must return an isolated scope", async () => {
+  const root = await temporaryRoot("remembra-idempotency-missing-scope-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  const service = new MemoryService(new MemoryStore(path.join(root, "memories")), {
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+    batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(root, "claims")),
+  });
+  const server = createHttpServer(service, { port: 0, resolveCredentialScope: () => undefined });
+  try {
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const address = server.address() as { port: number };
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/memories/batch`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": "missing-scope" },
+      body: JSON.stringify({ operation: "store", items: [{ type: "fact", content: "must not share local scope" }] }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal((await response.json() as { code?: string }).code, "INVALID_INPUT");
+    assert.equal((await service.list({})).memories.length, 0);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("ordinary writes recheck durable recovery state before any mutation", async () => {
+  const root = await temporaryRoot("remembra-idempotency-write-refresh-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  const statePath = path.join(root, ".recovery-state.json");
+  const service = new MemoryService(new MemoryStore(path.join(root, "memories")), {
+    embeddingProvider: "none",
+    recoveryStateStore: new FileRecoveryStateStore(statePath),
+    batchIdempotencyStore: new FileBatchIdempotencyStore(path.join(root, "claims")),
+  });
+  try {
+    await service.initializeRecovery();
+    assert.equal((await service.health()).status, "ok");
+    await new FileRecoveryStateStore(statePath).write("ReadOnly", "read_only");
+    await assert.rejects(
+      () => service.store({ type: "fact", content: "must remain blocked" }),
+      expectCode("SERVICE_UNAVAILABLE"),
+    );
+    assert.equal((await service.list({})).memories.length, 0);
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a pending restore gate blocks reads and reports unready", async () => {
+  const root = await temporaryRoot("remembra-idempotency-read-gate-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  const ledger = new FileBatchIdempotencyStore(path.join(root, "claims"));
+  const service = new MemoryService(new MemoryStore(path.join(root, "memories")), {
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+    batchIdempotencyStore: ledger,
+  });
+  try {
+    await service.store({ type: "fact", content: "before restore" });
+    await ledger.beginRestore();
+    await assert.rejects(() => service.search({ query: "restore" }), expectCode("SERVICE_UNAVAILABLE"));
+    await assert.rejects(() => service.list({}), expectCode("SERVICE_UNAVAILABLE"));
+    assert.equal((await service.health()).status, "unready");
+  } finally {
+    await ledger.completeRestore();
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("restore fencing refuses to start while a mutation claim is in flight", async () => {
+  const root = await temporaryRoot("remembra-idempotency-restore-fence-");
+  const store = new FileBatchIdempotencyStore(path.join(root, "claims"));
+  const input = { scope: batchIdempotencyScope("tenant:alpha"), key: "in-flight", fingerprint: batchIdempotencyFingerprint("fingerprint-a") };
+  try {
+    assert.deepEqual(await store.claim(input), { status: "fresh" });
+    await assert.rejects(() => store.beginRestore(), expectCode("SERVICE_UNAVAILABLE"));
+    assert.equal(store.restorePending, false);
+    await store.complete({ ...input, response: { operation: "store" } });
+    await store.beginRestore();
+    assert.equal(store.restorePending, true);
+  } finally {
+    if (store.restorePending) await store.completeRestore();
+    store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a ledger database with unrelated tables cannot replace the claim namespace", async () => {
+  const root = await temporaryRoot("remembra-idempotency-unrelated-");
+  const claimsRoot = path.join(root, "claims");
+  const store = new FileBatchIdempotencyStore(claimsRoot);
+  const databasePath = store.databasePath;
+  store.close();
+  for (const suffix of ["", "-wal", "-shm"]) await fs.rm(`${databasePath}${suffix}`, { force: true });
+  const replacement = new Database(databasePath);
+  replacement.exec("CREATE TABLE unrelated (id TEXT PRIMARY KEY)");
+  replacement.close();
+  await fs.chmod(databasePath, 0o600);
+  try {
+    assert.throws(() => new FileBatchIdempotencyStore(claimsRoot), expectCode("SERVICE_UNAVAILABLE"));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a deterministically failed keyed batch releases its reserved claim", async () => {
+  const root = await temporaryRoot("remembra-idempotency-release-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  const ledger = new FileBatchIdempotencyStore(path.join(root, "claims"), { maxEntries: 1 });
+  const service = new MemoryService(new MemoryStore(path.join(root, "memories")), {
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+    batchIdempotencyStore: ledger,
+  });
+  const scope = batchIdempotencyScope("release-client");
+  try {
+    await assert.rejects(
+      () => service.batch(
+        { operation: "delete", ids: ["missing-memory"] },
+        { idempotencyKey: "deterministic-failure", idempotencyScope: scope },
+      ),
+      expectCode("SERVICE_UNAVAILABLE"),
+    );
+    assert.deepEqual(
+      await ledger.claim({ scope, key: "next-request", fingerprint: batchIdempotencyFingerprint("next") }),
+      { status: "fresh" },
+    );
+  } finally {
+    await service.shutdownBackgroundJobs();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a partially successful keyed batch keeps its claim reserved", async () => {
+  const root = await temporaryRoot("remembra-idempotency-retain-");
+  await fs.mkdir(path.join(root, "memories"), { recursive: true });
+  const ledger = new FileBatchIdempotencyStore(path.join(root, "claims"), { maxEntries: 1 });
+  const service = new MemoryService(new MemoryStore(path.join(root, "memories")), {
+    embeddingProvider: "none",
+    decayIntervalMs: Number.MAX_SAFE_INTEGER,
+    batchIdempotencyStore: ledger,
+  });
+  const scope = batchIdempotencyScope("retain-client");
+  try {
+    const stored = await service.store({ type: "fact", content: "before partial update" });
+    await assert.rejects(
+      () => service.batch(
+        {
+          operation: "update",
+          items: [
+            { id: stored.id, content: "after partial update", expectedVersion: stored.memory.version },
+            { id: "missing-memory", content: "cannot apply" },
+          ],
+        },
+        { idempotencyKey: "partial-update", idempotencyScope: scope },
+      ),
+      expectCode("SERVICE_UNAVAILABLE"),
+    );
+    await assert.rejects(
+      () => ledger.claim({ scope, key: "must-not-fit", fingerprint: batchIdempotencyFingerprint("next") }),
       expectCode("SERVICE_UNAVAILABLE"),
     );
   } finally {

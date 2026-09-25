@@ -7,11 +7,6 @@ import { logEvent } from "./log.js";
 
 export type InitialBackendName = "sqlite" | "file";
 
-export interface BackendSelectionOptions {
-  /** Disable automatic SQLite restore reconciliation for a gated operator command. */
-  reconcileRestore?: boolean;
-}
-
 export interface InitialBackendSelection {
   store: SqliteBackend | MemoryStore;
   backend: InitialBackendName;
@@ -47,12 +42,9 @@ function safeErrorCode(error: unknown): string {
 export async function selectInitialBackend(
   root: string,
   env: NodeJS.ProcessEnv = process.env,
-  options: BackendSelectionOptions = {},
 ): Promise<InitialBackendSelection> {
   const resolvedRoot = await ensureStorageRoot(root);
-  if (options.reconcileRestore !== false) {
-    await reconcileSqliteRestore(path.join(resolvedRoot, "data.sqlite"));
-  }
+  await reconcileSqliteRestore(path.join(resolvedRoot, "data.sqlite"));
   try {
     const store = new SqliteBackend({ root: resolvedRoot });
     try {

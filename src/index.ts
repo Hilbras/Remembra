@@ -51,35 +51,48 @@ const operatorSnapshotKey = startup.snapshotKey;
 const argv = process.argv.slice(2);
 const isRecoveryCommand = argv[0] === "recover" && (argv[1] === "verify" || argv[1] === "read-only");
 const isRestoreCommand = argv[0] === "restore";
-const restoreMarkerPath = path.join(validatedRoot, ".idempotency", "restore.pending");
+const idempotencyRoot = path.join(validatedRoot, ".idempotency");
+const restoreMarkerPath = path.join(idempotencyRoot, "restore.pending");
 let restoreMarkerPending = false;
 try {
   await fs.lstat(restoreMarkerPath);
   restoreMarkerPending = true;
 } catch (error) {
   if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-    logEvent("warn", "idempotency.gate_unreadable", { error: String(error).slice(0, 160) }, "Restore gate could not be inspected");
+    throw new Error("the durable restore gate could not be inspected", { cause: error });
+  }
+}
+let idempotencyStateExisted = false;
+try {
+  await fs.lstat(idempotencyRoot);
+  idempotencyStateExisted = true;
+} catch (error) {
+  if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+    throw new Error("the batch idempotency directory could not be inspected", { cause: error });
   }
 }
 let batchIdempotencyStore: FileBatchIdempotencyStore | undefined;
 try {
-  batchIdempotencyStore = new FileBatchIdempotencyStore(path.join(validatedRoot, ".idempotency"));
+  batchIdempotencyStore = new FileBatchIdempotencyStore(idempotencyRoot);
 } catch (error) {
-  // Idempotency is an additive keyed-batch capability; never prevent legacy
-  // unkeyed batches or recovery commands from starting because its auxiliary
-  // ledger is unavailable. Keyed calls fail closed with SERVICE_UNAVAILABLE.
+  let partiallyCreated = false;
+  try {
+    await fs.lstat(idempotencyRoot);
+    partiallyCreated = true;
+  } catch (inspectError) {
+    if ((inspectError as NodeJS.ErrnoException).code !== "ENOENT") throw inspectError;
+  }
+  if (idempotencyStateExisted || partiallyCreated) {
+    throw new Error("the existing batch idempotency ledger is unusable", { cause: error });
+  }
+  // A first-run optional ledger may be unavailable (for example, a read-only
+  // home). Unkeyed batches degrade closed; keyed calls fail closed.
   logEvent("warn", "idempotency.unavailable", { error: String(error).slice(0, 160) }, "Batch idempotency ledger unavailable");
-}
-if (isRestoreCommand) {
-  if (!batchIdempotencyStore) throw new Error("restore requires a healthy batch idempotency ledger");
-  await batchIdempotencyStore.beginRestore();
 }
 if (restoreMarkerPending && !isRecoveryCommand && !isRestoreCommand) {
   throw new Error("a data restore is pending; resolve the restore-pending gate before serving");
 }
-const backendSelection = await selectInitialBackend(validatedRoot, process.env, {
-  reconcileRestore: !(isRecoveryCommand && restoreMarkerPending),
-});
+const backendSelection = await selectInitialBackend(validatedRoot, process.env);
 const store = backendSelection.store;
 const service = new MemoryService(store, {
   tenantMode,
@@ -207,7 +220,7 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
       console.error("Usage: remembra import-markdown <directory>");
       process.exit(1);
     }
-    service.assertWritable();
+    await service.refreshAndAssertWritable();
     const files = await globMdFiles(inDir);
     const memories: Memory[] = [];
     let skipped = 0;
@@ -290,8 +303,11 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
     }
     const dst = (store as SqliteBackend).getDbPath();
     try {
-      // The gate was established before backend reconciliation; claims are
-      // invalidated only after the replacement database is published.
+      if (!batchIdempotencyStore) throw new Error("restore requires a healthy batch idempotency ledger");
+      // Establish the gate only after every argument, checksum, mode, and
+      // backend check has passed. A retry after an interrupted restore keeps
+      // the existing gate and republishes claims only after success.
+      if (!service.batchIdempotencyRestorePending) await service.beginBatchRestore();
       (store as SqliteBackend).close();
       await restoreSqliteBackup(inFile, dst, { overwrite: true });
       await service.completeBatchRestore();
@@ -352,6 +368,9 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
         });
         console.log(JSON.stringify(result, null, 2));
       } else {
+        await service.refreshAndAssertWritable();
+        if (!batchIdempotencyStore) throw new Error("durable migration requires a healthy batch idempotency ledger");
+        if (!service.batchIdempotencyRestorePending) await service.beginBatchRestore();
         const stateStore = new FileMigrationStateStore(path.join(validatedRoot, ".tenant-migration-state.json"));
         const result = await runDurableTenantMigration(plan, store, operatorSnapshotKey, {
           stateStore,
@@ -361,6 +380,7 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
         const published = wasAlreadyPublished
           ? result.state
           : await publishTenantMigration(result.state.planId, stateStore);
+        await service.completeBatchRestore();
         console.log(JSON.stringify({
           total: plan.records.length,
           planned: plan.records.length,
@@ -404,7 +424,7 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
       console.error("migrate requires SQLite backend");
       process.exit(1);
     }
-    service.assertWritable();
+    await service.refreshAndAssertWritable();
     try {
       const result = await (store as SqliteBackend).migrate();
       console.log(JSON.stringify(result, null, 2));
