@@ -63,8 +63,9 @@ opaque tenant contract is available from `@hilbras/remembra/tenant`.
 - `related(id, ids, { action, kind })`
 - `archive(id)` / `revive(id)`
 - `batch(request)` — SDK-friendly store/update/delete/export/search input types
-  (the legacy full batch type remains as a deprecated compile-time overload;
-  server-managed identity fields are still rejected at runtime)
+  (`LegacyBatchRequest` remains a deprecated compile-time overload frozen to the
+  four pre-V5.4 operations; server-managed identity fields are still rejected
+  at runtime)
 
 ### Read-only batch search
 
@@ -82,17 +83,20 @@ const searches = await memory.batch({
 ```
 
 Each successful outcome contains the same `text`, `results`, and optional
-`explanations` as `search()`. The server fans out through the authorized
-single-search path with touch and decay disabled, rechecking host authorization
-for each item. The SDK validates the returned summary, order, outcomes, and
-read-only execution metadata before resolving.
+`explanations` as `search()`, without internal embedding vectors. The server
+fans out through the authorized single-search path with touch and decay
+disabled, rechecking host authorization for each item and stopping when the
+HTTP caller disconnects. The SDK validates the returned summary, order,
+outcome key sets, sanitized failures, and read-only execution metadata before
+resolving.
 
-The request and serialized response are each limited to 10 MiB, and each search
-retains the normal 1–50 result limit. `Idempotency-Key` is rejected because it
-is a mutation-only header. Batch search uses `POST`; the SDK's opt-in retry
-option remains limited to `GET`/`HEAD`, so configure retries on single-search
-calls rather than assuming automatic batch-search retries. Public batch
-embedding is not exposed.
+Batch search accepts at most 100 items and 1,000 aggregate requested results;
+each search retains the normal 1–50 result limit. The request and serialized
+response are each limited to 10 MiB, with response bytes accounted
+incrementally. `Idempotency-Key` is rejected because it is a mutation-only
+header. Batch search uses `POST`; the SDK's opt-in retry option remains limited
+to `GET`/`HEAD`, so configure retries on single-search calls rather than
+assuming automatic batch-search retries. Public batch embedding is not exposed.
 
 ### Replay-safe batch mutations
 
@@ -110,8 +114,12 @@ The first response reports `execution.idempotency: "stored"`. Repeating the
 same authenticated scope and canonical request returns the original response
 with `"replayed"` and does not write again. Reusing a key for a different body
 returns `CONFLICT`; a claim left in progress fails closed until the host
-verifies and explicitly invalidates the ledger. Ambiguous storage/provider
-failures are not finalized as replayable responses. The SDK never retries
+verifies and explicitly invalidates the ledger. Keys supplied through the
+final `idempotencyKey` argument and through request headers follow the same
+response validation; a keyed response containing any failed item is rejected as
+invalid. Ambiguous storage/provider failures are not finalized as replayable
+responses. An all-deterministic failed batch may release its reservation, while
+a partially successful or ambiguous batch keeps it. The SDK never retries
 unsafe writes automatically. Keyed requests are limited to 256 KiB.
 
 All methods return typed decoded JSON. Non-2xx responses throw

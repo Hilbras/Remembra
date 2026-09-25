@@ -226,19 +226,21 @@ cross-item transaction.
 
 Search runs each item through the existing authorized single-search contract in
 input order, with touch and opportunistic decay disabled. A successful outcome
-contains the normal `text`, `results`, and optional `explanations`; an
-authorization, provider, or storage failure is sanitized into that item's error
-without exposing neighboring results. Tenant membership is rechecked before
-each item. Export returns a normal import-compatible snapshot plus per-item
-selection outcomes; relations to unselected memories are omitted. In strict
-mode the export branch requires the explicit `tenant:export` capability and
-signs its result when a snapshot key is configured.
+contains the normal `text`, `results`, and optional `explanations`; internal
+embedding vectors are omitted. An authorization, provider, or storage failure
+is sanitized into that item's error without exposing neighboring results. Tenant
+membership is rechecked before each item, and an HTTP disconnect cancels the
+remaining read-only fan-out. Export returns a normal import-compatible snapshot
+plus per-item selection outcomes; relations to unselected memories are omitted.
+In strict mode the export branch requires the explicit `tenant:export`
+capability and signs its result when a snapshot key is configured.
 
 Batch limits are 100 items and 10 MiB of compact request JSON. Each search
-retains the normal 1–50 result limit, and the serialized search/export response
-may not exceed 10 MiB. HTTP mixed item results use status `200`; top-level
-malformed or oversized requests/responses use the normal `INVALID_INPUT`
-envelope.
+retains the normal 1–50 result limit, and the sum of requested per-item limits
+may not exceed 1,000 results. Search accounts serialized bytes incrementally and
+the final signed search/export envelope may not exceed 10 MiB. HTTP mixed item
+results use status `200`; top-level malformed or oversized requests/responses
+use the normal `INVALID_INPUT` envelope.
 
 V5.4 does not expose a public batch embedding operation. Batch store may use the
 existing bounded internal embedding precompute path, but a public embedding
@@ -247,9 +249,10 @@ response-output policies are explicitly defined. It is not accepted by the
 HTTP, SDK, or MCP batch contracts.
 
 Mutation requests may include `Idempotency-Key` (1–128 safe ASCII
-characters). Hosts that authenticate without a static API key may provide a
-trusted post-authentication `resolveCredentialScope(req)` callback so separate
-host credentials receive separate idempotency namespaces. The authenticated,
+characters). Hosts that authenticate without a static API key must provide a
+trusted post-authentication `resolveCredentialScope(req)` callback and it must
+return a non-empty scope for every keyed request; separate host credentials
+receive separate idempotency namespaces. The authenticated,
 host-derived credential/tenant/agent scope and
 canonical request body are fingerprinted with a full digest; raw keys and
 tenant identifiers are never written to the claim store. Claims are held in a
@@ -261,20 +264,33 @@ A completed claim replays its original response, the same key with a different
 body returns `CONFLICT`, and an in-progress or ambiguous claim fails closed
 rather than risking duplicate writes. Per-item failures (including validation,
 storage, provider, and queue failures) are not finalized as replayable
-responses for a keyed batch; the claim remains in progress for host/operator
+responses for a keyed batch. A batch where every item failed with a
+pre-write-deterministic code (`NOT_FOUND`, `CONFLICT`, or `INVALID_INPUT`) may
+release its reservation so it cannot be used to exhaust capacity; any successful
+item or ambiguous failure keeps the claim in progress for host/operator
 resolution. Keyed requests are limited to 256 KiB so the response can be
-persisted safely. Capacity exhaustion returns
-`SERVICE_UNAVAILABLE`. Out-of-band restores must call the store's
-`invalidate()` operation before serving requests. The built-in restore flow
-creates a durable `restore.pending` gate before publishing the replacement;
-startup refuses normal serving while that marker exists, and a failed restore
-leaves the gate in place. After an operator has verified the data state,
+persisted safely. Capacity accounting uses bounded SQL aggregates rather than
+loading every stored response. Capacity exhaustion returns
+`SERVICE_UNAVAILABLE`.
+
+Out-of-band restores must call the store's `invalidate()` operation before
+serving requests. The built-in restore flow creates a durable `restore.pending`
+gate before publishing the replacement. The gate blocks keyed claims, ordinary
+reads and writes, and readiness; startup refuses normal serving while it exists.
+Starting a gate is refused while any mutation claim is still in progress. A
+failed restore leaves the gate in place. Startup always reconciles an interrupted
+SQLite restore journal before `recover verify` inspects the backend, and
 `recover verify` explicitly completes the gate and invalidates the old claim
-generation before a restore retry. A pre-SQLite development
-ledger containing legacy `.json` claim files is rejected rather than silently
-ignored; operators must migrate or invalidate it before startup. This V5.4
-implementation is single-host durable storage; distributed idempotency remains
-a V5.2 concern.
+generation only after verification. Durable tenant migration uses the same
+recovery check and restore gate.
+
+A pre-SQLite ledger containing legacy `.json` claim files, any claim database
+without its recorded `claims.identity`, or a replacement database with missing
+or unrelated tables is rejected before normal startup; claims are never silently
+deleted to make old keys reusable. Restore the matching identity/database pair,
+or archive the entire development `.idempotency` directory only after confirming
+it holds no production claims. This V5.4 implementation is single-host durable
+storage; distributed idempotency remains a V5.2 concern.
 
 ### Error codes → HTTP status
 

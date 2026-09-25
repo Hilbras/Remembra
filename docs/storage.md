@@ -20,11 +20,23 @@ crash-recovery mechanics, the backend interface) live in
 ├── .history/<id>/<epochMs>-<seq>.md   version snapshots (raw pre-images)
 ├── .history/<id>/reasons.json         why each snapshot was superseded (4.1.0)
 ├── .remembra.lock                  advisory cross-process lock (transient)
+├── data.sqlite                     default SQLite runtime database (+ WAL/SHM sidecars)
 ├── .recovery-state.json            durable recovery state (V5.0.3; 0600)
+├── .tenant-migration-state.json    durable signed tenant-migration checkpoints (0600)
 ├── .snapshot-import-journal.json   interrupted file-import rollback journal (transient)
+├── .idempotency/                   durable keyed-batch claim ledger (0700)
+│   ├── claims.sqlite               HMAC-protected claim + generation metadata (0600)
+│   ├── claims.key                  local row-integrity key (0600)
+│   ├── claims.identity             ledger identity bound to that database (0600)
+│   └── restore.pending             durable data-restore gate (0600, transient)
 └── <id>.<rand>.tmp                 atomic-write staging files (transient;
                                     orphans are deleted by the recovery pass)
 ```
+
+`data.sqlite` and its sidecars are absent when the explicitly enabled file
+fallback is used. The `.idempotency` directory is independent of the selected
+memory backend: `claims.identity` must always match `claims.sqlite`, and
+`restore.pending` blocks normal serving rather than acting as a disposable lock.
 
 - The **id is the filename**: a **UUIDv7** since 4.1.0 (plan §3.6) — a
   48-bit millisecond timestamp plus entropy, so ids sort by creation time

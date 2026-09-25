@@ -15,10 +15,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   discipline. No V6 implementation is implied by this design document.
 - Added bounded read-only batch search across the service, HTTP, MCP, and
   TypeScript SDK contracts. Search fans out through authorized single-search,
-  preserves per-item order and sanitized failures, caps requests/responses at
-  10 MiB, and does not accept mutation-only idempotency keys. Public batch
-  embedding remains intentionally unavailable pending provider-cost, quota, and
-  response-output policy decisions.
+  preserves per-item order and sanitized failures, limits aggregate requested
+  results to 1,000, omits internal embeddings, accounts output bytes
+  incrementally, and caps requests/responses at 10 MiB. Mutation-only
+  idempotency keys are rejected. Public batch embedding remains intentionally
+  unavailable pending provider-cost, quota, and response-output policy
+  decisions.
+- Hardened V5.4 keyed-batch recovery: tenant-shaped options can no longer mint
+  trusted contexts, missing credential scopes fail closed, writes re-read durable
+  recovery state, restore gates block reads/readiness and fence in-flight claims,
+  interrupted SQLite restores reconcile before verification, replaced or legacy
+  ledgers are never silently reset, deterministic all-failed claims release
+  capacity safely, and durable tenant migration requires the restore gate.
 
 ## [5.0.3] — 2026-09-24
 

@@ -50,6 +50,33 @@ run `remembra recover verify`; it verifies the backend before making the state
 `Healthy`. See [storage](storage.md#recovery-state-and-staged-operations) and
 [observability](observability.md#health--get-health).
 
+A `restore.pending` gate is stronger than `ReadOnly`: readiness becomes
+`unready` and data reads/writes return `SERVICE_UNAVAILABLE` until the operator
+completes verification. Startup reconciles an interrupted SQLite publication
+before `recover verify`; do not remove the gate or journal to force startup.
+
+## Startup reports an unusable batch idempotency ledger
+
+An existing `<REMEMBRA_HOME>/.idempotency` directory is part of the durable
+claim namespace, so normal startup fails closed when its database, identity,
+permissions, or directory contents are invalid. Do not delete only
+`claims.sqlite` or edit rows. Restore the matching `claims.identity` and database
+pair. If this is a development-only ledger that never held production claims,
+archive the entire `.idempotency` directory while the service is stopped and
+restart; new keyed claims will then start in a new namespace. Legacy `.json`
+claims and SQLite ledgers without an identity are never auto-migrated by
+deleting old keys.
+
+## Service reports `SERVICE_UNAVAILABLE` for a keyed batch
+
+This can mean the ledger is unavailable, its capacity is exhausted, a matching
+claim is already in progress, a restore gate is active, or the batch contained
+a failed item. An all-deterministic failed batch releases its reservation; a
+partial or ambiguous batch intentionally remains fail-closed. Check
+`<REMEMBRA_HOME>/.idempotency/restore.pending`, recovery state, and the
+`remembra_batch_items_total` metric before retrying with a new key. Never reuse
+a key with a different body.
+
 ## Package import fails in TypeScript
 
 Use the explicit subpath:

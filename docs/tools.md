@@ -58,11 +58,13 @@ the batch is not a cross-item transaction.
 | `ids` | string[] | delete/export | Unique memory ids to delete or export |
 
 Limits are 100 items and 10 MiB of compact request JSON. Search retains the
-normal 1–50 result limit per item, and serialized search/export responses may
-not exceed 10 MiB. Search uses the authorized single-search path with touch and
-decay disabled and preserves input order. Store duplicates are not coalesced.
-Missing or inaccessible ids are reported as `NOT_FOUND` inside the result
-envelope; top-level malformed or oversized requests/responses return
+normal 1–50 result limit per item, allows at most 1,000 aggregate requested
+results, and accounts output bytes incrementally. Internal embedding vectors
+are omitted. Search uses the authorized single-search path with touch and decay
+disabled, preserves input order, and revalidates the host context per item.
+Serialized search/export responses may not exceed 10 MiB. Store duplicates are
+not coalesced. Missing or inaccessible ids are reported as `NOT_FOUND` inside
+the result envelope; top-level malformed or oversized requests/responses return
 `[INVALID_INPUT]`. Public batch embedding is not exposed.
 
 ## `memory_update`
