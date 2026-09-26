@@ -42,6 +42,7 @@ export const API_CAPABILITIES = [
   "snapshot",
   "batch",
   "batch-idempotency",
+  "webhooks",
   "tenant-entities",
   "health",
   "metrics",

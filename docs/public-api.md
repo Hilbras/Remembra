@@ -120,9 +120,14 @@ label.
 `/api/v1/health` is intentionally public, matching `/health`; all other v1
 routes retain the legacy auth requirements. `/api/v1/capabilities` is an
 authenticated, content-free discovery response containing the bounded v1
-capability manifest. The established `/api/v1` prefix is the compatibility
-authority; the roadmap's illustrative `/v1/...` spelling is not a second alias.
-Future breaking changes require a separately documented major namespace.
+capability manifest. The manifest describes the **build**, not the deployment:
+`webhooks` means the release supports signed webhook delivery, while actually
+delivering events additionally requires `REMEMBRA_WEBHOOKS` to be configured.
+A deployment that does not set it still advertises the capability, because the
+manifest is deliberately static, cacheable, and free of configuration detail.
+The established `/api/v1` prefix is the compatibility authority; the roadmap's
+illustrative `/v1/...` spelling is not a second alias. Future breaking changes
+require a separately documented major namespace.
 
 The UI is not served below the v1
 prefix. When CORS is enabled, the version, request-ID, and `Retry-After`

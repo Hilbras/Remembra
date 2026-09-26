@@ -125,6 +125,11 @@ test("v1 capabilities discovery is authenticated, versioned, and bounded", async
   assert.equal(body.basePath, API_PREFIX);
   assert.ok(body.capabilities.length <= 32);
   assert.ok(body.capabilities.every((capability) => typeof capability === "string"));
+  // Discovery exists so an integrator can learn what a build supports: every
+  // shipped surface must be advertised, not just the oldest ones.
+  for (const capability of ["memory", "context", "snapshot", "batch", "batch-idempotency", "webhooks", "tenant-entities", "health", "metrics", "audit", "quality", "agents"]) {
+    assert.ok(body.capabilities.includes(capability), `capabilities must advertise ${capability}`);
+  }
 
   const unsupported = await fetch(`${base}/api/v2/capabilities`, {
     headers: { "x-api-key": "test-key" },

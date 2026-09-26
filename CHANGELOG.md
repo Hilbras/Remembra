@@ -88,6 +88,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   real receiver, and a forged body, an expired timestamp, a foreign secret, and
   a replayed delivery id are each refused.
 
+- Advertised `webhooks` in the `/api/v1/capabilities` manifest. The manifest
+  describes the build rather than the deployment, so the capability is present
+  whether or not `REMEMBRA_WEBHOOKS` is configured; a regression test now
+  asserts that every shipped surface is discoverable.
 - Added `remembra --version` and `remembra --help`. Both answer before any
   configuration validation, storage-directory creation, or server start, so
   asking what is installed never has a side effect and never blocks on an MCP

@@ -82,7 +82,7 @@ class ContractParityTest(unittest.TestCase):
             for entry in block[block.index("[") + 1 :].split(",")
             if entry.strip().strip(",").strip("'\"")
         ]
-        for capability in ("memory", "context", "snapshot", "batch", "batch-idempotency"):
+        for capability in ("memory", "context", "snapshot", "batch", "batch-idempotency", "webhooks", "tenant-entities", "health", "metrics", "audit", "quality", "agents"):
             self.assertIn(capability, capabilities)
 
 
