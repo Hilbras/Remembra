@@ -196,6 +196,7 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
     await fs.writeFile(out, JSON.stringify(snapshot, null, 2), { encoding: "utf8", mode: 0o600 });
   }
   console.log(`Exported ${snapshot.memories.length} memories to ${out}`);
+  await drainWebhooksOnce();
   process.exit(0);
 } else if (argv[0] === "import") {
   // CLI restore: `remembra import <file.json>` — validates whole file first,
@@ -217,11 +218,13 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
   }
   try {
     if (dryRun) {
+      // A dry run writes nothing, so it queues nothing and drains nothing.
       const preview = await service.previewSnapshot(data, operatorOptions);
       console.log(`Import dry-run: ${preview.imported} would import, ${preview.skipped} would skip (${preview.total} total)`);
     } else {
       const result = await service.importSnapshot(data, operatorOptions);
       console.log(`Import: ${result.imported} imported, ${result.skipped} skipped`);
+      await drainWebhooksOnce();
     }
     process.exit(0);
   } catch (err) {
@@ -531,6 +534,25 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
   // MCP mode (default): stdio transport launched by an MCP client.
   await startMcp(service, operatorOptions);
   startWebhookDrain();
+}
+
+/**
+ * Deliver anything this one-shot command queued before the process exits.
+ * Delivery state is durable, so a failure here delays a notification to the
+ * next draining process rather than losing it.
+ */
+async function drainWebhooksOnce(): Promise<void> {
+  if (!webhookDispatcher) return;
+  try {
+    await service.drainWebhooks();
+  } catch (error) {
+    logEvent(
+      "warn",
+      "webhook.drain_failed",
+      { error: String(error).slice(0, 200) },
+      "Remembra: webhook drain failed; the event stays queued for the next process",
+    );
+  }
 }
 
 /**

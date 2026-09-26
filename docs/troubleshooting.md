@@ -107,6 +107,31 @@ releases require Node 20 or newer, which conflicts with this release line's
 Node 18 gate. Until the dependency moves, treat a `[run-tests]` note as
 environmental and confirm a suspected regression with `npm run test:raw`.
 
+## A webhook was not delivered
+
+Check the order of events: a write queues the event, and a *separate* step
+delivers it. The HTTP and MCP processes drain on
+`REMEMBRA_WEBHOOK_INTERVAL_MS` (default 5s), and `remembra export`/`import`
+drain once before exiting. A one-shot command that exits before the next drain
+leaves the event queued, not lost: it stays in
+`<REMEMBRA_HOME>/.webhooks` and is delivered by the next process that drains.
+
+If a subscription never receives anything, in order:
+
+1. `REMEMBRA_WEBHOOKS` is set and parses — an invalid value fails startup
+   instead of disabling delivery, and the error names the variable.
+2. The subscription allows that event type. The event set is a closed list and
+   a subscription receives only what it lists.
+3. The endpoint is `https`, or `http` on loopback, and carries no credentials
+   in the URL.
+4. The receiver verifies the `x-remembra-signature` header against the raw body
+   and rejects a repeated `x-remembra-delivery` id.
+5. `remembra_webhook_deliveries_total` shows `dropped_capacity` (the queue was
+   full) or `failed`/`dead` (the subscriber refused it).
+
+A webhook failure never fails the write that produced the event, so a
+`SERVICE_UNAVAILABLE` from the memory API is never caused by delivery.
+
 ## Package import fails in TypeScript
 Use the explicit subpath:
 

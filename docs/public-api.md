@@ -391,10 +391,17 @@ export REMEMBRA_WEBHOOK_INTERVAL_MS=5000   # bounded drain interval, default 500
 `REMEMBRA_WEBHOOK_MAX_ATTEMPTS`, `REMEMBRA_WEBHOOK_BASE_DELAY_MS`, and
 `REMEMBRA_WEBHOOK_MAX_DELAY_MS` bound the retry policy. An absent
 `REMEMBRA_WEBHOOKS` disables delivery entirely; an invalid value fails startup
-rather than silently dropping events. State lives in
-`<REMEMBRA_HOME>/.webhooks`, the long-running HTTP and MCP processes drain due
-deliveries on the interval, and a one-shot CLI invocation drains once so a
-queued event is not stranded.
+with a message naming the variable and the offending field. State lives in
+`<REMEMBRA_HOME>/.webhooks`.
+
+Draining is explicit and never implicit in a write:
+
+- the long-running HTTP and MCP processes drain due deliveries on the interval;
+- the one-shot `export` and `import` commands, which are the commands that
+  queue an event, deliver what they queued before exiting;
+- any event still queued when a process exits is **not lost** — it stays
+  durable and is delivered by the next process that drains, and a subscriber
+  that is unreachable is retried with bounded backoff rather than dropped.
 
 ### Error codes → HTTP status
 

@@ -28,7 +28,11 @@ function decodeSecret(value: string): Buffer | undefined {
   return Buffer.from(value, "utf8");
 }
 
-/** Parse and validate `REMEMBRA_WEBHOOKS`; an absent variable yields no subscriptions. */
+/**
+ * Parse and validate `REMEMBRA_WEBHOOKS`; an absent variable yields no
+ * subscriptions. Every failure names the variable so an operator knows what to
+ * fix instead of seeing a bare validation message.
+ */
 export function parseWebhookSubscriptions(raw: string | undefined): WebhookSubscription[] {
   if (raw === undefined || raw.trim() === "") return [];
   if (raw.length > MAX_CONFIG_LENGTH) {
@@ -47,13 +51,13 @@ export function parseWebhookSubscriptions(raw: string | undefined): WebhookSubsc
     throw new RemembraError("INVALID_INPUT", `REMEMBRA_WEBHOOKS accepts at most ${MAX_SUBSCRIPTIONS} subscriptions`);
   }
   const seen = new Set<string>();
-  return parsed.map((entry) => {
+  return parsed.map((entry, index) => {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-      throw new RemembraError("INVALID_INPUT", "each webhook subscription must be an object");
+      throw new RemembraError("INVALID_INPUT", "REMEMBRA_WEBHOOKS: each subscription must be an object");
     }
     const value = entry as Record<string, unknown>;
     const secret = decodeSecret(String(value.secret ?? ""));
-    if (!secret) throw new RemembraError("INVALID_INPUT", "webhook secret must decode to 32-128 bytes");
+    if (!secret) throw new RemembraError("INVALID_INPUT", "REMEMBRA_WEBHOOKS: secret must decode to 32-128 bytes");
     const events = Array.isArray(value.events) ? (value.events as WebhookEventType[]) : [];
     const subscription: WebhookSubscription = {
       id: String(value.id ?? ""),
@@ -61,9 +65,17 @@ export function parseWebhookSubscriptions(raw: string | undefined): WebhookSubsc
       secret,
       events,
     };
-    assertValidSubscription(subscription);
+    try {
+      assertValidSubscription(subscription);
+    } catch (error) {
+      // Name the offending entry: with several subscriptions the operator needs
+      // to know which one to fix.
+      const where = subscription.id ? `subscription ${subscription.id}` : `entry ${index}`;
+      const detail = (error as RemembraError).message.replace(/^webhooks: /, "");
+      throw new RemembraError("INVALID_INPUT", `REMEMBRA_WEBHOOKS (${where}): ${detail}`);
+    }
     if (seen.has(subscription.id)) {
-      throw new RemembraError("INVALID_INPUT", `duplicate webhook subscription id: ${subscription.id}`);
+      throw new RemembraError("INVALID_INPUT", `REMEMBRA_WEBHOOKS: duplicate subscription id ${subscription.id}`);
     }
     seen.add(subscription.id);
     return subscription;
