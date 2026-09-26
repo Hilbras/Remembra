@@ -83,6 +83,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - Added a verified example suite (Node, Python, FastAPI, RAG, local-LLM,
   Next.js, React, and AI agent) documented in [docs/examples.md](docs/examples.md).
 
+- Added `remembra --version` and `remembra --help`. Both answer before any
+  configuration validation, storage-directory creation, or server start, so
+  asking what is installed never has a side effect and never blocks on an MCP
+  stdio handshake.
+
 ### Release evidence
 
 - Node 18.20.8 and Node 24.21.0: build, 557 suite, 132 security, 52 recovery,

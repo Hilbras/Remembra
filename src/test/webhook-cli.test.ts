@@ -104,6 +104,45 @@ test("WEBHOOK-CLI-001: a one-shot CLI command delivers its queued event with a v
   }
 });
 
+test("WEBHOOK-CLI-005: --version and --help answer without configuration or side effects", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-version-flag-"));
+  const root = path.join(parent, "never-created");
+  try {
+    for (const flag of ["--version", "-v"]) {
+      const result = await runCli([flag], {
+        REMEMBRA_HOME: root,
+        REMEMBRA_TENANT_MODE: "strict",
+        REMEMBRA_EMBEDDINGS: "none",
+        REMEMBRA_LLM: "ollama",
+      });
+      assert.equal(result.code, 0, `${flag} must succeed: ${result.stderr}`);
+      assert.equal(result.stdout.trim(), "5.4.0");
+      assert.equal(await fs.stat(root).then(() => true, () => false), false, `${flag} must not create a data directory`);
+    }
+
+    const help = await runCli(["--help"], {
+      REMEMBRA_HOME: root,
+      REMEMBRA_TENANT_MODE: "legacy",
+      REMEMBRA_EMBEDDINGS: "none",
+      REMEMBRA_LLM: "ollama",
+    });
+    assert.equal(help.code, 0, help.stderr);
+    assert.match(help.stdout, /remembra --version/);
+    assert.match(help.stdout, /recover verify/);
+    // A strict-mode misconfiguration must not break an informational flag.
+    const strictHelp = await runCli(["--help"], {
+      REMEMBRA_HOME: root,
+      REMEMBRA_TENANT_MODE: "strict",
+      REMEMBRA_EMBEDDINGS: "none",
+      REMEMBRA_LLM: "ollama",
+    });
+    assert.equal(strictHelp.code, 0, strictHelp.stderr);
+    assert.equal(await fs.stat(root).then(() => true, () => false), false);
+  } finally {
+    await fs.rm(parent, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
 test("WEBHOOK-CLI-004: an import dry run writes nothing and drains nothing", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-webhook-cli-dry-"));
   const receiver = await startReceiver();

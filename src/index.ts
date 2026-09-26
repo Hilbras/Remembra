@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import { logEvent } from "./log.js";
 import { MemoryStore } from "./store.js";
+import { VERSION } from "./version.js";
 import { SqliteBackend } from "./sqlite-backend.js";
 import { render } from "./store.js";
 import { MemoryService } from "./service.js";
@@ -38,6 +39,43 @@ import {
   type Relation,
 } from "./types.js";
 
+/** Operator-facing usage text for `--help`; kept next to the flag it serves. */
+const CLI_USAGE = `remembra ${VERSION} — external memory for AI assistants
+
+Usage:
+  remembra                       Start the MCP server on stdio (default)
+  remembra --http [--port N]     Start the HTTP API and dashboard
+  remembra export <file.json>    Write a snapshot
+  remembra import <file.json>    Preflighted, idempotent import
+  remembra maintain              One-shot decay sweep and backfill
+  remembra recover read-only     Durably enter read-only recovery
+  remembra recover verify        Verify the backend, then return to Healthy
+  remembra migrate               Legacy file to SQLite migration
+  remembra audit [limit]         Bounded audit events
+  remembra encrypt | decrypt     Legacy file-root conversion
+  remembra export-markdown <dir> Legacy file-backend Markdown export
+  remembra import-markdown <dir> Legacy Markdown import
+  remembra --version             Print the version and exit
+  remembra --help                Print this help and exit
+
+Environment: REMEMBRA_HOME, REMEMBRA_API_KEY, REMEMBRA_TENANT_MODE,
+REMEMBRA_EMBEDDINGS, REMEMBRA_LLM, REMEMBRA_SNAPSHOT_KEY, REMEMBRA_WEBHOOKS.
+See docs/public-api.md for the full contract.`;
+
+const argv = process.argv.slice(2);
+
+// `--version` and `--help` must answer before anything else: no configuration
+// validation, no storage directory, no backend, and no server. A caller asking
+// what is installed should not need a working configuration.
+if (argv[0] === "--version" || argv[0] === "-v") {
+  console.log(VERSION);
+  process.exit(0);
+}
+if (argv[0] === "--help" || argv[0] === "-h") {
+  console.log(CLI_USAGE);
+  process.exit(0);
+}
+
 const root = MemoryStore.defaultRoot();
 const tenantMode = tenantModeFromEnv();
 const operatorTenant = tenantMode === "strict" ? createOperatorTenantContext() : undefined;
@@ -50,7 +88,6 @@ const startup = validateStartupConfiguration({
 });
 const validatedRoot = await validateStorageRoot(root);
 const operatorSnapshotKey = startup.snapshotKey;
-const argv = process.argv.slice(2);
 const isRecoveryCommand = argv[0] === "recover" && (argv[1] === "verify" || argv[1] === "read-only");
 const isRestoreCommand = argv[0] === "restore";
 const idempotencyRoot = path.join(validatedRoot, ".idempotency");

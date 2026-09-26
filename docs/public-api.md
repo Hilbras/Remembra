@@ -480,6 +480,7 @@ Envelope written by `remembra export` and `GET /snapshot`:
 | Command | Behavior |
 |---------|----------|
 | `remembra` | MCP server on stdio (default) |
+| `remembra --version` / `--help` | print the version or usage and exit; neither validates configuration nor creates a data directory |
 | `remembra --http [--port N]` | HTTP API + dashboard |
 | `remembra export <file>` | write a snapshot; a filename is required |
 | `remembra import <file>` | preflighted, idempotent import; SQLite transaction or file-batch rollback |
