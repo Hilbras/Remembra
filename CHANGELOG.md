@@ -9,6 +9,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [5.4.0] — 2026-09-26
+
+### Developer platform
+
 - Added the draft [V6 architecture specification](docs/v6-architecture-spec.md),
   covering first-class trust/sensitivity/expiration policy, provider-independent
   offline operation, versioned API domains, migration gates, and release
@@ -72,6 +76,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   aborted files through `scripts/run-tests.mjs`, log every recovery, and still
   fail immediately on any real failure. `npm run test:raw` keeps the previous
   unguarded behavior. Upgrading the binding is blocked by the Node 18 gate.
+- Added the [V5.4.0 compatibility report](docs/v5.4.0-compatibility.md) and a
+  complete [OpenAPI 3.1 specification](docs/openapi.yaml) for the `/api/v1`
+  surface, with a regression test that fails when a served route, limit,
+  idempotency rule, or capability is undocumented.
+- Added a verified example suite (Node, Python, FastAPI, RAG, local-LLM,
+  Next.js, React, and AI agent) documented in [docs/examples.md](docs/examples.md).
+
+### Release evidence
+
+- Node 18.20.8 and Node 24.21.0: build, 557 suite, 132 security, 52 recovery,
+  20 Python, and 39 documentation checks, 0 production audit findings, and a
+  241-file package dry run.
+- V5.4.0 deliberately does not claim distributed quotas, distributed workers,
+  or the advanced retrieval engine: V5.1–V5.3 remain unfinished. Public batch
+  embedding remains unavailable, and delivery state is single-host.
 
 ## [5.0.3] — 2026-09-24
 
