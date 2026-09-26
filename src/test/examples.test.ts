@@ -18,6 +18,8 @@ const EXPECTED_EXAMPLES = [
   { file: "next/app/api/memory/route.ts", language: "ts" },
   { file: "react/useMemory.tsx", language: "ts" },
   { file: "agent/agent.mjs", language: "node" },
+  { file: "webhook-receiver/node.mjs", language: "node" },
+  { file: "webhook-receiver/receiver.py", language: "python" },
 ];
 
 function resolveExample(relative: string): string {

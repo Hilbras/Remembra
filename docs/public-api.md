@@ -364,7 +364,10 @@ await service.drainWebhooks(); // deliver everything currently due
 - **Replay protection** is the receiver's job: verify the signature, then reject
   a repeated `x-remembra-delivery` id. `WebhookReplayCache` is a bounded,
   TTL-based implementation that reports its evictions rather than silently
-  accepting a replay.
+  accepting a replay. Complete receivers are in
+  [examples/webhook-receiver](../examples/webhook-receiver/node.mjs) (Node) and
+  [receiver.py](../examples/webhook-receiver/receiver.py) (Python), and
+  [examples.md](examples.md#receiver-obligations) states the three obligations.
 - **Retries** are bounded: 5 attempts by default with exponential backoff capped
   at 60 seconds, retried only for timeouts, network errors, `408`, `429`, and
   `5xx`. A `4xx` is permanent and retires the delivery immediately.

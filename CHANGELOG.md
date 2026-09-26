@@ -82,6 +82,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   idempotency rule, or capability is undocumented.
 - Added a verified example suite (Node, Python, FastAPI, RAG, local-LLM,
   Next.js, React, and AI agent) documented in [docs/examples.md](docs/examples.md).
+- Added the receiver half of the webhook contract as verified examples in Node
+  and Python: read the raw body, verify `x-remembra-signature` against it, and
+  reject a repeated delivery id. An end-to-end test drives the real CLI into the
+  real receiver, and a forged body, an expired timestamp, a foreign secret, and
+  a replayed delivery id are each refused.
 
 - Added `remembra --version` and `remembra --help`. Both answer before any
   configuration validation, storage-directory creation, or server start, so
