@@ -52,3 +52,9 @@ The release operator must additionally verify:
 - No V5 tag or npm publication is created while any gate is failing.
 - The compatibility report for the release line is accurate:
   [V5.4.0 compatibility](v5.4.0-compatibility.md).
+- Both registries are published from the same commit. When a registry blocks a
+  token (for example npm `E403` for a token without bypass-2FA permission),
+  re-run the publish with a token that carries the required scope; do not
+  change the artifact to work around a credential:
+  - npm: `npm publish` (optionally `npm publish --otp=<code>`)
+  - PyPI: `cd python && python -m build && python -m twine upload dist/*`
