@@ -1183,7 +1183,13 @@ export class SqliteBackend implements MemoryBackend {
 
     if (!hasFiles) return; // no legacy data — fresh install
 
-    logEvent("info", "migration_start", { root: legacyRoot }, "Remembra: migrating from flat files to SQLite");
+    // The storage path follows the log-hygiene rule: REMEMBRA_DEBUG only.
+    logEvent(
+      "info",
+      "migration_start",
+      process.env.REMEMBRA_DEBUG ? { root: legacyRoot } : {},
+      "Remembra: migrating from flat files to SQLite",
+    );
 
     const mdFiles = await this.walkMdFiles(globalDir, scopesDir, archivedDir);
     let imported = 0;

@@ -13,7 +13,51 @@ Every server-side event goes through one logger (`src/log.ts`) and lands on
 | **Format selection** | `REMEMBRA_LOG=json` or `REMEMBRA_LOG=text` forces a format. Unset → **auto**: JSON when stderr is piped/redirected (containers, CI, log shippers), text on a TTY. |
 | **JSON shape** | `{"ts","level","event","msg",...fields}` — one object per line, ready for any log shipper. |
 | **Text shape** | The human message verbatim (the exact strings Remembra always printed). |
-| **Hygiene** | Raw search query text and the storage root path are included **only under `REMEMBRA_DEBUG=1`** (Phase 2 log-hygiene rule). |
+| **Hygiene** | Raw search query text and the storage root path are included **only under `REMEMBRA_DEBUG=1`** (Phase 2 log-hygiene rule). No other debug flag unlocks them. |
+
+### Request context (V5.1.0)
+
+Every line emitted while handling a request carries the standard fields, even if
+it comes from a layer that knows nothing about HTTP — the service, storage,
+providers, and the job queue all inherit the context automatically:
+
+| Field | Meaning |
+|---|---|
+| `ts` | ISO 8601 timestamp |
+| `level` | `debug` / `info` / `warn` / `error` |
+| `event` | stable event name |
+| `requestId` | the validated `X-Remembra-Request-Id`, so one request can be followed across every line it caused |
+| `operation` | coarse operation, e.g. `http.request` |
+| `tenantId` | **hashed** organization correlation, 12 hex characters |
+| `agentId` | **hashed** agent correlation |
+| `durationMs` | elapsed time where known |
+
+The context is carried in an `AsyncLocalStorage` store, so no call site has to
+thread it by hand and none can forget to. Contexts nest, an explicit field
+overrides the context for the same key, and concurrent requests never see each
+other's context.
+
+### Field policy (V5.1.0)
+
+Two rules are applied to every caller-supplied field, because redacting by field
+*name* cannot tell that `query` holds user text:
+
+- **Content and path fields** — `query`, `text`, `content`, `path`, `root`,
+  `dir`, `file`, `filename`, `storagePath`, `q` — are **dropped** unless
+  `REMEMBRA_DEBUG` is set.
+- **Identity fields** — `tenantId`, `organizationId`, `projectId`, `userId`,
+  `agentId`, `apiKey` — are **replaced by a short stable digest** rather than
+  dropped, so correlation survives without a raw identifier reaching every log
+  aggregator and backup the process ever writes to.
+
+Secrets are handled separately and unchanged: field names matching
+`authorization`, `*token*`, `*secret*`, `*password*`, `apikey`, `credential`,
+`cookie`, and friends are redacted, and string values are scanned for bearer
+tokens, vendor key shapes, AWS access keys, and PEM private key blocks.
+
+One completion line per HTTP request is emitted as `http.request` with the
+bounded `route` slug (never the raw path), the method, the status, and
+`durationMs`.
 
 Example JSON events:
 

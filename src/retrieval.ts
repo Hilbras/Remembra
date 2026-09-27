@@ -561,7 +561,14 @@ export function searchQ(
       mmr_diversity: { lambda: 0.5, removed_duplicates: ranked.length - finalRanked.length },
       final_context_selection: { max_tokens: 4000, memories_selected: finalRanked.length },
     };
-    logEvent("debug", "retrieval.debug", { query: q.query, pipeline, latency_ms: Date.now() - now }, "Remembra: retrieval debug trace");
+    // Query text follows the same rule as everywhere else: it is only ever
+    // logged under REMEMBRA_DEBUG, not merely because the trace is enabled.
+    logEvent(
+      "debug",
+      "retrieval.debug",
+      { ...(process.env.REMEMBRA_DEBUG && q.query ? { query: q.query } : {}), pipeline, latency_ms: Date.now() - now },
+      "Remembra: retrieval debug trace",
+    );
   }
 
   return { results: finalRanked, explanations };

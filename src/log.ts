@@ -14,7 +14,82 @@
  * Query text and storage paths are only included under REMEMBRA_DEBUG
  * (log-hygiene rule from Phase 2).
  */
+import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
+
 export type LogLevel = "debug" | "info" | "warn" | "error";
+
+/**
+ * Request-scoped metadata (V5.1.0, roadmap §22).
+ *
+ * `logEvent` is called from ~50 sites across the codebase, and threading a
+ * request id and operation through every one of them would be both invasive and
+ * easy to forget. Instead the context is carried in an AsyncLocalStorage store,
+ * so anything running inside a request picks it up automatically — including
+ * code that has no idea a request exists.
+ *
+ * Everything here passes through the same centralized redactor as any other
+ * field. `tenantId` is hashed at the boundary rather than logged raw, so a
+ * tenant identifier never appears in a log line even if a caller passes one in
+ * by mistake.
+ */
+export interface LogContext {
+  /** Correlation id, already validated by the HTTP layer. */
+  requestId?: string;
+  /** Coarse operation name, e.g. `http.request`, `job.run`, `webhook.drain`. */
+  operation?: string;
+  /** Opaque, hashed tenant correlation. Never a raw tenant identifier. */
+  tenantId?: string;
+  /** Opaque, hashed agent correlation. Never a raw agent identifier. */
+  agentId?: string;
+  /** Elapsed milliseconds for the operation, when known. */
+  durationMs?: number;
+}
+
+const context = new AsyncLocalStorage<LogContext>();
+
+/** Run `fn` with additional request context merged over the current one. */
+export function withLogContext<T>(fields: LogContext, fn: () => T): T {
+  return context.run({ ...context.getStore(), ...fields }, fn);
+}
+
+/** The context in effect, if any. Used by the exporter and by tests. */
+export function currentLogContext(): LogContext | undefined {
+  return context.getStore();
+}
+
+/**
+ * A short, opaque correlation value for a tenant or agent.
+ *
+ * Log lines are long-lived and widely readable, so a raw tenant id would be a
+ * disclosure in every backup and log aggregator. The digest is stable, so the
+ * same tenant correlates across lines, and short, so a log stays readable.
+ */
+export function opaqueLogId(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+/**
+ * Build the request context for an HTTP request. The request id is already
+ * validated by the HTTP layer, and the tenant/agent identities are hashed here
+ * rather than logged.
+ */
+export function requestLogContext(input: {
+  requestId: string;
+  operation?: string;
+  tenantOrganizationId?: string;
+  agentId?: string;
+}): LogContext {
+  const tenantId = opaqueLogId(input.tenantOrganizationId);
+  const agentId = opaqueLogId(input.agentId);
+  return {
+    requestId: input.requestId,
+    ...(input.operation ? { operation: input.operation } : {}),
+    ...(tenantId ? { tenantId } : {}),
+    ...(agentId ? { agentId } : {}),
+  };
+}
 
 const REDACTED = "[REDACTED]";
 const MAX_LOG_DEPTH = 8;
@@ -79,13 +154,87 @@ export function logFormat(): "json" | "text" {
   return process.stderr.isTTY ? "text" : "json";
 }
 
+/**
+ * Field policy for roadmap §22: no raw queries, no secrets, and no unbounded
+ * tenant values.
+ *
+ * `sanitizeLogValue` redacts by field *name*, which handles secrets well but
+ * cannot know that `query` holds user text or that `root` is a filesystem path.
+ * So two structural rules are applied to caller fields first:
+ *
+ *  - **Content and path fields** (`query`, `root`, `path`, `content`, `text`,
+ *    …) are dropped unless `REMEMBRA_DEBUG` is set, which is the long-standing
+ *    opt-in this module's header documents. A debug flag that is not the
+ *    documented one therefore cannot turn a log into a data dump.
+ *  - **Identity fields** are replaced by a short stable digest rather than
+ *    dropped. Correlation across lines is what makes a log useful, and a raw
+ *    tenant id would be a disclosure in every backup and log aggregator.
+ *
+ * Request context is merged *after* this policy, so the context's own already
+ * hashed `tenantId` is never hashed twice.
+ */
+const CONTENT_LOG_FIELDS = new Set([
+  "query",
+  "q",
+  "text",
+  "content",
+  "path",
+  "root",
+  "dir",
+  "file",
+  "filename",
+  "storagepath",
+]);
+
+const IDENTITY_LOG_FIELDS = new Set([
+  "tenantid",
+  "organizationid",
+  "projectid",
+  "userid",
+  "agentid",
+  "apikey",
+]);
+
+function normalizeFieldName(key: string): string {
+  return key.toLowerCase().replace(/[-_\s]/g, "");
+}
+
+/** Apply the content and identity field policy to caller-supplied fields. */
+export function applyLogFieldPolicy(fields: Record<string, unknown>): Record<string, unknown> {
+  const debug = process.env.REMEMBRA_DEBUG !== undefined && process.env.REMEMBRA_DEBUG !== "";
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    const normalized = normalizeFieldName(key);
+    if (IDENTITY_LOG_FIELDS.has(normalized)) {
+      // Keep the correlation, drop the disclosure.
+      const hashed = opaqueLogId(typeof value === "string" ? value : undefined);
+      if (hashed !== undefined) out[key] = hashed;
+      continue;
+    }
+    if (CONTENT_LOG_FIELDS.has(normalized) && !debug) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/** True when a field is dropped or hashed rather than logged verbatim. */
+export function isRestrictedLogField(key: string): boolean {
+  const normalized = normalizeFieldName(key);
+  return CONTENT_LOG_FIELDS.has(normalized) || IDENTITY_LOG_FIELDS.has(normalized);
+}
+
 export function logEvent(
   level: LogLevel,
   event: string,
   fields: Record<string, unknown> = {},
   msg?: string,
 ): void {
-  const safeFields = sanitizeLogValue(fields) as Record<string, unknown>;
+  // Caller fields go through the policy first, then the request context, so an
+  // explicit field still wins over the context for the same key.
+  const store = context.getStore();
+  const safe = applyLogFieldPolicy(fields);
+  const merged: Record<string, unknown> = store ? { ...store, ...safe } : safe;
+  const safeFields = sanitizeLogValue(merged) as Record<string, unknown>;
   const safeMsg = msg === undefined ? undefined : redactString(msg);
   if (logFormat() === "json") {
     console.error(
@@ -109,3 +258,4 @@ export function logEvent(
     .join(" ");
   console.error(`Remembra: ${event}${extra ? " " + extra : ""}`);
 }
+
