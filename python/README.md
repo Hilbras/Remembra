@@ -10,6 +10,15 @@ authentication, error classes, retry policy, pagination, and idempotency rules.
 pip install hilbras-remembra
 ```
 
+Building from a checkout needs `build` and `twine`; use `python3`, since many
+distributions ship no bare `python`, and a virtual environment where the
+system interpreter is externally managed:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install build twine
+cd python && ../.venv/bin/python -m build && ../.venv/bin/python -m twine upload dist/*
+```
+
 ## Use
 
 ```python

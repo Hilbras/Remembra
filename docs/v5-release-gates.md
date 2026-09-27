@@ -61,4 +61,10 @@ The release operator must additionally verify:
     publishing; use a granular token with **Bypass 2FA**, or supply an OTP.
     Confirm afterwards with `npm view @hilbras/remembra version` and a clean
     install from the registry.
-  - PyPI: `cd python && python -m build && python -m twine upload dist/*`
+  - PyPI: `cd python && python3 -m build && python3 -m twine upload dist/*`.
+    Use `python3`: many distributions ship no bare `python`. Where the system
+    interpreter is externally managed (PEP 668, common on Debian/Ubuntu), build
+    and upload from a virtual environment instead:
+    `python3 -m venv /tmp/pyenv && /tmp/pyenv/bin/pip install build twine &&
+    cd python && /tmp/pyenv/bin/python -m build &&
+    /tmp/pyenv/bin/python -m twine upload dist/*`
