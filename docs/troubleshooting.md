@@ -87,25 +87,57 @@ retried; a partial or ambiguous batch intentionally remains fail-closed. Check
 `remembra_batch_items_total` metric before retrying with a new key. Never reuse
 a key with a different body.
 
-## A test run aborts with `RemoveEnvironmentCleanupHook`
+## A process aborts with `RemoveEnvironmentCleanupHook`
 
 ```
 # node[1234]: void node::RemoveEnvironmentCleanupHook(...) at ../src/api/hooks.cc:142
 # Assertion failed: (env) != nullptr
+...
+4: ... Statement::~Statement() [node_modules/better-sqlite3/build/Release/better_sqlite3.node]
 ```
 
-This abort comes from the pinned native SQLite binding (`better-sqlite3` 11.x)
-while Node tears the environment down — after the run has already reported its
-results. It is not an assertion failure, it is not caused by a test, and it
-depends on heap layout rather than on test content. `npm test`,
-`npm run security:check`, and `npm run recovery:check` therefore re-run only the
-aborted files, print a `[run-tests]` note for each recovery, and still fail
-immediately on any real failure. `npm run test:raw` bypasses that protection.
+**This can kill a running server, not just a test run.** It is the single most
+understated entry in this document, so read the whole section before deciding it
+is harmless.
 
-Upgrading `better-sqlite3` past 11.x would remove the exposure, but those
-releases require Node 20 or newer, which conflicts with this release line's
-Node 18 gate. Until the dependency moves, treat a `[run-tests]` note as
-environmental and confirm a suspected regression with `npm run test:raw`.
+It comes from the native SQLite binding (`better-sqlite3`). A prepared
+`Statement`'s destructor calls `RemoveEnvironmentCleanupHook` on an environment
+that has already gone, and Node's assertion `env != nullptr` aborts the process.
+It depends on garbage-collection timing, not on request content, so **where it
+happens is not reproducible** — the same workload may run clean for thousands of
+requests or abort at 750.
+
+Measured against the published `5.4.0` and `5.5.1` packages, 2 500 requests of a
+mixed write / search / scrape workload:
+
+| Runtime | Result |
+|---|---|
+| Node 18.20.8 | 2 000 requests, no abort |
+| Node 24.21.0, `better-sqlite3` 11.x | aborted at 750, 750, and 1 750 requests |
+| Node 24.21.0, `better-sqlite3` 12.11.1 | aborted at 751 requests |
+
+So: **Node 24 only, not fixed by upgrading `better-sqlite3`, and not introduced
+by the 5.5.0 work** — 5.4.0 aborts identically. A single endpoint in isolation
+does not trigger it; sustained mixed traffic does. Remembra already caches
+prepared statements per SQL string, so the churn is not ours to reduce.
+
+What this means for you:
+
+- **In CI**, a `[run-tests]` note with every assertion green is this abort.
+  `npm test`, `npm run security:check`, and `npm run recovery:check` re-run only
+  the aborted file and still fail on any real failure. `npm run test:raw`
+  bypasses that protection.
+- **In production on Node 24**, expect the process to abort under sustained
+  write load. It is not a data-loss bug — the store is durable and each write is
+  acknowledged only once committed — but it *is* an availability problem, and no
+  wrapper in this repository can contain it because there is no test to re-run.
+- **On Node 18** the exposure has not reproduced in this workload.
+
+There is no workaround in Remembra. Upgrading `better-sqlite3` past 11.x does
+not remove it, so the only durable fix is upstream in the native binding; the
+version is pinned to 11.x for the Node 18 gate, which is the smaller constraint
+to revisit first. If you need an abort-free Node 24 deployment today, run Node
+18.
 
 ## A webhook was not delivered
 

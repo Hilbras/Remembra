@@ -9,6 +9,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Known limitation, now measured
+
+The native `RemoveEnvironmentCleanupHook` abort previously documented as a test
+teardown nuisance **can kill a running server on Node 24**. Measured against the
+published `5.4.0` and `5.5.1` packages under 2 500 requests of mixed write,
+search, and scrape traffic:
+
+| Runtime | Result |
+|---|---|
+| Node 18.20.8 | 2 000 requests, no abort |
+| Node 24.21.0, `better-sqlite3` 11.x | aborted at 750, 750, and 1 750 requests |
+| Node 24.21.0, `better-sqlite3` 12.11.1 | aborted at 751 requests |
+
+Three things this corrects: the abort is **not** confined to process teardown, it
+is **not** fixed by upgrading the binding, and it is **not** a regression from the
+5.5.0 work — `5.4.0` aborts identically. It is a garbage-collection-timing race
+in the native binding, so the point at which it fires is not reproducible.
+
+No code change is possible from this repository: there is no wrapper that can
+contain a process abort, and the store already caches prepared statements, so the
+allocation churn is not ours to reduce. `docs/troubleshooting.md` now says so
+plainly instead of calling it contained. An operator who needs an abort-free
+Node 24 deployment should run Node 18, where the exposure has not reproduced.
+
 ## [5.5.1] — 2026-09-27
 
 A patch release for two defects in the log field policy introduced by 5.5.0.
@@ -242,7 +266,13 @@ renumbered milestone table and the full compatibility statement.
   `test`, `security:check`, and `recovery:check` scripts now re-run only the
   aborted files through `scripts/run-tests.mjs`, log every recovery, and still
   fail immediately on any real failure. `npm run test:raw` keeps the previous
-  unguarded behavior. Upgrading the binding is blocked by the Node 18 gate.
+  unguarded behavior.
+  > **Corrected after release.** This entry originally said the binding's
+  > version was the only obstacle. That is wrong on both counts: the abort is
+  > **not** fixed by `better-sqlite3` 12.x, and it is **not** confined to test
+  > teardown — it can kill a running server on Node 24. See
+  > [`troubleshooting.md`](docs/troubleshooting.md#a-process-aborts-with-removeenvironmentcleanuphook)
+  > for the measurements.
 - Added the [V5.4.0 compatibility report](docs/v5.4.0-compatibility.md) and a
   complete [OpenAPI 3.1 specification](docs/openapi.yaml) for the `/api/v1`
   surface, with a regression test that fails when a served route, limit,
