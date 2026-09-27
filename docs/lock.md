@@ -1,4 +1,4 @@
-# Distributed Locking
+# Distributed Locking and the Job Ledger
 
 V5.6.0 adds lease-based locking for the work that must not run concurrently
 across instances: snapshot restore, memory consolidation, scheduled jobs,
@@ -80,3 +80,66 @@ try {
 
 `inspect(key)` returns the holder and expiry for diagnostics, and `sweep()`
 reclaims expired leases deterministically rather than on a timer.
+
+---
+
+# The durable job ledger
+
+Roadmap §27. `src/job-store.ts`, published as `@hilbras/remembra/job-store`.
+
+The in-memory `JobQueue` hands back a promise that resolves when the job
+settles. That shape cannot cross a process boundary — nothing in this process can
+resolve a promise created in another — so a ledger that N workers share has to be
+*polled* rather than awaited. `JobQueue` is unchanged and remains what a single
+process uses.
+
+```ts
+import { InMemoryJobStore, SqliteJobStore } from "@hilbras/remembra/job-store";
+
+const store = new SqliteJobStore(db);              // or InMemoryJobStore
+const jobId = await store.enqueue({ type: "maintenance", payload: {}, maxAttempts: 3 });
+
+const job = await store.claim({ owner: "worker-1", leaseMs: 60_000 });
+if (job) {
+  try {
+    await doWork(JSON.parse(job.payload));
+    await store.complete(job.jobId, "worker-1");
+  } catch (err) {
+    await store.fail(job.jobId, "worker-1", classify(err));
+  }
+}
+```
+
+## A claim is one statement, not a read then a write
+
+Two workers polling the same ledger must not both believe they own a job. The
+claim is a single `UPDATE ... RETURNING`, so the database decides the winner and
+returns the row it actually claimed. This is the same check-then-act shape that
+produced audit finding S1, where two writers were each told they had succeeded.
+
+Jobs are ordered oldest-first, ties broken by id. The id is random, so order
+*within* a millisecond is arbitrary — but it is the same arbitrary order for every
+claimer, which is what stops two workers racing for the same job.
+
+## A dead worker's job comes back
+
+A claimed job carries a lease. `reclaimExpired()` returns jobs whose lease lapsed
+to `retrying` (or `failed` once attempts run out), so a worker that dies mid-job
+does not strand it and nothing waits for a holder that will never return.
+
+`renew()` returns `false` once a lease is lost, and `complete()`/`fail()` return
+`false` for a lease that is no longer yours. A worker that lost its lease cannot
+commit anything, and a partitioned one cannot resume on a belief it still holds
+it.
+
+## Bounds
+
+| Input | Limit |
+|---|---|
+| `payload` | 64 KiB, JSON-encoded; a non-serializable payload is refused |
+| `type` | 1–64 chars, `[A-Za-z0-9._:-]` — it becomes a metric label |
+| `tenantId` | hashed to a 12-byte digest unless already opaque |
+| `lastError` | a classified code, never a message: an unsafe value is stored as `unknown` |
+
+`prune(olderThanMs)` removes settled jobs and never touches an outstanding one, so
+the ledger stays bounded.

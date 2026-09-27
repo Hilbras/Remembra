@@ -79,6 +79,11 @@
       "import": "./dist/lock.js",
       "default": "./dist/lock.js"
     },
+    "./job-store": {
+      "types": "./dist/job-store.d.ts",
+      "import": "./dist/job-store.js",
+      "default": "./dist/job-store.js"
+    },
     "./sqlite-recovery": {
       "types": "./dist/sqlite-recovery.d.ts",
       "import": "./dist/sqlite-recovery.js",

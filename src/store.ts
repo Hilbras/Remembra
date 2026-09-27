@@ -173,7 +173,19 @@ export class MemoryStore implements MemoryBackend {
       if (!file) return false;
       const current = await this.parseCached(file);
       if (!current || (tenant && !this.matchesTenant(current, tenant))) return false;
-      await fs.unlink(file);
+      try {
+        await fs.unlink(file);
+      } catch (error) {
+        // A sibling store instance can delete the same file between `findFile`
+        // and this unlink. That is the outcome this method already reports for a
+        // missing file, so it must not surface as an IO_ERROR: a caller racing a
+        // delete against another caller is not an error condition.
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          this.cache.forget(file);
+          return false;
+        }
+        throw error;
+      }
       this.cache.forget(file);
       return true;
     });

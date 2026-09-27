@@ -11,6 +11,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **A durable job ledger** (`src/job-store.ts`, published as
+  `@hilbras/remembra/job-store`), the second distributed primitive. All six §27
+  states and ten fields, with `InMemoryJobStore` and `SqliteJobStore` behind one
+  `JobStore` interface. A claim is a single `UPDATE ... RETURNING`, so the
+  database picks the winner and returns the row it actually claimed — a
+  read-then-write is the shape that produced the lost update below. Claims are
+  ordered oldest-first with the id as tie-break, so every claimer agrees on the
+  next job. A dead worker's job returns to `retrying` once its lease expires, and
+  `renew`/`complete`/`fail` return `false` for a lease the caller no longer
+  holds. Payloads, job types, tenant digests, and stored error labels are all
+  bounded. 28 tests, with the whole behavioural suite run against both
+  implementations so they cannot drift.
+
 - **Lease-based locking** (`src/lock.ts`, published as `@hilbras/remembra/lock`),
   the first primitive of the distributed-runtime milestone. Every acquisition is a
   *lease* with an owner and an absolute expiry rather than a lock, so a crashed
@@ -28,6 +41,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A spurious `IO_ERROR` from a racing delete on the file backend.** Two
+  `MemoryStore` instances deleting the same memory could have one unlink the file
+  after the other resolved it; the resulting `ENOENT` surfaced as an error to a
+  caller that had done nothing wrong. `ENOENT` on the unlink is now the
+  already-reported "missing" result, so a racing delete is genuinely idempotent.
+  This was a pre-existing intermittent failure, caught by a release gate and
+  disproving the audit's own assessment of `forget` as safe — idempotent *state*
+  is not the same as a non-throwing *call*.
 - **A cross-instance lost update on the SQLite backend, with a success
   response.** `MemoryBackend` requires mutating calls to be safe under
   "cross-process concurrency (advisory lock)", and `SqliteBackend` only
