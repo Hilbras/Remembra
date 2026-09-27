@@ -106,9 +106,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ### Release evidence
 
 - Node 18.20.8 and Node 24.21.0: build, 565 suite, 139 security, 52 recovery,
-  27 Python, and 39 documentation checks, 0 production audit findings, a
-  241-file package dry run, and a clean-install smoke test that imports every
-  published subpath from the packed tarball.
+  28 Python, and 39 documentation checks, 0 production audit findings, a
+  241-file package dry run, and a clean install **from the npm registry** that
+  imports every published subpath, verifies a webhook signature, and refuses a
+  tampered body.
 - V5.4.0 deliberately does not claim distributed quotas, distributed workers,
   or the advanced retrieval engine: V5.1–V5.3 remain unfinished. Public batch
   embedding remains unavailable, and delivery state is single-host.

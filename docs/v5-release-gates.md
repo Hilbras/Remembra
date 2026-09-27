@@ -56,5 +56,9 @@ The release operator must additionally verify:
   token (for example npm `E403` for a token without bypass-2FA permission),
   re-run the publish with a token that carries the required scope; do not
   change the artifact to work around a credential:
-  - npm: `npm publish` (optionally `npm publish --otp=<code>`)
+  - npm: `npm publish` (optionally `npm publish --otp=<code>`). A classic
+    token is rejected with `E403` when the account requires 2FA for
+    publishing; use a granular token with **Bypass 2FA**, or supply an OTP.
+    Confirm afterwards with `npm view @hilbras/remembra version` and a clean
+    install from the registry.
   - PyPI: `cd python && python -m build && python -m twine upload dist/*`
