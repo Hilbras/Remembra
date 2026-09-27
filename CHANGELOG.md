@@ -9,6 +9,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [5.5.1] — 2026-09-27
+
+A patch release for two defects in the log field policy introduced by 5.5.0.
+Both were found by a post-release audit that enumerated every `logEvent` field
+name in the tree and diffed it against the policy's lists, rather than by
+reading the code — the call site looked correct in both cases.
+
+### Fixed
+
+- **A documented diagnostic field was silently removed.** `file` sat on the
+  blanket drop list alongside `path` and `root`, so `memory_parse_skipped` and
+  `memory_normalized` stopped emitting the `file` field that
+  `docs/observability.md` advertises. The event still reported that a memory file
+  was unparseable, but not which one — the only thing an operator needs from it.
+  A bare basename is not a disclosure; a path is. Filename fields now pass
+  through only when the value is bounded, separator-free, and free of parent
+  references, so `/home/someone/.remembra/secret.md` and `../../etc/passwd` are
+  still refused *in a `file` field*.
+- **The field policy only inspected top-level keys**, so
+  `{ details: { path: "/home/someone/..." } }` bypassed it completely, as did any
+  deeper nesting and any object inside an array. The redactor was already
+  recursive; the policy was not. It is now applied at every depth, with the top
+  level left alone so an identity is not hashed twice.
+
+No behaviour outside logging changes. `SEMVER` patch because the route, env-var,
+and metric surfaces are untouched.
+
+### Release evidence
+
+- Node 18.20.8 and Node 24.21.0: build, 688 suite, 142 security, 52 recovery,
+  28 Python, and 41 documentation checks, 0 production audit findings, and both
+  benchmarks within their documented ceilings.
+- Verified from both registries after publication: a clean npm install imports
+  every published subpath and refuses a tampered webhook body; a fresh Python
+  venv pulls zero dependencies and reports the same frozen batch limits; the
+  published wheel and sdist hash-match the artifacts built from this tag.
+
 ## [5.5.0] — 2026-09-27
 
 Production infrastructure: the roadmap §17–§24 milestone the plan calls

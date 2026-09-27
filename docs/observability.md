@@ -5,6 +5,11 @@ Added in **3.7.0** (Phase 7 of the deep audit).
 
 ## Structured logging
 
+> Field-policy note: the policy landed in 5.5.0 and two defects in it were
+> fixed in 5.5.1 — `file` was over-classified and dropped, and the policy did
+> not reach nested fields. Both are covered by `LOG-007b`, `LOG-007c`,
+> `LOG-011b`, and `LOG-011c`.
+
 Every server-side event goes through one logger (`src/log.ts`) and lands on
 **stderr** — stdout stays reserved for MCP stdio framing and CLI output.
 
