@@ -52,7 +52,7 @@ without a server and without installing anything.
 | `history(id, limit=…)` | `GET /api/v1/memories/{id}/history` | |
 | `context(payload, attempts=…)` | `POST /api/v1/context` | Read-only |
 | `list(options, attempts=…)` | `GET /api/v1/memories` | Opaque cursor pagination |
-| `iter_list(options)` | — | Walks every page once |
+| `iter_list(options)` / `aiter_list(options)` | — | Walks every page once; `aiter_list` is the async counterpart |
 | `create_snapshot(payload)` | `POST /api/v1/snapshot` | Server-managed envelope |
 | `restore_snapshot(envelope)` | `POST /api/v1/import` | Sends the envelope unchanged |
 | `batch(payload, idempotency_key=…)` | `POST /api/v1/memories/batch` | Mutation-only idempotency |

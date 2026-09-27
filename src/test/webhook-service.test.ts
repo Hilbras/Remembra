@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { FileBatchIdempotencyStore } from "../batch-idempotency-store.js";
 import { MemoryService } from "../service.js";
 import { MemoryStore } from "../store.js";
 import {
@@ -36,10 +37,13 @@ async function serviceWithWebhooks(prefix: string, transport: WebhookTransport, 
   const store = new FileWebhookDeliveryStore(path.join(root, "webhooks"));
   const dispatcher = new WebhookDispatcher(store, transport, { maxAttempts: 1, now: () => Date.now() });
   dispatcher.register({ id: "sub-1", url: "https://hooks.example.test/remembra", secret: SECRET, events });
+  // A claim ledger is required so the durable restore gate can be exercised.
+  const claims = new FileBatchIdempotencyStore(path.join(root, "claims"));
   const service = new MemoryService(new MemoryStore(path.join(root, "memories")), {
     embeddingProvider: "none",
     decayIntervalMs: Number.MAX_SAFE_INTEGER,
     webhooks: dispatcher,
+    batchIdempotencyStore: claims,
   });
   return { root, store, dispatcher, service };
 }
@@ -111,6 +115,55 @@ test("WEBHOOK-SVC-002: an unsubscribed event is never queued and a failing dispa
 
     dispatcher.unregister("sub-1");
     assert.equal(dispatcher.subscriptionCount, 0);
+  } finally {
+    await service.shutdownBackgroundJobs();
+    store.close();
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("WEBHOOK-SVC-005: a data restore retires queued deliveries instead of reporting rolled-back data", async () => {
+  const transport = new CollectingTransport();
+  const { root, store, service } = await serviceWithWebhooks("remembra-webhook-retire-", transport);
+  try {
+    await service.initializeRecovery();
+    const stored = await service.store({ type: "fact", content: "this memory will be rolled back" });
+    assert.equal(store.counts().pending, 1, "the write queued a notification");
+
+    // Simulate the durable gate an operator holds across a data restore.
+    await service.beginBatchRestore("restore");
+    assert.equal(service.batchIdempotencyRestorePending, true);
+    // The queued event survives the gate: it is queued, not delivered yet.
+    assert.equal(store.counts().pending, 1);
+
+    await service.completeBatchRestore();
+    assert.equal(service.batchIdempotencyRestorePending, false);
+    assert.equal(store.counts().pending, 0, "nothing about rolled-back data stays queued");
+    assert.equal(store.counts().dead, 1);
+
+    // And it is never delivered, before or after a later drain.
+    await service.drainWebhooks();
+    assert.equal(transport.bodies.length, 0, "a retired delivery is not sent");
+    assert.equal(store.due(Date.now()).length, 0);
+    assert.equal(stored.id.length > 0, true);
+  } finally {
+    await service.shutdownBackgroundJobs();
+    store.close();
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test("WEBHOOK-SVC-006: an operator rollback retires queued deliveries too", async () => {
+  const transport = new CollectingTransport();
+  const { root, store, service } = await serviceWithWebhooks("remembra-webhook-rollback-", transport);
+  try {
+    await service.initializeRecovery();
+    await service.store({ type: "fact", content: "queued before an operator rollback" });
+    assert.equal(store.counts().pending, 1);
+    await service.invalidateBatchIdempotency();
+    assert.equal(store.counts().pending, 0);
+    await service.drainWebhooks();
+    assert.equal(transport.bodies.length, 0);
   } finally {
     await service.shutdownBackgroundJobs();
     store.close();

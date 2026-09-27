@@ -245,6 +245,21 @@ class AsyncClientTest(unittest.TestCase):
 
         asyncio.run(scenario())
 
+    def test_async_pagination_walks_every_page_once(self) -> None:
+        async def scenario() -> None:
+            transport = FakeTransport(
+                [
+                    (200, {"memories": [{"id": "m1"}], "next_cursor": "c1"}),
+                    (200, {"memories": [{"id": "m2"}], "next_cursor": None}),
+                ]
+            )
+            async with AsyncRemembra(ENDPOINT, transport=transport) as client:
+                ids = [m["id"] async for page in client.aiter_list({"limit": 1}) for m in page["memories"]]
+            self.assertEqual(ids, ["m1", "m2"])
+            self.assertIn("cursor=c1", transport.calls[1]["url"])
+
+        asyncio.run(scenario())
+
     def test_async_validation_is_identical(self) -> None:
         async def scenario() -> None:
             transport = FakeTransport()

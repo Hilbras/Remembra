@@ -18,7 +18,7 @@ import inspect
 import json
 import time
 import uuid
-from typing import Any, Iterable, Iterator, Mapping, MutableMapping, Sequence
+from typing import Any, AsyncIterator, Iterable, Iterator, Mapping, MutableMapping, Sequence
 
 from .errors import ApiError, NetworkError, RemembraError, RequestTimeout, ValidationError
 from .transport import (
@@ -398,6 +398,28 @@ class AsyncRemembra(_BaseRemembra):
         query = self._list_query(options or {})
         headers = self._build_headers("GET", None, request_id, None)
         return await self._send("GET", self._path("/memories", query), headers, None, attempts=attempts, base_delay=base_delay, max_delay=max_delay)
+
+    async def aiter_list(
+        self,
+        options: Mapping[str, Any] | None = None,
+        request_id: str | None = None,
+    ) -> AsyncIterator[Any]:
+        """Page through memories with the server's opaque cursor.
+
+        The asynchronous counterpart of :meth:`Remembra.iter_list`, so both
+        clients offer the same surface.
+        """
+        state = dict(options or {})
+        while True:
+            page = await self.list(state, request_id=request_id)
+            yield page
+            cursor = (page.get("next_cursor") if isinstance(page, Mapping) else None) or (
+                page.get("cursor") if isinstance(page, Mapping) else None
+            )
+            if not cursor:
+                return
+            state = {**state, "cursor": cursor}
+            state.pop("offset", None)
 
     async def create_snapshot(self, payload: Mapping[str, Any] | None = None, request_id: str | None = None) -> Any:
         body = self._encode(dict(payload)) if payload else None

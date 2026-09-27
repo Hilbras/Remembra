@@ -88,6 +88,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   real receiver, and a forged body, an expired timestamp, a foreign secret, and
   a replayed delivery id are each refused.
 
+- Retired queued webhook deliveries when a data restore or operator rollback
+  replaces the store. A queued event describes data that may no longer exist, so
+  delivering it would tell a subscriber something untrue. The queue survives the
+  gate and is retired only when the restore is published.
+- Added `aiter_list` to the Python asynchronous client, so both clients offer
+  the same pagination surface the documentation claims.
 - Advertised `webhooks` in the `/api/v1/capabilities` manifest. The manifest
   describes the build rather than the deployment, so the capability is present
   whether or not `REMEMBRA_WEBHOOKS` is configured; a regression test now

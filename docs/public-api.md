@@ -380,6 +380,10 @@ await service.drainWebhooks(); // deliver everything currently due
   integrity-protected; a tampered row fails closed at startup instead of being
   delivered under a valid signature. Capacity exhaustion drops the event with an
   explicit `dropped_capacity` metric — it is never silent.
+- **Restores retire queued events.** A queued notification describes data that a
+  restore or operator rollback is about to replace, so completing either one
+  retires the queue (`retired` metric) instead of reporting a state that is no
+  longer true. Events queued *after* the restore are unaffected.
 - **Secrets** are used only to sign. They are never stored, logged, or
   returned; logs carry the subscription id and a truncated secret fingerprint.
 - **Endpoints** must be `https` (plain `http` is allowed for loopback only) and

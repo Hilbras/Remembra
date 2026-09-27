@@ -594,12 +594,16 @@ export class MemoryService {
   async completeBatchRestore(): Promise<void> {
     if (!this.batchIdempotencyStore?.completeRestore) throw new RemembraError("SERVICE_UNAVAILABLE", "restore gate is unavailable");
     await this.batchIdempotencyStore.completeRestore();
+    // The data was replaced, so a queued notification describes memories that
+    // may no longer exist. Retire it rather than report a state that is false.
+    this.webhooks?.retireQueued("retired after a data restore");
   }
 
   /** Operator hook for verified data rollback/restore before serving again. */
   async invalidateBatchIdempotency(): Promise<void> {
     if (!this.batchIdempotencyStore) throw new RemembraError("SERVICE_UNAVAILABLE", "batch idempotency ledger is unavailable");
     await this.batchIdempotencyStore.invalidate();
+    this.webhooks?.retireQueued("retired after an operator rollback");
   }
 
   /**
