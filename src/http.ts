@@ -302,6 +302,30 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
     }
   }
 
+  // V5.1.0: bounded readiness. A short TTL keeps a polling probe from driving a
+  // storage read per request, and single-flight means a burst of concurrent
+  // probes costs one check rather than one per connection. The check itself is
+  // unchanged, so a stale answer is at most one TTL old.
+  const healthCacheMs = Number(process.env.REMEMBRA_HEALTH_CACHE_MS ?? 1_000);
+  let healthCached: { at: number; value: Awaited<ReturnType<MemoryService["health"]>> } | undefined;
+  let healthInFlight: Promise<Awaited<ReturnType<MemoryService["health"]>>> | undefined;
+  async function readiness(): Promise<Awaited<ReturnType<MemoryService["health"]>>> {
+    if (!Number.isFinite(healthCacheMs) || healthCacheMs <= 0) return service.health();
+    const now = Date.now();
+    if (healthCached && now - healthCached.at < healthCacheMs) return healthCached.value;
+    if (healthInFlight) return healthInFlight;
+    healthInFlight = service
+      .health()
+      .then((value) => {
+        healthCached = { at: Date.now(), value };
+        return value;
+      })
+      .finally(() => {
+        healthInFlight = undefined;
+      });
+    return healthInFlight;
+  }
+
   const server = http.createServer(async (req, res) => {
     res.setHeader(REQUEST_ID_HEADER, requestIdFor(req));
     // Parse before the overload fast path so versioned responses get their
@@ -361,11 +385,26 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
 
       // Liveness + readiness (audit Phase 7): 200 when storage is readable,
       // 503 with the failing check when it is not.
+      //
+      // V5.1.0: readiness touches storage and may write durable recovery state,
+      // and this route is public and unrated, so an unauthenticated caller
+      // could otherwise drive storage reads at request rate. The result is
+      // therefore cached briefly and concurrent probes share one check
+      // (single-flight). `REMEMBRA_HEALTH_CACHE_MS=0` disables the cache.
       if (path === "/health") {
-        const health = await service.health();
+        const health = await readiness();
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, health.status === "ok" ? 200 : 503, health);
+      }
+
+      // Cheap liveness: process state only. Never cached, never touches storage,
+      // so it stays truthful while the process is alive and cannot be used to
+      // generate load.
+      if (path === "/health/live") {
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, 200, service.liveness());
       }
 
       // V4.4: CORS preflight — handle before any auth/rate-limit check.
@@ -448,6 +487,33 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(res, 200, API_CAPABILITY_MANIFEST);
+      }
+
+      // V5.1.0 dependency health. These sit after authentication and rate
+      // limiting, so they inherit the existing rules: a deployment with an API
+      // key requires it, and they are charged like any other protected route.
+      // Liveness stays above, unauthenticated and cheap, because that is the
+      // one a probe on an untrusted path needs.
+      if (req.method === "GET" && path === "/health/ready") {
+        const health = await readiness();
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, health.status === "ok" ? 200 : 503, health);
+      }
+
+      if (req.method === "GET" && path === "/health/storage") {
+        const storage = await service.storageHealth();
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        return send(res, storage.status === "ok" ? 200 : 503, storage);
+      }
+
+      if (req.method === "GET" && path === "/health/provider") {
+        applySecureHeaders(res);
+        applyCorsHeaders(res);
+        // Configuration state only: no reachability probe, no key, no
+        // diagnostic text. Providers are optional, so this is always 200.
+        return send(res, 200, service.providerHealth());
       }
 
       const requireEntityTenant = (): TenantContext => {

@@ -74,7 +74,11 @@ content-free liveness check.
 | Method | Route | Purpose |
 |--------|-------|---------|
 | GET | `/` · `/ui/*` | dashboard shell + assets (static, no auth) |
-| GET | `/health` | liveness/readiness (no auth) |
+| GET | `/health` | legacy readiness (no auth, cached) |
+| GET | `/health/live` | cheap liveness — process state only, no storage I/O (no auth) |
+| GET | `/health/ready` | recovery-aware readiness (auth when keyed) |
+| GET | `/health/storage` | backend identity, fallback, cache occupancy (auth when keyed) |
+| GET | `/health/provider` | provider configuration state, never keys or diagnostics (auth when keyed) |
 | GET | `/api/v1/capabilities` | authenticated bounded API capability discovery |
 | GET | `/metrics` | Prometheus text (auth when keyed) |
 | GET | `/audit` | bounded audit-event listing |
@@ -117,14 +121,31 @@ values are replaced with a server-generated bounded ID. The header is
 correlation metadata only and is never used as an authorization or metric
 label.
 
-`/api/v1/health` is intentionally public, matching `/health`; all other v1
-routes retain the legacy auth requirements. `/api/v1/capabilities` is an
+`/api/v1/health` and `/api/v1/health/live` are intentionally public, matching
+`/health`; `/api/v1/health/ready`, `/api/v1/health/storage`, and
+`/api/v1/health/provider` require the API key when one is configured, because
+they expose dependency state. All other v1 routes retain the legacy auth
+requirements. `/api/v1/capabilities` is an
 authenticated, content-free discovery response containing the bounded v1
 capability manifest. The manifest describes the **build**, not the deployment:
 `webhooks` means the release supports signed webhook delivery, while actually
 delivering events additionally requires `REMEMBRA_WEBHOOKS` to be configured.
 A deployment that does not set it still advertises the capability, because the
 manifest is deliberately static, cacheable, and free of configuration detail.
+
+### Choosing a health route (V5.1.0)
+
+`/health` and `/health/ready` both answer the recovery-aware readiness question
+and both touch storage, which may also write durable recovery state. Because
+`/health` is public and unrated, its answer is cached for
+`REMEMBRA_HEALTH_CACHE_MS` (default 1000) and concurrent probes share a single
+check, so an unauthenticated poller cannot drive one storage scan per request.
+Set that variable to `0` if a deployment needs a live answer on every probe.
+
+Use **`/health/live`** for liveness. It reads process state only — no storage,
+no durable write — so it stays `200` even when storage is broken, and it reports
+`draining: true` once a graceful shutdown begins so an orchestrator can take
+the instance out of rotation before the process exits.
 The established `/api/v1` prefix is the compatibility authority; the roadmap's
 illustrative `/v1/...` spelling is not a second alias. Future breaking changes
 require a separately documented major namespace.

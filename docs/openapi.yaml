@@ -394,6 +394,11 @@ paths:
       operationId: getHealth
       security: []
       summary: Recovery-aware readiness
+      description: >-
+        Legacy readiness route, unchanged for compatibility. Touches storage and
+        may write durable recovery state, and is unauthenticated, so the result
+        is cached briefly and concurrent probes share one check. Use
+        `/health/live` for a cheap unauthenticated liveness probe.
       responses:
         "200":
           description: Healthy, degraded, or unready
@@ -401,6 +406,85 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Health"
+  /api/v1/health/live:
+    get:
+      tags: [operations]
+      operationId: getLiveness
+      security: []
+      summary: Cheap liveness
+      description: >-
+        Process state only. Performs no storage read and no durable write, so it
+        stays truthful while the process is alive and cannot be used to generate
+        load. `draining` becomes true once a graceful shutdown starts.
+      responses:
+        "200":
+          description: The process is able to answer
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, version, uptime_s, draining]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  version:
+                    type: string
+                  uptime_s:
+                    type: integer
+                  draining:
+                    type: boolean
+  /api/v1/health/ready:
+    get:
+      tags: [operations]
+      operationId: getReadiness
+      summary: Recovery-aware readiness
+      description: >-
+        The same readiness check as `/health`, behind authentication when an API
+        key is configured, and subject to the same short cache.
+      responses:
+        "200":
+          description: Healthy, degraded, or unready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/health/storage:
+    get:
+      tags: [operations]
+      operationId: getStorageHealth
+      summary: Storage backend health
+      description: >-
+        Backend identity, fallback state, and cache occupancy. Exposes no memory
+        content, no record counts, no file paths, and no error message — only the
+        classified error label.
+      responses:
+        "200":
+          description: Storage is readable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageHealth"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/health/provider:
+    get:
+      tags: [operations]
+      operationId: getProviderHealth
+      summary: Configured provider state
+      description: >-
+        Configuration only. Providers are optional, so a keyword-only install is
+        fully functional and this never reports unready. Never calls a vendor
+        API, and never includes a provider key or diagnostic text.
+      responses:
+        "200":
+          description: Provider configuration state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderHealth"
   /api/v1/metrics:
     get:
       tags: [operations]
@@ -1219,6 +1303,58 @@ components:
           type: string
         version:
           type: string
+    StorageHealth:
+      type: object
+      description: |
+        Storage dependency state. Deliberately narrow: no memory content, no
+        record counts, no filesystem paths, and no error message text — only the
+        classified error label such as `IO_ERROR`.
+      properties:
+        status:
+          type: string
+          enum: [ok, unready]
+        storage:
+          type: string
+          description: Classified storage result, e.g. `ok` or `IO_ERROR`.
+        state:
+          type: string
+          enum: [Healthy, Degraded, Recovering, Failed, ReadOnly]
+        backend:
+          type: string
+          enum: [sqlite, file]
+        fallback:
+          type: boolean
+          description: True when running on the file fallback rather than SQLite.
+        cache:
+          type: object
+          properties:
+            size:
+              type: integer
+            capacity:
+              type: integer
+    ProviderHealth:
+      type: object
+      description: |
+        Provider configuration state. Providers are optional, so `status` is
+        always `ok` and this never affects readiness. Reported from resolved
+        configuration: it performs no vendor call and never includes a key.
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        embeddings:
+          type: string
+          description: Resolved embedding provider, e.g. `none`, `openai`, `ollama`.
+        embeddingsAvailable:
+          type: boolean
+          description: False for the keyword-only `none` provider.
+        llm:
+          type: string
+          description: Resolved extraction LLM name.
+        optional:
+          type: boolean
+          enum: [true]
+          description: Always true; providers are never required for local readiness.
     TenantEntity:
       type: object
       description: |

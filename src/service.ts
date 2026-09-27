@@ -402,6 +402,10 @@ export class MemoryService {
   private readonly sensitiveDetector: SensitiveDataDetector;
   /** Resolved extraction LLM — recorded as provenance.provider on digests (§4.3). */
   private readonly llmName: string;
+  /** Resolved embedding provider, reported by `/health/provider` (V5.1.0). */
+  private readonly embeddingName: string;
+  /** Set once a graceful shutdown starts; liveness reports it (V5.1.0). */
+  private shuttingDown = false;
   private readonly policy: MemoryPolicy;
   private readonly tokenCounter: TokenCounter;
   #backend: MemoryBackend;
@@ -431,6 +435,7 @@ export class MemoryService {
     this.policy = deps.policy ?? loadMemoryPolicy();
     this.sensitiveDetector = new SensitiveDataDetector(this.policy.sensitiveData.action);
     this.llmName = llmAdapter?.id ?? llm;
+    this.embeddingName = embeddingAdapter?.id ?? emb;
     this.tokenCounter = deps.tokenCounter ?? defaultTokenCounter;
 
     this.embedFn =
@@ -564,6 +569,21 @@ export class MemoryService {
 
   jobStats(): { queued: number; running: number; capacity: number; concurrency: number } {
     return this.jobs.stats();
+  }
+
+  /**
+   * Mark the service as draining (V5.1.0). Idempotent, and safe to call before
+   * the process starts closing anything: a liveness probe that observes
+   * `draining` can take the instance out of rotation while the rest of the
+   * shutdown sequence runs.
+   */
+  beginShutdown(): void {
+    this.shuttingDown = true;
+  }
+
+  /** True once `beginShutdown` has been called. */
+  get isShuttingDown(): boolean {
+    return this.shuttingDown;
   }
 
   async shutdownBackgroundJobs(): Promise<void> {
@@ -1996,6 +2016,77 @@ export class MemoryService {
     }
     if (sensitive.action === "redact") return { ...input, content: sensitive.text } as T;
     return input;
+  }
+
+  /**
+   * Liveness (V5.1.0): is this process able to answer at all?
+   *
+   * Deliberately cheap — no storage read, no recovery-state refresh, no durable
+   * write. A liveness probe runs on a timer, often from an unauthenticated
+   * network path, so anything expensive here turns a probe into a load
+   * generator. Anything that touches storage belongs in `health()`.
+   */
+  liveness(): { status: "ok"; version: string; uptime_s: number; draining: boolean } {
+    return {
+      status: "ok",
+      version: VERSION,
+      uptime_s: Math.round(process.uptime()),
+      draining: this.shuttingDown,
+    };
+  }
+
+  /**
+   * Storage health (V5.1.0): backend identity and cache occupancy only.
+   *
+   * No memory content, no counts of records, no file paths, and no error
+   * messages — only the classified error label, so a broken disk reports
+   * `IO_ERROR` without disclosing why.
+   */
+  async storageHealth(): Promise<{
+    status: "ok" | "unready";
+    storage: string;
+    state: RecoveryState;
+    backend?: "sqlite" | "file";
+    fallback?: boolean;
+    cache?: { size: number; capacity: number };
+  }> {
+    const health = await this.health();
+    return {
+      status: health.status,
+      storage: health.storage,
+      state: health.state,
+      ...(health.backend ? { backend: health.backend } : {}),
+      ...(health.backend ? { fallback: health.fallback } : {}),
+      ...(health.cache ? { cache: health.cache } : {}),
+    };
+  }
+
+  /**
+   * Provider health (V5.1.0): configuration state, never reachability.
+   *
+   * Providers are optional — a keyword-only install is fully functional — so
+   * this never reports `unready` and never affects readiness. It deliberately
+   * answers from configuration rather than calling out: a probe must not make
+   * a vendor API call, and no provider key or diagnostic is ever included.
+   */
+  providerHealth(): {
+    status: "ok";
+    embeddings: string;
+    embeddingsAvailable: boolean;
+    llm: string;
+    optional: true;
+  } {
+    // Answered from the already-resolved provider names rather than by
+    // re-reading the environment, so this cannot throw and cannot disagree
+    // with the provider actually in use.
+    const embeddings = this.embeddingName;
+    return {
+      status: "ok",
+      embeddings,
+      embeddingsAvailable: embeddings !== "none",
+      llm: this.llmName,
+      optional: true,
+    };
   }
 
   /** Readiness probe (audit Phase 7): can the backend actually be read? */
