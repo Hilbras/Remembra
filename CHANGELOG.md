@@ -9,6 +9,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Lease-based locking** (`src/lock.ts`, published as `@hilbras/remembra/lock`),
+  the first primitive of the distributed-runtime milestone. Every acquisition is a
+  *lease* with an owner and an absolute expiry rather than a lock, so a crashed
+  holder is reclaimed instead of deadlocking. `release()` is owner-checked and
+  cannot clear a peer's lease; `renew()` returns `false` once a lease is lost, so
+  a partitioned worker stops rather than resuming on a belief it still holds it —
+  the same failure as the lost update below, wearing a lock. Two implementations
+  ship: an in-process provider (the default) and a file-backed one that reclaims
+  on the expiry timestamp rather than pid liveness, which is what makes it
+  portable beyond one host. `lockKey` hashes any non-digest part, so a raw tenant
+  cannot reach a key that is written to disk. Documented in
+  [`docs/lock.md`](docs/lock.md). 15 tests, two of which caught defects in the
+  implementation: an unreadable lease file livelocked `acquire` forever, and
+  `isHeld()` never observed the lease it had just written.
+
 ### Fixed
 
 - **A cross-instance lost update on the SQLite backend, with a success

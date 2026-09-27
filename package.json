@@ -74,6 +74,11 @@
       "import": "./dist/recovery.js",
       "default": "./dist/recovery.js"
     },
+    "./lock": {
+      "types": "./dist/lock.d.ts",
+      "import": "./dist/lock.js",
+      "default": "./dist/lock.js"
+    },
     "./sqlite-recovery": {
       "types": "./dist/sqlite-recovery.d.ts",
       "import": "./dist/sqlite-recovery.js",
