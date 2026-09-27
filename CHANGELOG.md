@@ -11,6 +11,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **A durable worker** (`src/durable-worker.ts`, published as
+  `@hilbras/remembra/worker`), the shared-execution counterpart to the in-memory
+  `JobQueue`, which is unchanged and remains what a single process uses. Its
+  centrepiece is the partition guard: a claimed job's lease is renewed while it
+  runs, and if a renewal ever fails the job's `AbortSignal` fires — finishing
+  anyway would be the lost-update failure below wearing a lease. A refused
+  `complete()` is reported as `lease_lost` rather than as success. Claims are
+  restricted to the types a worker declares, so a heterogeneous fleet never
+  claims work it cannot run, and `stop()` releases in-flight leases so a peer
+  takes over immediately instead of waiting out the lease. The poll timer is
+  deliberately not `unref`'d, since §28 allows a worker-only process that has
+  nothing else holding its event loop open.
+
 - **A durable job ledger** (`src/job-store.ts`, published as
   `@hilbras/remembra/job-store`), the second distributed primitive. All six §27
   states and ten fields, with `InMemoryJobStore` and `SqliteJobStore` behind one

@@ -143,3 +143,66 @@ it.
 
 `prune(olderThanMs)` removes settled jobs and never touches an outstanding one, so
 the ledger stays bounded.
+
+---
+
+# The durable worker
+
+Roadmap §28. `src/durable-worker.ts`, published as `@hilbras/remembra/worker`.
+
+Polls a `JobStore`, claims jobs, runs them, and reports the outcome. This is
+the shared-execution counterpart to the in-memory `JobQueue`, which is unchanged
+and remains what a single process uses.
+
+```ts
+import { DurableWorker } from "@hilbras/remembra/worker";
+
+const worker = new DurableWorker({
+  store,                                    // SqliteJobStore or InMemoryJobStore
+  handlers: { "maintenance": runMaintenance },
+  concurrency: 4,
+  leaseMs: 60_000,
+});
+worker.start();
+// ... later, and required, so the process can exit:
+await worker.stop();
+```
+
+## Handlers are declared, not discovered
+
+A worker declares the types it can run, and claims are restricted to those. It
+therefore never claims a job it has no handler for — which is what makes a
+heterogeneous fleet safe, and how §28's server/worker/scheduler split falls out
+without a separate mechanism. `worker.types` is what a peer should route to this
+process. Starting a worker with no handlers is refused, because it would poll
+forever claiming nothing and look like a healthy idle worker.
+
+## The partition guard
+
+A claimed job's lease is renewed while the job runs. **If a renewal ever fails,
+the job's `AbortSignal` fires.** Continuing would be the S1 lost-update failure
+wearing a lease: two workers each believing they own one job. So the worker stops
+and reports `lease_lost` rather than claiming a success it cannot vouch for, and
+`complete()` returning `false` is treated the same way.
+
+## Handlers must be idempotent
+
+A worker that dies mid-job has its lease reclaimed and the job re-run, as
+attempt 2. Nothing can make an arbitrary handler safe to run twice — that is a
+stated requirement on the handler. `context.attempt` is passed so it can tell
+which run it is, and `context.signal` so a long job can stop early.
+
+## stop() is required
+
+The poll timer is deliberately **not** `unref`'d: §28 allows a worker-only
+process, and a worker-only process has nothing else holding its event loop open,
+so an unref'd timer would let it exit before claiming a single job. `stop()` is
+what releases the handle, and the process owner is responsible for calling it.
+
+`stop(timeoutMs)` also **releases** each in-flight lease rather than abandoning
+it, so a peer can take the work immediately instead of waiting out the lease. A
+job that does not finish within the timeout keeps its lease and is reclaimed on
+expiry, which is the right outcome for work that is genuinely still running.
+
+`drain(maxRounds)` claims and runs to completion, awaiting the work it claims —
+useful for a one-shot drain and for tests.

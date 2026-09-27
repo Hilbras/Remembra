@@ -84,6 +84,11 @@
       "import": "./dist/job-store.js",
       "default": "./dist/job-store.js"
     },
+    "./worker": {
+      "types": "./dist/durable-worker.d.ts",
+      "import": "./dist/durable-worker.js",
+      "default": "./dist/durable-worker.js"
+    },
     "./sqlite-recovery": {
       "types": "./dist/sqlite-recovery.d.ts",
       "import": "./dist/sqlite-recovery.js",
