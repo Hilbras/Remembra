@@ -11,11 +11,11 @@ import { isRemembraError, statusFor, errorLabel, publicErrorMessage, RemembraErr
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import {
-  InProcessRateLimiter,
   rateLimitIdentity,
   type RateLimiter,
   type RateLimitIdentity,
 } from "./rate-limiter.js";
+import { QuotaRateLimiter, parseQuotaPolicies } from "./quota.js";
 import type { AgentContext } from "./agent.js";
 import type { TenantContext } from "./tenant.js";
 import type { TenantEntityKind, TenantEntityService } from "./tenant-entities.js";
@@ -246,12 +246,17 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
   // V5.1.0: rate limiting depends on the interface, not the implementation, and
   // the in-process limiter is bounded (the anonymous bucket below is reachable
   // without a credential, so unbounded per-identity state would be a
-  // memory-exhaustion vector).
+  // memory-exhaustion vector). The base budget is charged for every request, so
+  // the pre-V5.1 per-identity window is preserved; any REMEMBRA_QUOTAS
+  // dimensions are additional constraints layered on top of it.
   const rateLimiter =
     opts.rateLimiter ??
-    new InProcessRateLimiter({
-      limit: Number(process.env.REMEMBRA_RATE_LIMIT ?? 60),
-      windowMs: Number(process.env.REMEMBRA_RATE_WINDOW_MS ?? 60_000),
+    new QuotaRateLimiter({
+      base: {
+        limit: Number(process.env.REMEMBRA_RATE_LIMIT ?? 60),
+        windowMs: Number(process.env.REMEMBRA_RATE_WINDOW_MS ?? 60_000),
+      },
+      policies: parseQuotaPolicies(process.env.REMEMBRA_QUOTAS),
       ...(process.env.REMEMBRA_RATE_MAX_IDENTITIES
         ? { maxIdentities: Number(process.env.REMEMBRA_RATE_MAX_IDENTITIES) }
         : {}),

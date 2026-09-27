@@ -540,8 +540,10 @@ Events include `store`, `update`, `archive`, `revive`, `forget`, `import`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `REMEMBRA_RATE_LIMIT` | `60` | max requests per window per key |
+| `REMEMBRA_RATE_LIMIT` | `60` | max requests per window per identity (the base budget) |
 | `REMEMBRA_RATE_WINDOW_MS` | `60000` | sliding window size in ms |
+| `REMEMBRA_RATE_MAX_IDENTITIES` | `10000` | ceiling on tracked rate-limit identities before LRU eviction |
+| `REMEMBRA_QUOTAS` | *(unset)* | per-dimension quota policies (V5.1.0), e.g. `{"organization":{"limit":1000000,"windowMs":2592000000},"user":{"limit":10000,"windowMs":86400000}}` |
 | `REMEMBRA_REQUEST_TIMEOUT_MS` | `30000` | per-request timeout |
 | `REMEMBRA_MAX_CONCURRENT` | `32` | simultaneous in-flight request cap |
 | `REMEMBRA_CORS_ORIGIN` | *(unset)* | allow origin; `*` rejected when key is set |
