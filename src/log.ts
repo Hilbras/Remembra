@@ -140,7 +140,19 @@ function sanitizeLogValue(value: unknown, depth = 0, seen = new WeakSet<object>(
     }
     const output: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, MAX_LOG_ITEMS)) {
-      output[key] = isSensitiveField(key) ? REDACTED : sanitizeLogValue(item, depth + 1, seen);
+      if (isSensitiveField(key)) {
+        output[key] = REDACTED;
+        continue;
+      }
+      // The content/identity/filename policy is enforced at *every* depth, not
+      // just the top level. Applying it only to top-level keys let
+      // `{ details: { path: "/home/someone/..." } }` through untouched, which is
+      // exactly the disclosure the policy exists to prevent. Top-level fields
+      // have already been through `applyLogFieldPolicy`, so it is not re-run
+      // here — that would double-hash an identity.
+      const allowed = depth === 0 ? { [key]: item } : applyLogFieldPolicy({ [key]: item });
+      if (!Object.prototype.hasOwnProperty.call(allowed, key)) continue;
+      output[key] = sanitizeLogValue(allowed[key], depth + 1, seen);
     }
     return output;
   } finally {
@@ -181,10 +193,30 @@ const CONTENT_LOG_FIELDS = new Set([
   "path",
   "root",
   "dir",
-  "file",
-  "filename",
   "storagepath",
 ]);
+
+/**
+ * Filename fields are treated separately from path fields.
+ *
+ * A bare basename (`bad.md`) is the entire diagnostic value of events like
+ * `memory_parse_skipped`, and it discloses nothing. A path
+ * (`/home/someone/.remembra/bad.md`) is a disclosure. Blanket-dropping `file`
+ * silently removed a documented field operators parse for, so a filename is
+ * allowed through when — and only when — it is genuinely a bare, bounded,
+ * separator-free name.
+ */
+const FILENAME_LOG_FIELDS = new Set(["file", "filename"]);
+
+/** Longest filename logged before it is treated as a path and dropped. */
+const MAX_LOG_FILENAME_LENGTH = 128;
+
+function isBareFilename(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  if (value.length === 0 || value.length > MAX_LOG_FILENAME_LENGTH) return false;
+  // No separators, no parent references, no NUL — a name, not a location.
+  return !/[\\/]/.test(value) && !value.includes("..") && !value.includes("\0");
+}
 
 const IDENTITY_LOG_FIELDS = new Set([
   "tenantid",
@@ -212,15 +244,27 @@ export function applyLogFieldPolicy(fields: Record<string, unknown>): Record<str
       continue;
     }
     if (CONTENT_LOG_FIELDS.has(normalized) && !debug) continue;
+    if (FILENAME_LOG_FIELDS.has(normalized) && !debug && !isBareFilename(value)) {
+      // A path in a filename field is still a path. Drop it.
+      continue;
+    }
     out[key] = value;
   }
   return out;
 }
 
-/** True when a field is dropped or hashed rather than logged verbatim. */
+/**
+ * True when a field is dropped, hashed, or narrowed to a basename rather than
+ * logged verbatim. A `file` field is "restricted" because it is only allowed
+ * through when the value is a bare name.
+ */
 export function isRestrictedLogField(key: string): boolean {
   const normalized = normalizeFieldName(key);
-  return CONTENT_LOG_FIELDS.has(normalized) || IDENTITY_LOG_FIELDS.has(normalized);
+  return (
+    CONTENT_LOG_FIELDS.has(normalized) ||
+    IDENTITY_LOG_FIELDS.has(normalized) ||
+    FILENAME_LOG_FIELDS.has(normalized)
+  );
 }
 
 export function logEvent(

@@ -87,7 +87,10 @@ renumbered milestone table and the full compatibility statement.
 - Added a field policy: content and path fields are dropped unless
   `REMEMBRA_DEBUG` is set, and identity fields are replaced by a short stable
   digest so correlation survives without a raw identifier reaching every log
-  aggregator.
+  aggregator. Filename fields pass through only when the value is a bare,
+  bounded, separator-free name, so `memory_parse_skipped` still says *which*
+  file is bad while an absolute path is still refused. The policy is enforced at
+  every nesting depth, not just on top-level fields.
 - **Fixed:** `retrieval.debug` logged the raw query text behind
   `REMEMBRA_DEBUG_RETRIEVAL` rather than the documented `REMEMBRA_DEBUG`, and
   `migration_start` logged a storage path unconditionally.

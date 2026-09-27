@@ -43,8 +43,13 @@ Two rules are applied to every caller-supplied field, because redacting by field
 *name* cannot tell that `query` holds user text:
 
 - **Content and path fields** — `query`, `text`, `content`, `path`, `root`,
-  `dir`, `file`, `filename`, `storagePath`, `q` — are **dropped** unless
-  `REMEMBRA_DEBUG` is set.
+  `dir`, `storagePath`, `q` — are **dropped** unless `REMEMBRA_DEBUG` is set.
+- **Filename fields** — `file`, `filename` — pass through only when the value is
+  a bare, bounded, separator-free name. A basename is the entire diagnostic
+  value of events like `memory_parse_skipped` and discloses nothing; an absolute
+  path is a disclosure, so it is still dropped.
+- Both rules apply at **every depth**, not just to top-level fields. A nested
+  `{ details: { path: "…" } }` is treated exactly like a top-level one.
 - **Identity fields** — `tenantId`, `organizationId`, `projectId`, `userId`,
   `agentId`, `apiKey` — are **replaced by a short stable digest** rather than
   dropped, so correlation survives without a raw identifier reaching every log

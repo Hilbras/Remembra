@@ -230,6 +230,90 @@ test("LOG-011: the field policy is a pure function of its input", () => {
   assert.equal(isRestrictedLogField("route"), false);
 });
 
+test("LOG-007b: a bare filename survives, because it is the whole diagnostic", async () => {
+  const restore = withEnv({ REMEMBRA_LOG: "json" });
+  try {
+    // Regression: the field policy originally dropped `file` outright, which
+    // silently removed the documented field of `memory_parse_skipped` and left
+    // operators with an event that said a file was bad but not which one.
+    const output = await captureStderr(async () => {
+      logEvent("warn", "memory_parse_skipped", { file: "bad.md", reason: "missing frontmatter" });
+    });
+    const event = JSON.parse(output) as Record<string, unknown>;
+    assert.equal(event.file, "bad.md", "a bare basename is not a disclosure");
+    assert.equal(event.reason, "missing frontmatter");
+  } finally {
+    restore();
+  }
+});
+
+test("LOG-007c: a path in a filename field is still refused", async () => {
+  const restore = withEnv({ REMEMBRA_LOG: "json" });
+  try {
+    for (const bad of [
+      "/home/someone/.remembra/secret.md",
+      "../../etc/passwd",
+      "sub/dir/name.md",
+      "C:\\Users\\someone\\note.md",
+      `${"a".repeat(200)}.md`,
+    ]) {
+      const output = await captureStderr(async () => {
+        logEvent("warn", "path_in_filename", { file: bad });
+      });
+      const event = JSON.parse(output) as Record<string, unknown>;
+      assert.equal(event.file, undefined, `${bad} must not reach a log line`);
+    }
+  } finally {
+    restore();
+  }
+});
+
+test("LOG-011b: the field policy is enforced at every depth, not just the top level", async () => {
+  const restore = withEnv({ REMEMBRA_LOG: "json" });
+  try {
+    // Regression: the policy originally inspected only top-level keys, so
+    // `{ details: { path: "..." } }` bypassed it completely.
+    const output = await captureStderr(async () => {
+      logEvent("warn", "nested.event", {
+        nested: { path: "/home/someone/x", query: "my password is hunter2", tenantId: "acme-corp" },
+        deep: { a: { b: { c: { path: "/home/someone/y" } } } },
+        items: [{ path: "/home/someone/z" }, { file: "ok.md" }],
+      });
+    });
+    const event = JSON.parse(output) as Record<string, unknown>;
+    assert.equal(output.includes("/home/someone"), false, "no path survives at any depth");
+    assert.equal(output.includes("hunter2"), false, "nor a query");
+    const nested = event.nested as Record<string, unknown>;
+    assert.equal(nested.path, undefined);
+    assert.equal(nested.query, undefined);
+    assert.match(String(nested.tenantId), /^[0-9a-f]{12}$/, "but a nested identity is still hashed, not dropped");
+    const deep = ((event.deep as Record<string, unknown>).a as Record<string, unknown>).b as Record<string, unknown>;
+    assert.deepEqual(deep.c, {}, "three levels down, the path is still gone");
+    const items = event.items as Record<string, unknown>[];
+    assert.deepEqual(items[0], {}, "and inside an array too");
+    assert.equal(items[1]?.file, "ok.md", "while a bare filename still passes");
+  } finally {
+    restore();
+  }
+});
+
+test("LOG-011c: the debug opt-in still works at depth", async () => {
+  const restore = withEnv({ REMEMBRA_LOG: "json", REMEMBRA_DEBUG: "1" });
+  try {
+    const output = await captureStderr(async () => {
+      logEvent("debug", "nested.debug", { nested: { path: "/home/someone/x" } });
+    });
+    const event = JSON.parse(output) as Record<string, unknown>;
+    assert.equal(
+      ((event.nested as Record<string, unknown>).path as string).includes("/home/someone"),
+      true,
+      "the documented opt-in still reaches nested content",
+    );
+  } finally {
+    restore();
+  }
+});
+
 test("LOG-012: secrets are still redacted by the existing mechanism", async () => {
   const restore = withEnv({ REMEMBRA_LOG: "json" });
   try {
