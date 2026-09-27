@@ -194,6 +194,10 @@ export class QuotaRateLimiter implements RateLimiter {
   }
 
   async reset(identity: RateLimitIdentity): Promise<void> {
+    await this.serialize(() => this.resetLocked(identity));
+  }
+
+  private async resetLocked(identity: RateLimitIdentity): Promise<void> {
     await this.windows.base!.reset(identity);
     for (const dimension of this.order) {
       for (const target of this.charged(identity, dimension)) {
@@ -202,7 +206,41 @@ export class QuotaRateLimiter implements RateLimiter {
     }
   }
 
+  /**
+   * Serializes decide-and-charge so a burst of concurrent requests cannot slip
+   * past the limit.
+   *
+   * Without this, `check` and `consume` are separated by an `await`, so N
+   * concurrent callers all observe an empty window and all of them are charged
+   * as the first request. A rate limiter a caller can bypass by sending requests
+   * in parallel is not a rate limiter — the stress matrix caught exactly that
+   * (a 500-request storm against an organization cap of 20 served all 500).
+   *
+   * The lock is held only for the synchronous window arithmetic of the
+   * in-process limiters, so contention is a promise hop, not a bottleneck. A
+   * future shared-store implementation gets the same property transactionally.
+   */
+  private tail: Promise<void> = Promise.resolve();
+
+  private async serialize<T>(fn: () => Promise<T>): Promise<T> {
+    const previous = this.tail;
+    let release!: () => void;
+    this.tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await fn();
+    } finally {
+      release();
+    }
+  }
+
   private async evaluate(identity: RateLimitIdentity, charge: boolean): Promise<RateLimitResult> {
+    return this.serialize(() => this.evaluateLocked(identity, charge));
+  }
+
+  private async evaluateLocked(identity: RateLimitIdentity, charge: boolean): Promise<RateLimitResult> {
     // Evaluate every charged dimension before touching any of them.
     const decisions: { dimension: RateLimitDimension; result: RateLimitResult }[] = [];
     for (const dimension of this.order) {

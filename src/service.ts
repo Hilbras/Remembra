@@ -9,7 +9,17 @@ import {
   type ContextResult,
   type TokenCounter,
 } from "./context.js";
-import { resolveEmbeddingProvider, embedText, embedTexts, clearEmbedCachePartition, EmbeddingProvider, EmbeddingAdapter, cosine, type EmbedCallOptions } from "./embeddings.js";
+import {
+  resolveEmbeddingProvider,
+  embedText,
+  embedTexts,
+  clearEmbedCachePartition,
+  observeProviderCall,
+  EmbeddingProvider,
+  EmbeddingAdapter,
+  cosine,
+  type EmbedCallOptions,
+} from "./embeddings.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { VERSION } from "./version.js";
@@ -451,8 +461,14 @@ export class MemoryService {
       (emb === "none" && !embeddingAdapter
         ? undefined
         : async (text: string, o?: { signal?: AbortSignal }) =>
+            // Both branches go through the provider observer, so an injected
+            // adapter is counted exactly like a constructed one. Calling the
+            // adapter directly here would silently exempt the documented
+            // embedding path from request, latency, and error metrics.
             embeddingAdapter
-              ? embeddingAdapter.embed(text, { signal: o?.signal })
+              ? observeProviderCall("embed", embeddingAdapter.id ?? emb, () =>
+                  embeddingAdapter.embed(text, { signal: o?.signal }),
+                )
               : embedText(text, emb, { signal: o?.signal }));
 
     this.extractFn =

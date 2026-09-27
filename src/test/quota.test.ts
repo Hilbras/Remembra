@@ -204,6 +204,45 @@ test("QUOTA-010: the reported remaining is the tightest budget", async () => {
   assert.equal((await quota.consume(alice)).remaining, 0);
 });
 
+test("QUOTA-010b: a concurrent burst cannot slip past the limit", async () => {
+  // Found by the V5.1.1 stress matrix. `check` and `consume` are separated by
+  // an await, so without serialization every caller in a burst observes an empty
+  // window and every one of them is admitted as the first request. A 500-request
+  // storm against an organization cap of 20 served all 500.
+  const quota = new QuotaRateLimiter({
+    base: { limit: 1_000, windowMs: 60_000 },
+    policies: { organization: { limit: 20, windowMs: 60_000 } },
+  });
+  const org = opaqueRateLimitPart("shared-org");
+  const identities = Array.from({ length: 500 }, (_, i) =>
+    id({ organization: org, user: opaqueRateLimitPart(`user-${i}`) }),
+  );
+  const results = await Promise.all(identities.map((identity) => quota.consume(identity)));
+  const served = results.filter((r) => r.allowed).length;
+  assert.equal(served, 20, `exactly the organization cap was served, got ${served}`);
+  assert.equal(
+    results.filter((r) => !r.allowed).every((r) => r.dimension === "organization"),
+    true,
+    "and every refusal is attributed to the shared dimension",
+  );
+});
+
+test("QUOTA-010c: concurrent single-identity consumers cannot exceed the limit", async () => {
+  const quota = new QuotaRateLimiter({ base: { limit: 10, windowMs: 60_000 } });
+  const subject = id({ user: opaqueRateLimitPart("hot") });
+  const results = await Promise.all(Array.from({ length: 200 }, () => quota.consume(subject)));
+  assert.equal(results.filter((r) => r.allowed).length, 10, "the base budget holds under a parallel burst");
+});
+
+test("QUOTA-010d: a concurrent check does not consume", async () => {
+  const quota = new QuotaRateLimiter({ base: { limit: 1, windowMs: 60_000 } });
+  const subject = id({ user: opaqueRateLimitPart("speculative") });
+  const checks = await Promise.all(Array.from({ length: 50 }, () => quota.check(subject)));
+  assert.equal(checks.every((c) => c.allowed), true, "asking repeatedly is still free");
+  const consumed = await Promise.all(Array.from({ length: 5 }, () => quota.consume(subject)));
+  assert.equal(consumed.filter((c) => c.allowed).length, 1, "and only one of five parallel consumes is charged");
+});
+
 test("QUOTA-011: an invalid policy is refused at construction", () => {
   for (const bad of [{ limit: 0 }, { limit: -1 }, { limit: 1.5 }, { windowMs: 0 }]) {
     assert.throws(
