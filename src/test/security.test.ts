@@ -7,7 +7,12 @@ import path from "node:path";
 import { createHttpServer, resolveListen } from "../http.js";
 import { MemoryService } from "../service.js";
 import { MemoryStore } from "../store.js";
-import { RateLimiter } from "../rate-limiter.js";
+import {
+  InProcessRateLimiter,
+  opaqueRateLimitPart,
+  rateLimitIdentity,
+} from "../rate-limiter.js";
+import { isRemembraError } from "../errors.js";
 import { InjectionDetector } from "../injection-detector.js";
 import { SensitiveDataDetector } from "../sensitive-data.js";
 
@@ -189,22 +194,32 @@ test("resolveListen: allows non-loopback with key", () => {
   assert.equal(r.host, "0.0.0.0");
 });
 
-test("rate-limiter: allows requests within the limit", () => {
-  const rl = new RateLimiter({ limit: 5, windowMs: 1000 });
+test("rate-limiter: allows requests within the limit", async () => {
+  const rl = new InProcessRateLimiter({ limit: 5, windowMs: 1000 });
+  const identity = rateLimitIdentity({ user: opaqueRateLimitPart("key-1") });
   for (let i = 0; i < 5; i++) {
-    const r = rl.check("key-1");
+    const r = await rl.consume(identity);
     assert.equal(r.allowed, true, `request ${i + 1} should be allowed`);
   }
 });
 
-test("rate-limiter: rejects requests over the limit", () => {
-  const rl = new RateLimiter({ limit: 3, windowMs: 1000 });
-  rl.check("key-a");
-  rl.check("key-a");
-  rl.check("key-a");
-  const r = rl.check("key-a");
+test("rate-limiter: rejects requests over the limit", async () => {
+  const rl = new InProcessRateLimiter({ limit: 3, windowMs: 1000 });
+  const identity = rateLimitIdentity({ user: opaqueRateLimitPart("key-a") });
+  await rl.consume(identity);
+  await rl.consume(identity);
+  await rl.consume(identity);
+  const r = await rl.consume(identity);
   assert.equal(r.allowed, false);
   assert.ok(r.retryAfterMs > 0);
+});
+
+test("rate-limiter: a raw principal can never become a quota identity", () => {
+  // Opaque identity is a security property, not a convenience (SEC-RL-002).
+  assert.throws(
+    () => rateLimitIdentity({ apikey: "sk-live-abcdefghijklmnop" } as never),
+    (err: unknown) => isRemembraError(err) && /opaque digest/.test((err as Error).message),
+  );
 });
 
 test("injection-detector: detects role override pattern", () => {

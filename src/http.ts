@@ -10,7 +10,12 @@ import { DigestInput } from "./types.js";
 import { isRemembraError, statusFor, errorLabel, publicErrorMessage, RemembraError } from "./errors.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
-import { RateLimiter } from "./rate-limiter.js";
+import {
+  InProcessRateLimiter,
+  rateLimitIdentity,
+  type RateLimiter,
+  type RateLimitIdentity,
+} from "./rate-limiter.js";
 import type { AgentContext } from "./agent.js";
 import type { TenantContext } from "./tenant.js";
 import type { TenantEntityKind, TenantEntityService } from "./tenant-entities.js";
@@ -45,6 +50,13 @@ export interface HttpOptions {
   ) => string | undefined | Promise<string | undefined>;
   /** Optional trusted tenant entity service for the V5 organization API. */
   tenantEntities?: TenantEntityService;
+  /**
+   * Rate limiter to use. Defaults to a bounded in-process sliding window.
+   * Injected rather than constructed inline so the request path depends on the
+   * interface only; a shared-store implementation can be supplied without
+   * editing this file.
+   */
+  rateLimiter?: RateLimiter;
 }
 
 const RESERVED_TENANT_KEYS = new Set([
@@ -149,17 +161,36 @@ function idempotencyKeyFor(req: http.IncomingMessage): string | undefined {
   return raw;
 }
 
-function protectedRateIdentity(req: http.IncomingMessage, tenant: TenantContext | undefined, apiKey: string | undefined): string {
+/**
+ * The protected request's rate identity, derived only from trusted context:
+ * a host-minted tenant principal, or the API key plus source address, or the
+ * address alone when neither exists. Every value is hashed, so the identity is
+ * opaque and cannot be reversed into a principal (SEC-RL-002).
+ *
+ * Dimensions that the host did not resolve are simply absent. A missing
+ * dimension never widens access — it only means that dimension is not charged.
+ */
+function protectedRateIdentity(
+  req: http.IncomingMessage,
+  tenant: TenantContext | undefined,
+  apiKey: string | undefined,
+): RateLimitIdentity {
   if (tenant) {
     const principal = tenant.principal;
-    const dimensions = [principal.organizationId, principal.projectId, principal.userId, principal.agentId]
-      .filter((value): value is string => Boolean(value))
-      .map(rateIdentityPart)
-      .join(":");
-    return `tenant:${dimensions}`;
+    return rateLimitIdentity({
+      organization: principal.organizationId ? rateIdentityPart(principal.organizationId) : undefined,
+      project: principal.projectId ? rateIdentityPart(principal.projectId) : undefined,
+      user: principal.userId ? rateIdentityPart(principal.userId) : undefined,
+      agent: principal.agentId ? rateIdentityPart(principal.agentId) : undefined,
+    });
   }
-  if (apiKey) return `api:${rateIdentityPart(apiKey)}:${rateIdentityPart(requestAddress(req))}`;
-  return `ip:${rateIdentityPart(requestAddress(req))}`;
+  if (apiKey) {
+    return rateLimitIdentity({
+      apikey: rateIdentityPart(apiKey),
+      ip: rateIdentityPart(requestAddress(req)),
+    });
+  }
+  return rateLimitIdentity({ ip: rateIdentityPart(requestAddress(req)) });
 }
 
 /**
@@ -212,11 +243,19 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
   const listenTarget = resolveListen(opts.host ?? process.env.REMEMBRA_HOST, Boolean(opts.apiKey));
   if (listenTarget.error) throw new Error(listenTarget.error);
 
-  // V4.4: rate limiter (per-key sliding window).
-  const rateLimiter = new RateLimiter({
-    limit: Number(process.env.REMEMBRA_RATE_LIMIT ?? 60),
-    windowMs: Number(process.env.REMEMBRA_RATE_WINDOW_MS ?? 60_000),
-  });
+  // V5.1.0: rate limiting depends on the interface, not the implementation, and
+  // the in-process limiter is bounded (the anonymous bucket below is reachable
+  // without a credential, so unbounded per-identity state would be a
+  // memory-exhaustion vector).
+  const rateLimiter =
+    opts.rateLimiter ??
+    new InProcessRateLimiter({
+      limit: Number(process.env.REMEMBRA_RATE_LIMIT ?? 60),
+      windowMs: Number(process.env.REMEMBRA_RATE_WINDOW_MS ?? 60_000),
+      ...(process.env.REMEMBRA_RATE_MAX_IDENTITIES
+        ? { maxIdentities: Number(process.env.REMEMBRA_RATE_MAX_IDENTITIES) }
+        : {}),
+    });
 
   // V4.4: request timeout.
   const requestTimeoutMs = Number(process.env.REMEMBRA_REQUEST_TIMEOUT_MS ?? 30_000);
@@ -349,7 +388,8 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // attempts use a separate address bucket so they cannot exhaust the
       // configured client's quota.
       if (opts.apiKey && !authorized(req, opts.apiKey)) {
-        const anonymousRate = rateLimiter.check(`anon:${rateIdentityPart(requestAddress(req))}`);
+        const anonymousIdentity = rateLimitIdentity({ ip: rateIdentityPart(requestAddress(req)) });
+        const anonymousRate = await rateLimiter.consume(anonymousIdentity);
         if (!anonymousRate.allowed) {
           metrics.inc("remembra_errors_total", { code: "RATE_LIMITED", transport: "http" });
           logEvent("warn", "rate_limit", { identity: "anonymous" }, "Remembra: rate limit exceeded");
@@ -382,11 +422,11 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       // identity resolution. Tenant dimensions provide separate quotas when
       // the host has resolved them; the API-key/address pair is the safe
       // fallback for legacy mode or a host without a tenant resolver.
-      const rateKey = protectedRateIdentity(req, tenant, opts.apiKey);
-      const rateCheck = rateLimiter.check(rateKey);
+      const rateIdentity = protectedRateIdentity(req, tenant, opts.apiKey);
+      const rateCheck = await rateLimiter.consume(rateIdentity);
       if (!rateCheck.allowed) {
         metrics.inc("remembra_errors_total", { code: "RATE_LIMITED", transport: "http" });
-        logEvent("warn", "rate_limit", { identity: rateKey }, "Remembra: rate limit exceeded");
+        logEvent("warn", "rate_limit", { identity: rateIdentity.key }, "Remembra: rate limit exceeded");
         applySecureHeaders(res);
         applyCorsHeaders(res);
         return send(
