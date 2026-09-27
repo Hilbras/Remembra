@@ -237,6 +237,41 @@ remembra recover verify
 `recover verify` performs a backend read before publishing `Healthy`; it is not
 an automatic consequence of a health request.
 
+## Graceful shutdown (V5.1.0)
+
+`SIGINT` and `SIGTERM` run a coordinated, bounded sequence. Previously the
+handler stopped accepting and called `process.exit(0)` after a hardcoded three
+seconds — it never stopped the background jobs, never stopped the webhook drain
+interval, never closed storage, and an MCP server had no handler at all, so
+`SIGTERM` took the default disposition and killed it outright.
+
+| Phase | Critical | What it does |
+|---|---|---|
+| `mark-draining` | yes | sets `draining: true`, so `/health/live` reports it and an orchestrator can take the instance out of rotation |
+| `stop-accepting` | yes | stops new connections and waits for in-flight requests |
+| `stop-background-work` | no | clears the webhook drain interval |
+| `drain-webhooks` | no | one final delivery attempt for anything queued |
+| `stop-jobs` | no | stops the job queue and decay pass |
+| `close-providers` | no | closes an injected adapter that holds a socket |
+| `close-storage` | yes | closes the SQLite handle |
+
+Properties worth relying on:
+
+- **Bounded.** One deadline covers the whole sequence
+  (`REMEMBRA_SHUTDOWN_TIMEOUT_MS`, default 10000). A wedged phase is reported as
+  `timeout` and the remaining phases are recorded as `skipped` rather than run —
+  storage is never closed while a phase may still be in flight.
+- **Idempotent.** A second signal joins the shutdown already in flight instead of
+  starting a second one, and shortens the deadline to 1s so a second `Ctrl-C`
+  exits promptly.
+- **Honest.** The exit code is `0` only for a clean shutdown. A forced timeout or
+  a failed critical phase exits `1`, which the old code could not express because
+  it always exited `0`.
+
+Two series record it: `remembra_shutdown_total{result}` and
+`remembra_shutdown_phases_total{phase,status}`. Each phase emits one
+`shutdown.complete` line with every phase and its status.
+
 ## Alerting
 
 Remembra ships the *substrate* (counters + scrape endpoint), not a notifier —

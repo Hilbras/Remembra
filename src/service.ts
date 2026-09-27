@@ -406,6 +406,9 @@ export class MemoryService {
   private readonly embeddingName: string;
   /** Set once a graceful shutdown starts; liveness reports it (V5.1.0). */
   private shuttingDown = false;
+  /** Injected adapters retained only so shutdown can close them. */
+  private readonly injectedEmbeddingAdapter?: { id?: string; close?: () => unknown };
+  private readonly injectedLlmAdapter?: { id?: string; close?: () => unknown };
   private readonly policy: MemoryPolicy;
   private readonly tokenCounter: TokenCounter;
   #backend: MemoryBackend;
@@ -432,6 +435,11 @@ export class MemoryService {
     const llm = deps.llmProvider ?? resolveLlmProvider();
     const embeddingAdapter = deps.embeddingAdapter;
     const llmAdapter = deps.llmAdapter;
+    // Retained so a graceful shutdown can close an adapter that holds a socket
+    // or keep-alive agent (V5.1.0). Constructed adapters are per-call and are
+    // deliberately not retained.
+    this.injectedEmbeddingAdapter = embeddingAdapter;
+    this.injectedLlmAdapter = llmAdapter;
     this.policy = deps.policy ?? loadMemoryPolicy();
     this.sensitiveDetector = new SensitiveDataDetector(this.policy.sensitiveData.action);
     this.llmName = llmAdapter?.id ?? llm;
@@ -584,6 +592,48 @@ export class MemoryService {
   /** True once `beginShutdown` has been called. */
   get isShuttingDown(): boolean {
     return this.shuttingDown;
+  }
+
+  /**
+   * Close provider adapters that hold a resource (V5.1.0).
+   *
+   * Adapters are constructed per call by default, so there is usually nothing to
+   * close. An injected adapter may hold a keep-alive agent or a socket, so if it
+   * exposes `close` it is called. A failure is reported, not thrown: a provider
+   * that cannot close must not prevent storage from closing behind it.
+   */
+  async closeProviders(): Promise<{ closed: string[]; failed: string[] }> {
+    const closed: string[] = [];
+    const failed: string[] = [];
+    const candidates: { id?: string; close?: () => unknown }[] = [
+      this.injectedEmbeddingAdapter,
+      this.injectedLlmAdapter,
+    ].filter((adapter): adapter is { id?: string; close?: () => unknown } => Boolean(adapter));
+    for (const adapter of candidates) {
+      if (typeof adapter.close !== "function") continue;
+      const id = adapter.id ?? "adapter";
+      try {
+        await adapter.close();
+        closed.push(id);
+      } catch (error) {
+        failed.push(id);
+        metrics.inc("remembra_errors_total", { code: "IO_ERROR", transport: "service" });
+        logEvent("warn", "provider.close_failed", { provider: id, error: errorLabel(error) });
+      }
+    }
+    return { closed, failed };
+  }
+
+  /**
+   * Close the active backend's native handle, if it has one (V5.1.0).
+   *
+   * The file backend holds no handle; the SQLite backend owns a database
+   * connection. Only the live backend is closed, and only if it exposes `close`,
+   * so this is safe to call twice and safe on a file-backed install.
+   */
+  backendForShutdown(): { close?: () => void } | undefined {
+    const backend = this.#backend as unknown as { close?: () => void };
+    return typeof backend.close === "function" ? backend : undefined;
   }
 
   async shutdownBackgroundJobs(): Promise<void> {

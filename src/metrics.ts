@@ -228,3 +228,5 @@ metrics.counter("remembra_provider_requests_total", "Provider calls by provider 
 metrics.counter("remembra_provider_errors_total", "Provider errors by provider and error code");
 metrics.counter("remembra_snapshot_operations_total", "Snapshot operations by operation and result");
 metrics.counter("remembra_recovery_operations_total", "Recovery operations by operation and result");
+metrics.counter("remembra_shutdown_total", "Process shutdowns by result (clean|forced)");
+metrics.counter("remembra_shutdown_phases_total", "Graceful shutdown phases by phase and status");

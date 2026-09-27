@@ -567,6 +567,8 @@ Events include `store`, `update`, `archive`, `revive`, `forget`, `import`.
 | `REMEMBRA_QUOTAS` | *(unset)* | per-dimension quota policies (V5.1.0), e.g. `{"organization":{"limit":1000000,"windowMs":2592000000},"user":{"limit":10000,"windowMs":86400000}}` |
 | `REMEMBRA_REQUEST_TIMEOUT_MS` | `30000` | per-request timeout |
 | `REMEMBRA_MAX_CONCURRENT` | `32` | simultaneous in-flight request cap |
+| `REMEMBRA_HEALTH_CACHE_MS` | `1000` | readiness cache window; `0` checks on every probe |
+| `REMEMBRA_SHUTDOWN_TIMEOUT_MS` | `10000` | total budget for the graceful shutdown sequence |
 | `REMEMBRA_CORS_ORIGIN` | *(unset)* | allow origin; `*` rejected when key is set |
 | `REMEMBRA_SECURE_HEADERS` | `1` | set to `0` to disable secure headers |
 | `REMEMBRA_SENSITIVE_POLICY` | `redact` | `allow` · `redact` · `reject` · `quarantine` |

@@ -4,6 +4,10 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { parse as parseYaml } from "yaml";
 import { logEvent } from "./log.js";
+
+/** The periodic webhook drain, so shutdown can stop it. Set in main(). */
+let stopWebhookDrain: () => void = () => {};
+import { ShutdownCoordinator, closeServerBounded, registerStandardShutdownPhases } from "./shutdown.js";
 import { MemoryStore } from "./store.js";
 import { VERSION } from "./version.js";
 import { SqliteBackend } from "./sqlite-backend.js";
@@ -558,19 +562,15 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
     apiKey: process.env.REMEMBRA_API_KEY,
     ...(operatorTenant ? { resolveTenantContext: () => operatorTenant } : {}),
   });
-  // Graceful shutdown: stop accepting, drain in-flight requests, then exit.
-  const shutdown = (sig: string) => {
-    logEvent("info", "shutdown", { signal: sig }, `Remembra: received ${sig}, shutting down`);
-    httpServer.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 3000).unref();
-  };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
-  startWebhookDrain();
+  stopWebhookDrain = startWebhookDrain();
+  installSignalHandlers(httpServer);
 } else {
   // MCP mode (default): stdio transport launched by an MCP client.
   await startMcp(service, operatorOptions);
-  startWebhookDrain();
+  stopWebhookDrain = startWebhookDrain();
+  // An MCP server previously had no signal handler at all, so SIGTERM took the
+  // default disposition: immediate death with no drain and no state flush.
+  installSignalHandlers(undefined);
 }
 
 /**
@@ -596,8 +596,54 @@ async function drainWebhooksOnce(): Promise<void> {
  * Drain due webhook deliveries on a bounded interval. A drain failure is
  * logged and retried on the next tick; it never interrupts the write path.
  */
-function startWebhookDrain(): void {
-  if (!webhookDispatcher) return;
+/**
+ * Install SIGINT/SIGTERM handlers that run the coordinated shutdown sequence.
+ *
+ * A second signal does not start a second shutdown — the coordinator returns the
+ * in-flight promise — but it does shorten the deadline, so an operator who sends
+ * a second Ctrl-C gets a prompt exit instead of waiting out the full budget.
+ */
+function installSignalHandlers(server: { close(cb: () => void): unknown; closeAllConnections?(): void } | undefined): void {
+  const deadlineMs = Number(process.env.REMEMBRA_SHUTDOWN_TIMEOUT_MS ?? 10_000);
+  const coordinator = registerStandardShutdownPhases(new ShutdownCoordinator(), {
+    service,
+    ...(server ? { closeServer: () => closeServerBounded(server, Math.max(1_000, Math.floor(deadlineMs / 2))) } : {}),
+    stopBackgroundWork: () => stopWebhookDrain(),
+    ...(webhookDispatcher ? { drainWebhooks: async () => { await service.drainWebhooks(); } } : {}),
+    closeProviders: () => service.closeProviders(),
+    closeStorage: () => {
+      const backend = service.backendForShutdown();
+      if (backend && typeof (backend as { close?: () => void }).close === "function") {
+        (backend as { close?: () => void }).close?.();
+      }
+    },
+  });
+
+  let signals = 0;
+  const onSignal = (sig: string): void => {
+    signals++;
+    logEvent("info", "shutdown.signal", { signal: sig, attempt: signals }, `Remembra: received ${sig}, shutting down`);
+    void coordinator
+      .shutdown(sig, signals > 1 ? 1_000 : deadlineMs)
+      .then((report) => {
+        // A forced shutdown is not a clean one, and the exit code says so.
+        process.exit(report.clean ? 0 : 1);
+      })
+      .catch((error) => {
+        logEvent("error", "shutdown.failed", { error: String(error).slice(0, 200) });
+        process.exit(1);
+      });
+  };
+  process.on("SIGINT", () => onSignal("SIGINT"));
+  process.on("SIGTERM", () => onSignal("SIGTERM"));
+}
+
+/**
+ * Start the periodic webhook drain. Returns a stop function so a graceful
+ * shutdown can clear the interval instead of leaving it running until the exit.
+ */
+function startWebhookDrain(): () => void {
+  if (!webhookDispatcher) return () => {};
   let running = false;
   const timer = setInterval(() => {
     if (running) return;
@@ -619,6 +665,7 @@ function startWebhookDrain(): void {
   timer.unref();
   // Deliver anything queued by a previous process immediately on start.
   void service.drainWebhooks().catch(() => {});
+  return () => clearInterval(timer);
 }
 
 // -------------------------------------------------------------------------
