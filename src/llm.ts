@@ -14,6 +14,7 @@ import {
   type LlmProviderName,
 } from "./provider-adapters.js";
 import { MemoryType } from "./types.js";
+import { observeProviderCall } from "./embeddings.js";
 
 export type LlmProvider = LlmProviderName;
 export type { LlmAdapter } from "./provider-adapters.js";
@@ -84,7 +85,9 @@ async function chat(
   opts?: LlmCallOptions,
 ): Promise<string> {
   const adapter = opts?.adapter ?? createLlmAdapter(provider);
-  return adapter.complete({ system, user }, { signal: opts?.signal });
+  return observeProviderCall("llm", provider, () =>
+    adapter.complete({ system, user }, { signal: opts?.signal }),
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -62,7 +62,7 @@ stays exempt so unauthenticated readiness probes keep working.
 | `remembra_history_snapshots_total` | counter | — | History pre-images written (3.8.0). Growth rate ≈ content-changing updates. |
 | `remembra_encryption_migrations_total` | counter | `mode` | `remembra encrypt`/`decrypt` files converted (3.8.0). |
 | `remembra_info` | gauge | `version` | Build info, always `1`. |
-| `remembra_jobs_total` | counter | `type`, `outcome` | Background queue lifecycle: `queued`, `completed`, `failed`, or `cancelled`. |
+| `remembra_jobs_total` | counter | `type`, `outcome` | Background queue lifecycle: `queued`, `completed`, `failed`, or `cancelled`. `type` is bounded to the six types this build registers, with any host-registered type counted as `other`, so an embedder cannot grow the series by registering a per-tenant job type. |
 | `remembra_job_failures_total` | counter | `type` | Jobs that exhausted their bounded retry budget. |
 | `remembra_job_queue_depth` | gauge | — | Jobs waiting for a worker. |
 | `remembra_job_queue_running` | gauge | — | Jobs currently executing. |
@@ -70,7 +70,46 @@ stays exempt so unauthenticated readiness probes keep working.
 | `remembra_embedding_batch_failures_total` | counter | — | Failed bounded embedding items. |
 | `remembra_batch_items_total` | counter | `operation`, `result` | Batch item outcomes (`store`, `update`, `delete`, `export`, `search`). |
 | `remembra_webhook_events_total` | counter | `result` | Webhook events by result: `published`, `rejected`, or `error`. |
-| `remembra_webhook_deliveries_total` | counter | `result` | Webhook deliveries by result: `queued`, `delivered`, `failed`, `dropped_capacity`, `dropped_payload`. |
+| `remembra_webhook_deliveries_total` | counter | `result` | Webhook deliveries by result: `queued`, `delivered`, `failed`, `dropped_capacity`, `dropped_payload`, `retired`. |
+| `remembra_rate_limit_hits_total` | counter | `dimension`, `transport` | Rate-limit rejections. `dimension` is a closed enum from the quota contract (`global`, `organization`, `project`, `user`, `agent`, `apikey`, `ip`, `endpoint`, `provider`) plus `anonymous` for a pre-authentication rejection, so a 429 can be attributed to the budget that refused it without ever naming a principal. |
+| `remembra_memory_reads_total` | counter | `operation` | Read-path invocations: `search`, `list`, `get`. |
+| `remembra_provider_requests_total` | counter | `provider`, `direction` | Provider calls, `direction` = `embed` or `llm`. |
+| `remembra_provider_errors_total` | counter | `provider`, `code` | Provider failures by classified error code. |
+| `remembra_provider_failures_total` | counter | `provider`, `code` | Alias of the above, retained for existing alert rules. |
+| `remembra_snapshot_operations_total` | counter | `operation`, `result` | Snapshot `export`/`import`/`migrate`/`migrate_dry_run` as `started`/`completed` pairs. A `started` with no matching `completed` is itself the signal; failures also surface in `remembra_errors_total` with a snapshot error code. |
+| `remembra_recovery_operations_total` | counter | `operation`, `result` | Recovery-state transitions by event, plus explicit `read_only` entries and failures. `operation` is the closed transition enum, so it cannot grow. |
+
+### Percentiles (V5.1.0)
+
+Every `histogram` series above is queryable for quantiles through
+`MetricsRegistry.quantile`/`summary`, which interpolate inside the bucket the
+quantile falls in — the same approximation `histogram_quantile` makes
+server-side, at the fixed bucket resolution the series was registered with:
+
+```ts
+import { metrics } from "@hilbras/remembra/api-contract"; // or the internal registry
+metrics.summary("remembra_http_request_duration_seconds", { route: "search" });
+// { p50, p95, p99, count, sum }
+```
+
+A series with no observations reports `0` for all three rather than a fabricated
+latency, and `sum`/`count` stay exact even though the quantiles are estimates.
+`metrics.seriesCount(name)` returns the observed series count for a name, which
+is the cardinality guard to alert on.
+
+### Series that were removed (V5.1.0)
+
+Seven series that V4.6.0 declared were never recorded by any code path, so a
+dashboard on them rendered empty and the emptiness looked like data loss. The
+four provider and storage series are now genuinely instrumented. The
+memory-count gauges (`remembra_memory_count_{active,archived,deleted}`), the
+quality-rate gauges (`remembra_duplicate_rate`, `remembra_conflict_rate`,
+`remembra_stale_memory_rate`), `remembra_estimated_cost_usd`, and
+`remembra_token_usage_total` were **removed**: each needs a full backend scan, a
+quality computation, or token usage the adapter contract does not report, so any
+value would be invented. If they are wanted later they should be computed on a
+bounded schedule and registered with a real `collect`. See
+[`v5.1.0-audit.md`](v5.1.0-audit.md) finding M4.
 
 Keyed-batch and gate events appear in the structured log, not as metrics:
 `batch_idempotency.release_failed` when a released claim cannot be persisted,
@@ -100,9 +139,35 @@ scrape_configs:
       x-api-key: YOUR_KEY
 ```
 
-## Health — `GET /health`
+## Health
 
-No auth (readiness probes carry no key). Liveness **and** readiness in one.
+`/health` is the legacy combined route: no auth (readiness probes carry no
+key), liveness and readiness in one. It is unchanged and still works, but V5.1.0
+added the separated routes, and they answer different questions:
+
+| Route | Auth | Answers | Cost |
+|---|---|---|---|
+| `GET /health/live` | none | is this process able to respond? | process state only |
+| `GET /health` | none | can the backend be read? | storage read + recovery refresh |
+| `GET /health/ready` | key when configured | same check as `/health` | same |
+| `GET /health/storage` | key when configured | backend identity, fallback, cache occupancy | storage read |
+| `GET /health/provider` | key when configured | provider configuration state | none |
+
+Prefer `/health/live` for a liveness probe. It performs no storage read and no
+durable write, so it keeps reporting `200` while storage is broken, and it sets
+`draining: true` once a graceful shutdown begins so an orchestrator can drain
+the instance before the process exits. `/health` and `/health/ready` are the
+routes that legitimately fail when storage fails.
+
+Because `/health` is unauthenticated and unrated, its result is cached for
+`REMEMBRA_HEALTH_CACHE_MS` (default 1000) and concurrent probes share one
+check, so a poller cannot drive one storage scan per request. Set that variable
+to `0` if a deployment needs a live answer on every probe.
+
+No health response contains memory content, record counts, storage paths, error
+message text, or provider keys — only the classified error label such as
+`IO_ERROR`, and only provider *configuration*, never reachability.
+
 The legacy `status` field remains `ok`/`unready`; the additional `state` field
 is the canonical recovery state:
 

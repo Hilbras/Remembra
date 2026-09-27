@@ -77,6 +77,60 @@ export class MetricsRegistry {
     return this.counters.get(name)?.get(labelKey(labels));
   }
 
+  /**
+   * Estimated quantile of a recorded histogram, interpolated inside the bucket
+   * the quantile falls in. Returns 0 for a series with no observations, so a
+   * dashboard shows "no data" rather than a fabricated latency.
+   *
+   * The estimate is bucket-resolution, which is the same approximation
+   * `histogram_quantile` makes server-side; the buckets are fixed at
+   * construction so the resolution is known rather than accidental.
+   */
+  quantile(name: string, q: number, labels?: Labels): number {
+    if (!Number.isFinite(q) || q < 0 || q > 1) return 0;
+    const d = this.hists.get(name)?.get(labelKey(labels));
+    if (!d || d.count === 0) return 0;
+    const buckets = this.meta.get(name)?.buckets ?? DEFAULT_BUCKETS;
+    const rank = q * d.count;
+    for (let i = 0; i < buckets.length; i++) {
+      const cumulative = d.counts[i]!;
+      if (cumulative < rank) continue;
+      const lower = i === 0 ? 0 : buckets[i - 1]!;
+      const upper = buckets[i]!;
+      const below = i === 0 ? 0 : d.counts[i - 1]!;
+      const inBucket = cumulative - below;
+      if (inBucket <= 0) return upper;
+      return lower + ((rank - below) / inBucket) * (upper - lower);
+    }
+    // Above the last finite bucket: everything is at or beyond its upper edge.
+    return buckets[buckets.length - 1] ?? 0;
+  }
+
+  /**
+   * p50/p95/p99 of a histogram in one call, for the exposition and for
+   * dashboards that need the triple together.
+   */
+  summary(name: string, labels?: Labels): { p50: number; p95: number; p99: number; count: number; sum: number } {
+    const d = this.hists.get(name)?.get(labelKey(labels));
+    return {
+      p50: this.quantile(name, 0.5, labels),
+      p95: this.quantile(name, 0.95, labels),
+      p99: this.quantile(name, 0.99, labels),
+      count: d?.count ?? 0,
+      sum: d?.sum ?? 0,
+    };
+  }
+
+  /** Names of every registered series, for a self-describing exposition. */
+  names(): string[] {
+    return [...this.meta.keys()].sort();
+  }
+
+  /** Observed label-key count per series — the cardinality guard for tests. */
+  seriesCount(name: string): number {
+    return Math.max(this.counters.get(name)?.size ?? 0, this.hists.get(name)?.size ?? 0);
+  }
+
   reset(): void {
     this.counters.clear();
     this.hists.clear();
@@ -148,11 +202,29 @@ metrics.counter("remembra_provider_failures_total", "Provider failures by provid
 metrics.histogram("remembra_embedding_latency_seconds", "Embedding call latency (seconds)");
 metrics.histogram("remembra_llm_latency_seconds", "LLM call latency by operation (seconds)");
 metrics.histogram("remembra_storage_latency_seconds", "Store/update/forget latency (seconds)");
-metrics.counter("remembra_token_usage_total", "Tokens consumed by provider and direction (input|output)");
-metrics.gauge("remembra_estimated_cost_usd", "Cumulative estimated cost in USD", () => []);
-metrics.gauge("remembra_memory_count_active", "Current active memory count", () => []);
-metrics.gauge("remembra_memory_count_archived", "Current archived memory count", () => []);
-metrics.gauge("remembra_memory_count_deleted", "Total ever-deleted memory count", () => []);
-metrics.gauge("remembra_duplicate_rate", "Current duplicate rate in store", () => []);
-metrics.gauge("remembra_conflict_rate", "Current contradiction rate in store", () => []);
-metrics.gauge("remembra_stale_memory_rate", "Fraction of memories past decay threshold", () => []);
+// ---------------------------------------------------------------------------
+// Series that V4.6.0 declared but that nothing ever recorded were removed in
+// V5.1.0 rather than left in place. A declared series with no data point is
+// worse than an absent one: a dashboard built on it renders empty and the
+// absence looks like data loss rather than "not implemented".
+//
+//   remembra_memory_count_{active,archived,deleted}  — need a full backend scan
+//   remembra_duplicate_rate / conflict_rate /
+//   stale_memory_rate                                 — need a full scan plus a
+//                                                      quality computation
+//   remembra_estimated_cost_usd                        — depends on token usage
+//   remembra_token_usage_total                         — the adapter contract
+//                                                      returns a string and
+//                                                      reports no usage, so any
+//                                                      number would be invented
+//
+// If these are wanted, they should be computed on a bounded schedule and
+// registered with a real `collect`, not declared and left empty. See
+// docs/v5.1.0-audit.md finding M4.
+// --- V5.1.0: the series roadmap §21 names, added where they were missing ---
+metrics.counter("remembra_rate_limit_hits_total", "Rate-limit rejections by dimension and transport");
+metrics.counter("remembra_memory_reads_total", "memory_read invocations by operation");
+metrics.counter("remembra_provider_requests_total", "Provider calls by provider and direction (embed|llm)");
+metrics.counter("remembra_provider_errors_total", "Provider errors by provider and error code");
+metrics.counter("remembra_snapshot_operations_total", "Snapshot operations by operation and result");
+metrics.counter("remembra_recovery_operations_total", "Recovery operations by operation and result");

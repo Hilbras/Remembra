@@ -55,7 +55,38 @@ export async function embedText(
     throw new Error("embeddings disabled (REMEMBRA_EMBEDDINGS=none)");
   }
   const adapter = opts?.adapter ?? createEmbeddingAdapter(provider);
-  return adapter.embed(text, { signal: opts?.signal });
+  return observeProviderCall("embed", provider, () => adapter.embed(text, { signal: opts?.signal }));
+}
+
+/**
+ * The single choke point for provider traffic, so request/error counts and
+ * latency are recorded uniformly for injected and constructed adapters alike.
+ *
+ * `provider` is a closed enum and `direction` is a literal, so neither label can
+ * grow. The error is counted by its classified code and then rethrown
+ * unchanged: this observes, it never rewrites what the caller sees.
+ */
+export async function observeProviderCall<T>(
+  direction: "embed" | "llm",
+  provider: string,
+  call: () => Promise<T>,
+): Promise<T> {
+  const startedAt = performance.now();
+  metrics.inc("remembra_provider_requests_total", { provider, direction });
+  try {
+    const result = await call();
+    metrics.observe(
+      direction === "embed" ? "remembra_embedding_latency_seconds" : "remembra_llm_latency_seconds",
+      (performance.now() - startedAt) / 1000,
+      { provider },
+    );
+    return result;
+  } catch (error) {
+    const code = error instanceof RemembraError ? error.code : "PROVIDER_ERROR";
+    metrics.inc("remembra_provider_errors_total", { provider, code });
+    metrics.inc("remembra_provider_failures_total", { provider, code });
+    throw error;
+  }
 }
 
 /**

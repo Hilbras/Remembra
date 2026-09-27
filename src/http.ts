@@ -436,6 +436,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         const anonymousRate = await rateLimiter.consume(anonymousIdentity);
         if (!anonymousRate.allowed) {
           metrics.inc("remembra_errors_total", { code: "RATE_LIMITED", transport: "http" });
+          metrics.inc("remembra_rate_limit_hits_total", { dimension: "anonymous", transport: "http" });
           logEvent("warn", "rate_limit", { identity: "anonymous" }, "Remembra: rate limit exceeded");
           applySecureHeaders(res);
           applyCorsHeaders(res);
@@ -470,6 +471,12 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
       const rateCheck = await rateLimiter.consume(rateIdentity);
       if (!rateCheck.allowed) {
         metrics.inc("remembra_errors_total", { code: "RATE_LIMITED", transport: "http" });
+        // The dimension is a bounded enum from the quota contract, never a
+        // tenant or key value, so this label cannot grow without bound.
+        metrics.inc("remembra_rate_limit_hits_total", {
+          dimension: rateCheck.dimension ?? "unknown",
+          transport: "http",
+        });
         logEvent("warn", "rate_limit", { identity: rateIdentity.key }, "Remembra: rate limit exceeded");
         applySecureHeaders(res);
         applyCorsHeaders(res);

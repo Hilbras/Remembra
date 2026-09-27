@@ -704,12 +704,15 @@ export class MemoryService {
     if (next === this.recoveryState) return;
     if (this.recoveryStateStore) await this.recoveryStateStore.write(next, event);
     this.recoveryState = next;
+    // `event` is a closed transition enum, so this label cannot grow.
+    metrics.inc("remembra_recovery_operations_total", { operation: event, result: "applied" });
   }
 
   /** Enter explicit read-only recovery mode; all service writes fail closed. */
   async enterReadOnly(): Promise<void> {
     await this.ensureRecoveryInitialized();
     const next = transitionRecoveryState(this.recoveryState, "read_only");
+    metrics.inc("remembra_recovery_operations_total", { operation: "read_only", result: "entered" });
     if (!this.recoveryStateStore) {
       this.recoveryState = next;
       return;
@@ -721,6 +724,7 @@ export class MemoryService {
       await this.recoveryStateStore.write(next, "read_only");
     } catch (error) {
       this.recoveryState = "Failed";
+      metrics.inc("remembra_recovery_operations_total", { operation: "read_only", result: "failed" });
       throw error instanceof RemembraError
         ? error
         : new RemembraError("SERVICE_UNAVAILABLE", "recovery state could not be written", { cause: error });
@@ -1065,7 +1069,11 @@ export class MemoryService {
     // Provenance/trust travel in the input now (plan §4.3): callers that say
     // nothing store as { sourceType: manual } → trusted; digests pass
     // conversation provenance below and land unverified (§4.9).
+    const storeStartedAt = performance.now();
     const memory = await this.#backend.store(parsed, embedding, tenant);
+    metrics.observe("remembra_storage_latency_seconds", (performance.now() - storeStartedAt) / 1000, {
+      operation: "store",
+    });
     if (tenant && !memoryBelongsToTenant(memory, tenant)) {
       throw new RemembraError("TENANT_REQUIRED", "tenant backend did not preserve the trusted organization");
     }
@@ -1082,6 +1090,7 @@ export class MemoryService {
     q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean; includeExpired?: boolean; includeFuture?: boolean; includeQuarantined?: boolean; includeArchived?: boolean; candidates?: string[] } & AgentReadOptions,
     execution: SearchExecutionOptions = {},
   ) {
+    metrics.inc("remembra_memory_reads_total", { operation: "search" });
     const t0 = performance.now();
     assertSearchNotCancelled(execution.signal);
     const tenant = await this.freshTenantFilter(q, "read");
@@ -1615,6 +1624,7 @@ export class MemoryService {
     /** V4.5: include future-dated memories (validFrom > now). */
     includeFuture?: boolean;
   } & AgentReadOptions) {
+    metrics.inc("remembra_memory_reads_total", { operation: "list" });
     const tenant = await this.freshTenantFilter(q, "read");
     let memories = await this.#backend.all(q.includeArchived ?? false, tenant);
     const now = Date.now();
@@ -1756,6 +1766,7 @@ export class MemoryService {
 
   /** Fetch one memory with its links resolved (audit Phase 8: graph view). */
   async get(id: string, options: AgentReadOptions = {}) {
+    metrics.inc("remembra_memory_reads_total", { operation: "get" });
     const tenant = await this.freshTenantFilter(options, "read");
     const memory = await this.#backend.get(id, tenant);
     this.assertCanRead(memory, id, options);
@@ -2603,6 +2614,10 @@ export class MemoryService {
    * Written by `remembra export <file>` as JSON.
    */
   async exportSnapshot(options: AgentReadOptions = {}) {
+    // Snapshot operations are counted as started/completed pairs; a gap between
+    // the two is itself the signal, and failures surface through
+    // remembra_errors_total with a snapshot error code.
+    metrics.inc("remembra_snapshot_operations_total", { operation: "export", result: "started" });
     const tenant = await this.freshTenantFilter(options, "read", "snapshot.create");
     const visible = (await this.#backend.all(true, tenant)).filter((m) => this.canRead(m, options));
     const visibleIds = new Set(visible.map((m) => m.id));
@@ -2631,6 +2646,7 @@ export class MemoryService {
       return createSignedSnapshot(snapshot, this.snapshotKey);
     }
     published();
+    metrics.inc("remembra_snapshot_operations_total", { operation: "export", result: "completed" });
     return snapshot;
   }
 
@@ -2753,6 +2769,7 @@ export class MemoryService {
 
   /** Restore a fully preflighted snapshot; existing/duplicate IDs are skipped. */
   async importSnapshot(data: unknown, options: AgentReadOptions = {}): Promise<{ imported: number; skipped: number }> {
+    metrics.inc("remembra_snapshot_operations_total", { operation: "import", result: "started" });
     const prepared = await this.prepareSnapshotImport(data, options);
     let imported = 0;
     let skipped = prepared.skipped;
@@ -2771,6 +2788,7 @@ export class MemoryService {
       skipped,
       organizationId: prepared.tenant?.organizationId ?? null,
     });
+    metrics.inc("remembra_snapshot_operations_total", { operation: "import", result: "completed" });
     return { imported, skipped };
   }
 
@@ -2785,6 +2803,10 @@ export class MemoryService {
     key: Buffer | Uint8Array,
     options: AgentReadOptions & { dryRun?: boolean } = {},
   ): Promise<SnapshotMigrationResult> {
+    metrics.inc("remembra_snapshot_operations_total", {
+      operation: options.dryRun ? "migrate_dry_run" : "migrate",
+      result: "started",
+    });
     // A verifiably migration-owned gate is this operation's own, so an
     // interrupted run stays resumable; any other gate still fails closed.
     const tenant = await this.freshTenantFilter(options, "read", "snapshot.restore", true);

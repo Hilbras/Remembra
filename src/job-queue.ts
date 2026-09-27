@@ -12,6 +12,27 @@ export type JobType =
   | "maintenance"
   | (string & {});
 
+/**
+ * The job types this build registers itself. `JobType` stays an open union so a
+ * host can register its own, but the metric label is closed: an unregistered
+ * type is counted as `other` rather than creating a series per type. Without
+ * this, a host that registered a per-tenant job type would grow the registry
+ * and every scrape without bound. See docs/v5.1.0-audit.md finding M3.
+ */
+const KNOWN_JOB_TYPES: ReadonlySet<string> = new Set([
+  "embed-memory",
+  "reindex-memory",
+  "consolidate-memory",
+  "validate-memory",
+  "archive-memory",
+  "maintenance",
+]);
+
+/** A bounded metric label for a job type. Never returns a caller-chosen value. */
+function jobTypeLabel(type: JobType): string {
+  return KNOWN_JOB_TYPES.has(type) ? type : "other";
+}
+
 export type JobState = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export interface JobContext {
@@ -148,7 +169,7 @@ export class JobQueue {
       settled: false,
     };
     this.queue.push(job);
-    metrics.inc("remembra_jobs_total", { type, outcome: "queued" });
+    metrics.inc("remembra_jobs_total", { type: jobTypeLabel(type), outcome: "queued" });
     this.pump();
     return { id: job.id, type, done };
   }
@@ -252,7 +273,7 @@ export class JobQueue {
       ...(error === undefined ? {} : { error }),
     };
     job.resolve(result);
-    metrics.inc("remembra_jobs_total", { type: job.type, outcome: state });
+    metrics.inc("remembra_jobs_total", { type: jobTypeLabel(job.type), outcome: state });
     try {
       this.onSettled?.({ id: job.id, type: job.type, state, attempts });
     } catch (callbackError) {
@@ -264,7 +285,7 @@ export class JobQueue {
       );
     }
     if (state === "failed") {
-      metrics.inc("remembra_job_failures_total", { type: job.type });
+      metrics.inc("remembra_job_failures_total", { type: jobTypeLabel(job.type) });
       try {
         this.onError?.(error, { id: job.id, type: job.type, attempts });
       } catch (callbackError) {
