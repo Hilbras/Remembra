@@ -713,14 +713,14 @@ export class SqliteBackend implements MemoryBackend {
         });
       }
 
-      this.prepare(`
+      const write = this.prepare(`
           UPDATE memories SET
             type = ?, content = ?, scope = ?, tenant_id = ?, project_id = ?, user_id = ?, agent_id = ?, tags = ?, importance = ?,
             confidence = ?, trust = ?, provenance = ?, owner = ?, access = ?,
             valid_from = ?, valid_until = ?, observed_at = ?, superseded_by = ?, meta = ?, retention = ?,
             relations = ?, version = ?, created_at = ?, updated_at = ?,
             last_seen = ?, archived_at = ?, embedding = ?
-          WHERE id = ? AND ${tenantWhere("", tenant).sql}
+          WHERE id = ? AND ${tenantWhere("", tenant).sql} AND version = ?
         `)
         .run(
           updated.type,
@@ -752,7 +752,24 @@ export class SqliteBackend implements MemoryBackend {
           embedToBlob(updated.embedding),
           updated.id,
           ...scoped.params,
+          // The compare-and-swap predicate. `withLock` serializes only within one
+          // backend instance, so without this a second instance reading the same
+          // version also writes, both are told they succeeded, and one write is
+          // silently lost. See docs/v5.6.0-audit.md finding S1.
+          existingRow.version,
         );
+
+      if (write.changes === 0) {
+        // The row moved under us. Distinguish "gone" from "moved on", because
+        // the caller needs to know whether to re-read or to give up.
+        const current = this.prepare(`SELECT version FROM memories AS m WHERE m.id = ? AND ${scoped.sql}`)
+          .get(memory.id, ...scoped.params) as { version: number } | undefined;
+        if (!current) throw new RemembraError("NOT_FOUND", `memory ${memory.id} not found`);
+        throw new RemembraError(
+          "CONFLICT",
+          `version mismatch for ${memory.id}: expected ${existingRow.version}, stored ${current.version}`,
+        );
+      }
 
       if (this.ftsEnabled && this.deleteFtsStatement && this.insertFtsStatement && updated.content !== existingRow.content) {
         this.deleteFtsStatement.run(existingRow.rowid);

@@ -9,6 +9,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A cross-instance lost update on the SQLite backend, with a success
+  response.** `MemoryBackend` requires mutating calls to be safe under
+  "cross-process concurrency (advisory lock)", and `SqliteBackend` only
+  satisfied the same-process half: `withLock` is a promise queue over one
+  instance's field, with no `BEGIN IMMEDIATE` and no `db.transaction()` anywhere
+  in the file. `update` read the row, checked `expectedVersion` in application
+  code, and then wrote `WHERE id = ?` with no version predicate — so two
+  instances that read the same version both passed the check and both wrote.
+  Reproduced 5 times out of 5 with two instances over one `data.sqlite`: both
+  were told they wrote version 2, and one write was discarded with no error.
+  The write is now a compare-and-swap on the version it read, and a zero-row
+  result distinguishes `NOT_FOUND` from `CONFLICT` so a caller does not retry a
+  write whose row is gone. Six tests in `src/test/sqlite-cas.test.ts` cover the
+  race, the error text, delete-in-between, and the two behaviours that must not
+  change. Found by
+  [`v5.6.0-audit.md`](docs/v5.6.0-audit.md) finding S1, the first task of the
+  distributed-runtime milestone — reachable before any distributed work, and
+  routine after it.
+
 ### Known limitation, now measured
 
 The native `RemoveEnvironmentCleanupHook` abort previously documented as a test
