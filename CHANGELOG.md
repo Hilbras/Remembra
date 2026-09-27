@@ -105,11 +105,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Release evidence
 
-- Node 18.20.8 and Node 24.21.0: build, 565 suite, 139 security, 52 recovery,
-  28 Python, and 39 documentation checks, 0 production audit findings, a
-  241-file package dry run, and a clean install **from the npm registry** that
-  imports every published subpath, verifies a webhook signature, and refuses a
-  tampered body.
+- Node 18.20.8 and Node 24.21.0: build, 567 suite, 139 security, 52 recovery,
+  28 Python, and 39 documentation checks, 0 production audit findings, and a
+  241-file package dry run.
+- Published as `@hilbras/remembra@5.4.0` on npm and `hilbras-remembra 5.4.0`
+  on PyPI. Both were then verified **from their registries**, not from the
+  source tree: the npm install imports every published subpath, verifies a
+  webhook signature, and refuses a tampered body; the PyPI install into a fresh
+  virtual environment pulls zero dependencies and reports the same frozen
+  batch limits; the published wheel and sdist hash-match the artifacts built
+  from this commit. A body signed by the TypeScript sender is accepted by the
+  Python receiver, while a tampered, stale, mis-keyed, re-serialized, or
+  replayed one is refused.
 - V5.4.0 deliberately does not claim distributed quotas, distributed workers,
   or the advanced retrieval engine: V5.1–V5.3 remain unfinished. Public batch
   embedding remains unavailable, and delivery state is single-host.
