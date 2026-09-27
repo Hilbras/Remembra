@@ -7,6 +7,8 @@ import os from "node:os";
 import path from "node:path";
 import { FileWebhookDeliveryStore, verifyWebhookSignature } from "../webhooks.js";
 
+import { VERSION } from "../version.js";
+
 const SECRET = "4d".repeat(32);
 
 interface Delivery {
@@ -116,7 +118,9 @@ test("WEBHOOK-CLI-005: --version and --help answer without configuration or side
         REMEMBRA_LLM: "ollama",
       });
       assert.equal(result.code, 0, `${flag} must succeed: ${result.stderr}`);
-      assert.equal(result.stdout.trim(), "5.4.0");
+      // Read the single-source constant rather than a literal, so a version bump
+      // does not turn this into a failing test.
+      assert.equal(result.stdout.trim(), VERSION);
       assert.equal(await fs.stat(root).then(() => true, () => false), false, `${flag} must not create a data directory`);
     }
 

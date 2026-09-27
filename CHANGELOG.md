@@ -9,6 +9,119 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [5.5.0] — 2026-09-27
+
+Production infrastructure: the roadmap §17–§24 milestone the plan calls
+V5.1.0, released as 5.5.0 because V5.4.0 shipped first and the roadmap's
+`5.1.0` is now a downgrade. See
+[`docs/v5.5.0-compatibility.md`](docs/v5.5.0-compatibility.md) for the
+renumbered milestone table and the full compatibility statement.
+
+### Rate limiting and quotas
+
+- Added a `RateLimiter` interface with async `check`, `consume`, and `reset`,
+  implemented in-process and injected through `HttpOptions.rateLimiter`, so a
+  shared-store implementation can be supplied without editing the request path.
+- `check` now decides without charging. Previously a caller could not ask
+  whether it had budget without spending it.
+- Bounded the limiter's identity map. A window was previously reclaimed only if
+  its own key was checked again after expiry, so an identity used once and
+  abandoned lived for the process lifetime — 50,000 abandoned keys retained
+  50,001 entries, reachable pre-authentication through the anonymous address
+  bucket. A `maxIdentities` ceiling with a deterministic sweep and
+  least-recently-used eviction replaces it, and pruning no longer depends on
+  `Math.random()`.
+- `rateLimitIdentity` refuses any dimension value that is not a hex digest, so a
+  raw principal or API key fails loudly at the call site instead of quietly
+  becoming a rate-limit key.
+- Added `REMEMBRA_QUOTAS` for per-dimension policies across organization,
+  project, user, agent, API key, IP, endpoint, and provider, layered on top of
+  the base budget so adding a policy can only make a deployment stricter.
+  Precedence is the declared dimension order, charging is all-or-nothing, and a
+  429 now names the dimension that refused it without ever naming a principal.
+- **Fixed:** decide and charge were separated by an `await`, so a concurrent
+  burst bypassed the quota entirely — 500 requests against an organization cap
+  of 20 were all admitted. Now serialized, with `reset`.
+
+### Health
+
+- Added `/health/live`, `/health/ready`, `/health/storage`, and
+  `/health/provider`. Liveness is public and reads process state only, so it
+  stays `200` when storage is broken and reports `draining` once a shutdown
+  begins. The dependency routes sit behind authentication.
+- **Fixed:** `/health` is unauthenticated and unrated but performed a full
+  storage scan, a recovery-state refresh, and a durable recovery-state write on
+  every call. Its result is now cached briefly with single-flight — 25
+  sequential probes cost one storage scan, 20 concurrent probes cost one.
+- **Fixed:** `/metrics` was rate limited despite `rate-limiter.ts` documenting it
+  as exempt, so a scraper lost observability during rate-limit storms.
+- No health response contains memory content, record counts, storage paths,
+  error message text, or provider keys — only the classified error label and
+  provider *configuration*.
+
+### Metrics
+
+- Added p50/p95/p99 over recorded histograms, plus `names()` and
+  `seriesCount()` for introspection and cardinality alerting. An unobserved
+  series reports `0` rather than a fabricated latency; `sum` and `count` stay
+  exact.
+- Added the six §21 series that did not exist, including
+  `remembra_rate_limit_hits_total{dimension}`.
+- **Fixed:** seven further series were declared and never written by anything —
+  the four provider and storage series now have a real choke point in
+  `observeProviderCall`, so injected and constructed adapters are counted alike.
+  The three memory-count gauges, three quality-rate gauges, the cost gauge, and
+  `remembra_token_usage_total` were **removed** rather than left empty: each
+  needs a full scan, a quality computation, or usage the adapter contract does
+  not report, and a series that can never report is a worse lie than an absent
+  one.
+- Bounded the job-type metric label to a closed set at both the enqueue and
+  completion sites, so a host cannot create one series per tenant by registering
+  a per-tenant job type.
+
+### Logging
+
+- Every log line now carries `requestId`, `operation`, and `durationMs` through
+  an `AsyncLocalStorage` request context, so events from the service, storage,
+  provider, and job-queue layers correlate without threading anything by hand.
+- Added a field policy: content and path fields are dropped unless
+  `REMEMBRA_DEBUG` is set, and identity fields are replaced by a short stable
+  digest so correlation survives without a raw identifier reaching every log
+  aggregator.
+- **Fixed:** `retrieval.debug` logged the raw query text behind
+  `REMEMBRA_DEBUG_RETRIEVAL` rather than the documented `REMEMBRA_DEBUG`, and
+  `migration_start` logged a storage path unconditionally.
+
+### Graceful shutdown
+
+- Replaced a six-line handler that always exited `0` with a coordinated
+  sequence: mark draining, stop accepting, stop background work, drain webhooks,
+  stop jobs, close providers, close storage. One deadline bounds the whole
+  sequence; a wedged phase is reported `timeout` with later phases `skipped`, so
+  storage is never closed under an in-flight write. A second signal joins the
+  in-flight shutdown and shortens the deadline, and a forced shutdown exits `1`.
+- **Fixed:** MCP mode installed no signal handler at all, so `SIGTERM` took the
+  default disposition and killed an MCP server with no drain and no
+  recovery-state flush.
+
+### Testing
+
+- Added a bounded production stress matrix: 100 and 1K concurrency, large and
+  oversized payloads, large search, provider timeout storms, rate-limit storms
+  in-process and over HTTP, quota storms, database contention, shutdown and
+  restart under load, file-descriptor leaks, and metric cardinality. No
+  wall-clock thresholds, so it is reproducible on a slow runner.
+
+### Release evidence
+
+- Node 18.20.8 and Node 24.21.0: build, 684 suite, 142 security, 52 recovery,
+  28 Python, and 40 documentation checks, 0 production audit findings, and both
+  benchmarks within their documented ceilings.
+- This release does not claim distributed quotas, distributed workers, or the
+  advanced retrieval engine. The rate limiter, quota ledger, webhook queue, and
+  idempotency ledger remain single-host and in-process; the interfaces exist so a
+  shared implementation can be added later without changing the request path.
+
 ## [5.4.0] — 2026-09-26
 
 ### Developer platform

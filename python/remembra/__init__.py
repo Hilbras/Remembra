@@ -42,7 +42,7 @@ from .types import (
     MAX_BATCH_SEARCH_RESULTS,
 )
 
-__version__ = "5.4.0"
+__version__ = "5.5.0"
 
 __all__ = [
     "Remembra",
