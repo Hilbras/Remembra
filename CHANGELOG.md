@@ -41,10 +41,14 @@ and metric surfaces are untouched.
 - Node 18.20.8 and Node 24.21.0: build, 688 suite, 142 security, 52 recovery,
   28 Python, and 41 documentation checks, 0 production audit findings, and both
   benchmarks within their documented ceilings.
-- Verified from both registries after publication: a clean npm install imports
-  every published subpath and refuses a tampered webhook body; a fresh Python
-  venv pulls zero dependencies and reports the same frozen batch limits; the
-  published wheel and sdist hash-match the artifacts built from this tag.
+- Verified from both registries after publication, against the **installed**
+  package rather than this tree: a clean npm install imports every published
+  subpath and refuses a tampered webhook body; a fresh Python venv pulls zero
+  dependencies and reports the same frozen batch limits; the published wheel and
+  sdist hash-match the artifacts built from this tag. The seven field-policy cases
+  above were run against the published `dist/log.js` — a bare filename survives,
+  an absolute path and a `../..` reference are refused, and a nested path, a
+  three-deep query, and an object inside an array are all dropped.
 
 ## [5.5.0] — 2026-09-27
 
