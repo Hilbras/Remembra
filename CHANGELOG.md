@@ -117,6 +117,16 @@ renumbered milestone table and the full compatibility statement.
 - Node 18.20.8 and Node 24.21.0: build, 684 suite, 142 security, 52 recovery,
   28 Python, and 40 documentation checks, 0 production audit findings, and both
   benchmarks within their documented ceilings.
+- Published as `@hilbras/remembra@5.5.0` on npm and `hilbras-remembra 5.5.0` on
+  PyPI, and verified **from both registries** rather than from this tree: the npm
+  install imports every published subpath, verifies a webhook signature, and
+  refuses a tampered body; the PyPI install into a fresh virtual environment
+  pulls zero dependencies and reports the same frozen batch limits; and the
+  published wheel and sdist hash-match the artifacts built from this tag. A live
+  server from the published package serves all five health routes with the
+  intended auth rules, honours `REMEMBRA_QUOTAS` with a `429` that names a
+  hashed dimension, and shuts down cleanly on `SIGTERM` in both HTTP and MCP
+  mode.
 - This release does not claim distributed quotas, distributed workers, or the
   advanced retrieval engine. The rate limiter, quota ledger, webhook queue, and
   idempotency ledger remain single-host and in-process; the interfaces exist so a
