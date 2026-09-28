@@ -11,6 +11,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **An optional Redis adapter** (`src/redis.ts`, published as
+  `@hilbras/remembra/redis`) providing `RedisLockProvider` and
+  `RedisQuotaRateLimiter`. `redis` is an **optional peer dependency** and not a
+  runtime dependency; the only reference to it is a dynamic `import()`. There is
+  no silent fallback: with `REMEMBRA_REDIS_URL` unset the process imports no
+  Redis code at all, and with it set but unreachable, startup fails rather than
+  degrading to per-instance state that would report a limit it is not enforcing.
+  Locks use `SET … NX PX` so the lease and its expiry are one atomic operation,
+  and renew/release are owner-checked by the server.
+  Quota is evaluated as **one Lua script across every dimension** rather than one
+  limiter per dimension, because the in-process limiter's mutex does not cross
+  instances and interleaved dimension checks would let a shared organization
+  budget be exceeded. Precedence and policy validation match the in-process
+  limiter exactly, and each dimension keeps its own window.
+  The script bodies are verified by running the shipped text through a Lua 5.3 VM
+  (`scripts/verify-redis-lua.mjs`, 28 checks, not a release gate). **A live Redis
+  server is not exercised by the test suite.**
+
 - **A durable worker** (`src/durable-worker.ts`, published as
   `@hilbras/remembra/worker`), the shared-execution counterpart to the in-memory
   `JobQueue`, which is unchanged and remains what a single process uses. Its

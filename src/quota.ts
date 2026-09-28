@@ -63,7 +63,14 @@ export interface QuotaOptions {
 const DEFAULT_BASE: QuotaPolicy = { limit: 60, windowMs: 60_000 };
 const MAX_CONFIG_LENGTH = 16 * 1024;
 
-function assertPolicy(dimension: string, policy: QuotaPolicy, source: string): QuotaPolicy {
+/**
+ * Validate one policy.
+ *
+ * Exported so the shared-store limiter validates with the *same* function rather
+ * than a second copy. Two copies of this is how a deployment ends up accepting a
+ * limit in one configuration and rejecting it in another for no stated reason.
+ */
+export function assertPolicy(dimension: string, policy: QuotaPolicy, source: string): QuotaPolicy {
   const { limit, windowMs } = policy ?? {};
   if (!Number.isSafeInteger(limit) || limit < 1) {
     throw new RemembraError("INVALID_INPUT", `${source} dimension "${dimension}" needs a positive integer limit`);

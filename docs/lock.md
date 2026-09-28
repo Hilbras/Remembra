@@ -206,3 +206,85 @@ expiry, which is the right outcome for work that is genuinely still running.
 
 `drain(maxRounds)` claims and runs to completion, awaiting the work it claims —
 useful for a one-shot drain and for tests.
+
+---
+
+# The Redis adapter
+
+Roadmap §26. `src/redis.ts`, published as `@hilbras/remembra/redis`.
+
+## Redis is optional, and it stays optional
+
+`redis` is an **optional peer dependency**. It is not in `dependencies`, and not
+even in `devDependencies` — keeping it uninstalled is what makes the
+missing-package startup failure a real test rather than a mocked one. The only
+reference to the package is a dynamic `import()` inside `loadRedis`.
+
+| `REMEMBRA_REDIS_URL` | Result |
+| --- | --- |
+| unset, empty, or whitespace | single-host. No Redis code is imported and no client is built. |
+| `redis://…` / `rediss://…`, package present | shared state, connected at startup. |
+| `redis://…`, package absent | **startup fails**, naming `npm install redis`. |
+| `redis://…`, connection refused | **startup fails.** |
+| any other scheme | rejected as `INVALID_INPUT`. |
+
+There is no fallback. A deployment that asked for a shared budget and quietly got
+a per-instance one would report a limit it is not enforcing, while looking
+healthy in `/health` — so an unreachable Redis is a failure to start, not a
+degraded mode.
+
+## Why this is one script and not N limiters
+
+The obvious composition — a Redis limiter per quota dimension, wired into the
+existing `QuotaRateLimiter` — is wrong. `QuotaRateLimiter` serializes its
+dimensions with an **in-process** mutex, so N instances would interleave their
+dimension checks and a shared organization budget could be exceeded by concurrent
+requests. That is check-then-act, the shape that produced the lost-update defect
+in the V5.6.0 audit, one level up.
+
+So `RedisQuotaRateLimiter` evaluates **every** dimension in one Lua script and
+charges only if all of them allow. A refused request charges nothing anywhere.
+Precedence is `RATE_LIMIT_DIMENSIONS` with the base budget last — identical to
+`QuotaRateLimiter`, so switching stores cannot change which budget reports a
+refusal. Policies are validated by the *same exported* `assertPolicy`, so a
+configuration accepted in one mode is accepted in the other.
+
+Two details that are easy to get wrong, and were:
+
+- **Each dimension keeps its own window.** Pruning every key against the largest
+  window present would leave a short window's stale entries in place, so `ZCARD`
+  would count hours-old requests and a 60-per-minute budget would behave as
+  60-per-hour. A limit that reads as configured and enforces over the wrong
+  period is worse than no limit.
+- **Members must be unique.** `ZADD` on an existing member *overwrites*, so two
+  requests sharing a member collapse into one and the second is invisible to the
+  limit. Members carry a per-instance tag and a counter.
+
+Only dimensions the request actually carries are charged, matching
+`QuotaRateLimiter.charged`: a dimension the host did not resolve cannot be
+charged, and the base budget already covers that request.
+
+## Locking
+
+`RedisLockProvider` uses `SET … NX PX`, so the lease and its expiry are one atomic
+server-side operation — there is no window in which a lock exists without an
+expiry. `renew` and `release` are owner-checked **by the server** through Lua, so
+a lease that a peer reclaimed and re-took between our expiry and our release is
+never cleared. Both return a boolean rather than throwing, because "someone else
+holds it now" is an answer, not an error.
+
+## What is and is not verified here
+
+Verified: the script bodies, executed as the text shipped in `src/redis.ts`
+through a real Lua 5.3 VM with a shim of the Redis commands they use —
+per-dimension windows, precedence, tightest-budget reporting, the same-millisecond
+member hazard, non-consuming `check`, window boundaries matched against
+`InProcessRateLimiter`, and owner-checked renew/release. Plus the TypeScript
+wiring under test: which keys are charged, what reaches the script, and how a
+reply maps back to a decision.
+
+**Not verified: a live Redis server.** Every test against the adapter uses a fake
+client whose replies are canned, and there is no Redis in this project's test
+environment. Before relying on this in production, run it against a real server —
+in particular confirm the script loads under your Redis version and that
+`EVALSHA`/script caching behaves as the client expects.

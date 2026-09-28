@@ -89,6 +89,11 @@
       "import": "./dist/durable-worker.js",
       "default": "./dist/durable-worker.js"
     },
+    "./redis": {
+      "types": "./dist/redis.d.ts",
+      "import": "./dist/redis.js",
+      "default": "./dist/redis.js"
+    },
     "./sqlite-recovery": {
       "types": "./dist/sqlite-recovery.d.ts",
       "import": "./dist/sqlite-recovery.js",
@@ -162,5 +167,13 @@
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^24.0.0",
     "typescript": "^5.8.0"
+  },
+  "peerDependencies": {
+    "redis": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "redis": {
+      "optional": true
+    }
   }
 }
