@@ -618,6 +618,11 @@ export interface SearchQuery {
    * visible rather than replacing it with nothing.
    */
   includeSuperseded?: boolean;
+  /**
+   * A unified retrieval budget (roadmap §37). `maxItems` overrides `limit`; the rest
+   * are additional bounds rather than replacements for it.
+   */
+  budget?: RetrievalBudget;
 }
 
 /** Each scoring component exposed so callers can inspect why a memory ranked
@@ -635,9 +640,55 @@ export interface RetrievalExplanation {
 
 /** Output envelope from the retrieval pipeline — wraps both the ranked memories
     and optional per-memory explanations. */
+/**
+ * One budget for a retrieval call (roadmap §37, V5.7.0).
+ *
+ * Four dimensions used to be independent parameters threaded separately, so a caller
+ * could satisfy two and violate the third without noticing — the failure that comes
+ * from expressing "fit this into 8k tokens and 16KB and 200ms" as three unrelated
+ * arguments. `maxTokens` is applied by the context assembler, which is where it
+ * already lived; the rest are applied during selection, and this object is what
+ * ties them together for a caller.
+ */
+export interface RetrievalBudget {
+  /** Maximum results returned. Overrides `limit`. */
+  maxItems?: number;
+  /** Maximum token count of the assembled context. Applied by the assembler. */
+  maxTokens?: number;
+  /** Maximum UTF-8 bytes of the selected results' content. */
+  maxBytes?: number;
+  /**
+   * Wall-clock budget for selection. Exceeding it returns the best results found so
+   * far, never an error — degrading into "no answer" is the opposite of degrading.
+   */
+  maxLatencyMs?: number;
+}
+
+/** What a budget actually did, so a partial answer is never mistaken for a whole one. */
+export interface BudgetReport {
+  requested: {
+    maxItems?: number;
+    maxTokens?: number;
+    maxBytes?: number;
+    maxLatencyMs?: number;
+  };
+  elapsed_ms: number;
+  items: number;
+  bytes: number;
+  /** True when any bound removed something. */
+  truncated: boolean;
+  /** Which bounds were responsible, so "fewer than expected" is explainable. */
+  truncated_by: Array<"maxItems" | "maxBytes" | "maxLatency">;
+}
+
 export interface SearchResults {
   results: Memory[];
   explanations?: RetrievalExplanation[];
+  /**
+   * Present only when a budget was supplied. Its absence means "no budget was
+   * asked for", which is different from "the budget removed nothing".
+   */
+  budget?: BudgetReport;
 }
 
 /** Backup file envelope (remembra export / import). */

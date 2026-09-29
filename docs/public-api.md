@@ -645,3 +645,45 @@ Two properties worth stating:
 Nothing is deleted. Suppression affects a result *set*; the store still holds every
 version, each is still readable by id, and the old copy still records what superseded
 it.
+
+### Retrieval budget
+
+One object carries all four §37 dimensions, so a caller can express "fit this into
+8k tokens **and** 16KB **and** 200ms" rather than satisfying two bounds and
+violating the third.
+
+| Field | Applied by | Meaning |
+|---|---|---|
+| `maxItems` | search | Maximum results. Overrides `limit`. |
+| `maxTokens` | context assembler | Maximum token count of the assembled context. |
+| `maxBytes` | search | Maximum UTF-8 **bytes** of the selected results' content. |
+| `maxLatencyMs` | search | Wall-clock budget for selection. |
+
+A budget is optional. When one is supplied the response carries a `budget` report:
+
+```json
+"budget": {
+  "requested": { "maxItems": 5, "maxBytes": 200 },
+  "elapsed_ms": 3.2,
+  "items": 3,
+  "bytes": 176,
+  "truncated": true,
+  "truncated_by": ["maxBytes"]
+}
+```
+
+Three properties worth stating, because each is a decision rather than an
+implementation detail:
+
+- **Exceeding `maxLatencyMs` returns the best results found so far, never an
+  error.** The bound exists so retrieval degrades under load, and degrading into
+  *no* answer is the opposite of degrading. Silent truncation would be its own lie,
+  which is why the report says which bound was responsible.
+- **A budget never returns an empty result set** while candidates exist. A bound
+  that returns nothing has not degraded, it has failed, so the first result is
+  always admitted — `maxBytes: 1` yields one result, not zero.
+- **The report blames only the caller's own bounds.** When the pre-existing default
+  limit truncates the list, that is not reported as a budget truncation.
+
+A malformed budget (`0`, negative, or fractional) is rejected with `INVALID_INPUT`
+rather than silently repaired, matching the existing `maxTokens` validation.

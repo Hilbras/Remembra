@@ -11,6 +11,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **One retrieval budget object** covering all four roadmap §37 dimensions.
+  `maxBytes` and `maxLatencyMs` did not exist anywhere in the tree; `maxTokens` and
+  `maxItems` existed as unrelated parameters, so a caller could satisfy two bounds
+  and violate the third without noticing. The budget is optional, and when supplied
+  the response carries a report saying which bound was binding. Exceeding
+  `maxLatencyMs` returns the best results found so far rather than an error — the
+  bound exists so retrieval degrades under load, and degrading into *no* answer is
+  the opposite — and a budget never starves a query of every result, so
+  `maxBytes: 1` yields one result rather than none. A malformed budget is rejected
+  rather than silently repaired.
+
 - **Superseded memories are excluded from search results by default.** A query for
   the current policy no longer returns v1 and v2 side by side, which the V5.7.0
   audit reproduced. `includeSuperseded` brings the older version back, because "what

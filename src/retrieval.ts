@@ -1,4 +1,14 @@
-import { Memory, SearchQuery, SearchResults, RetrievalExplanation, TrustLevel, MemoryType } from "./types.js";
+import {
+  Memory,
+  SearchQuery,
+  SearchResults,
+  RetrievalExplanation,
+  TrustLevel,
+  MemoryType,
+  type BudgetReport,
+  type RetrievalBudget,
+} from "./types.js";
+import { RemembraError } from "./errors.js";
 import { cosine } from "./embeddings.js";
 import { logEvent } from "./log.js";
 
@@ -318,6 +328,27 @@ const CJK_RANGE =
  * because CJK is not space-delimited: without this a Chinese query would only ever
  * match an entire run of characters.
  */
+/**
+ * Reject a malformed budget rather than silently repairing it.
+ *
+ * A budget of `maxItems: 0` would otherwise return nothing while reporting
+ * `truncated: false` — a result that claims to be complete and is not. Validating
+ * matches `selectContextMemories`, which already refuses a `maxTokens` below 1.
+ */
+function assertValidBudget(budget: RetrievalBudget): void {
+  for (const [name, value] of [
+    ["maxItems", budget.maxItems],
+    ["maxTokens", budget.maxTokens],
+    ["maxBytes", budget.maxBytes],
+    ["maxLatencyMs", budget.maxLatencyMs],
+  ] as const) {
+    if (value === undefined) continue;
+    if (!Number.isInteger(value) || value < 1) {
+      throw new RemembraError("INVALID_INPUT", `retrieval budget ${name} must be a positive integer`);
+    }
+  }
+}
+
 export function tokenize(text: string): string[] {
   const out: string[] = [];
   for (const run of text.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
@@ -799,6 +830,14 @@ export function searchQ(
   policy: RetrievalPolicyOptions = {},
 ): SearchResults {
   const now = Date.now();
+  const elapsed = (): number =>
+    (typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAtRef;
+  // The latency bound covers this pipeline's work. Embedding happens upstream in the
+  // service, so including a provider round trip here would make the bound
+  // unpredictable in a way the caller cannot reason about.
+  const startedAtRef = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const budget = q.budget;
+  if (budget) assertValidBudget(budget);
   const requireRoleTrust = policy.requireRoleTrust ?? true;
   const diversity = policy.diversity ?? true;
   const { terms, temporal } = extractQuery(q.query);
@@ -807,7 +846,9 @@ export function searchQ(
   // the backend's total where it knows one, so a paginated candidate set still gets
   // common terms discounted against the real corpus.
   const termStats = buildTermStatistics(memories, terms, q.totalDocs ?? memories.length);
-  const effectiveLimit = q.limit ?? 10;
+  // `budget.maxItems` overrides `limit` rather than composing with it, so a caller
+  // that supplies both gets one predictable answer instead of two rules.
+  const effectiveLimit = budget?.maxItems ?? q.limit ?? 10;
   const explain = q.explain ?? false;
 
   // Step 2: filter + compute per-mem keyword / vector component scores.
@@ -953,9 +994,81 @@ export function searchQ(
   let finalRanked: Memory[];
   if (diversity && queryVec && queryVec.length > 0 && ranked.length > 1) {
     const mmrCap = Math.max(effectiveLimit * 10, 100);
-    finalRanked = mmrDedup(ranked.slice(0, mmrCap), queryVec, effectiveLimit);
+    // With a budget, the selection count is deliberately *not* effectiveLimit: the
+    // budget has to be the thing that truncates, or its report cannot tell a caller
+    // that it removed something. Without one, the pre-existing limit applies.
+    const selectionCount = budget ? ranked.length : effectiveLimit;
+    finalRanked = mmrDedup(ranked.slice(0, Math.max(mmrCap, selectionCount)), queryVec, selectionCount);
   } else {
-    finalRanked = ranked.slice(0, effectiveLimit);
+    finalRanked = budget ? ranked : ranked.slice(0, effectiveLimit);
+  }
+
+  // Step 10c: the remaining budget bounds, applied to the already-ordered list.
+  //
+  // A budget that removes something says so. `maxLatency` returns the best results
+  // found so far rather than an error: the bound exists so retrieval degrades under
+  // load, and degrading into *no* answer is the opposite of degrading. Silent
+  // truncation would be its own lie, so the report is on the result and a caller that
+  // needs completeness can check while one that needs an answer gets one.
+  let budgetReport: BudgetReport | undefined;
+  if (budget) {
+    const deadline =
+      budget.maxLatencyMs !== undefined ? startedAtRef + budget.maxLatencyMs : undefined;
+    const truncatedBy: BudgetReport["truncated_by"] = [];
+    const kept: Memory[] = [];
+    let bytes = 0;
+    let deadlineHit = false;
+    for (const memory of finalRanked) {
+      if (kept.length >= effectiveLimit) {
+        // Only the *budget's* item cap counts as a budget truncation. When the cap
+        // came from the pre-existing default limit, the budget removed nothing and
+        // saying otherwise would blame it for behaviour it did not cause.
+        if (budget.maxItems !== undefined) truncatedBy.push("maxItems");
+        break;
+      }
+      // The first result is always admitted. A budget exists to bound work, and a
+      // bound that returns *nothing* has not degraded — it has failed. With
+      // `maxLatencyMs: 0` the strict reading would return zero results, which is
+      // strictly worse than returning the single best one. Past the first, the
+      // bounds apply as written.
+      if (kept.length > 0) {
+        if (deadline !== undefined && elapsed() >= budget.maxLatencyMs!) {
+          truncatedBy.push("maxLatency");
+          deadlineHit = true;
+          break;
+        }
+        const size = Buffer.byteLength(memory.content, "utf8");
+        if (budget.maxBytes !== undefined && bytes + size > budget.maxBytes) {
+          truncatedBy.push("maxBytes");
+          break;
+        }
+        bytes += size;
+      } else {
+        bytes += Buffer.byteLength(memory.content, "utf8");
+      }
+      kept.push(memory);
+    }
+    void deadlineHit;
+    if (finalRanked.length > kept.length && truncatedBy.length === 0 && budget.maxItems !== undefined) {
+      // The list is shorter than the candidate pool with no bound having named
+      // itself. The only way that happens is a budget item cap reached exactly at the
+      // end, so attribute it rather than reporting a complete result.
+      truncatedBy.push("maxItems");
+    }
+    finalRanked = kept;
+    budgetReport = {
+      requested: {
+        ...(budget.maxItems !== undefined ? { maxItems: budget.maxItems } : {}),
+        ...(budget.maxTokens !== undefined ? { maxTokens: budget.maxTokens } : {}),
+        ...(budget.maxBytes !== undefined ? { maxBytes: budget.maxBytes } : {}),
+        ...(budget.maxLatencyMs !== undefined ? { maxLatencyMs: budget.maxLatencyMs } : {}),
+      },
+      elapsed_ms: Math.round(elapsed() * 10) / 10,
+      items: finalRanked.length,
+      bytes,
+      truncated: truncatedBy.length > 0,
+      truncated_by: [...new Set(truncatedBy)],
+    };
   }
 
   // Step 11: explanations (optional, off by default).
@@ -990,7 +1103,9 @@ export function searchQ(
     );
   }
 
-  return { results: finalRanked, explanations };
+  // Absent means "no budget was asked for", which is not the same claim as
+  // "a budget removed nothing" — so the field only appears when one was supplied.
+  return { results: finalRanked, explanations, ...(budgetReport ? { budget: budgetReport } : {}) };
 }
 
 /**
