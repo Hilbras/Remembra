@@ -121,6 +121,14 @@ reviewed-and-unit-tested until a Redis instance is in CI.
 
 ### Fixed
 
+- **A cold-start race in ledger initialization.** The identity file, the schema,
+  and the generation row become visible at three separate moments, so two
+  processes starting against one fresh directory could observe an intermediate
+  state and refuse to start. The integrity checks are unchanged; a state only a
+  live initialiser can produce is now polled for up to two seconds first, so
+  genuine damage is still refused, just after the wait. Reverting the fix
+  reproduces it: **1 failure in 24 simultaneous cold starts without, 0 with.**
+
 - **A cold-start race in the batch idempotency ledger.** Two processes
   starting against a fresh ledger directory could observe each other's
   not-yet-`0600` `claims.sqlite` — better-sqlite3 creates the file with the
