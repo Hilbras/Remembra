@@ -117,12 +117,18 @@ test("configured embedding reranking breaks fused ties deterministically", () =>
     mem({ id: "a", content: "same keyword", embedding: [0, 1], updatedAt }),
     mem({ id: "z", content: "same keyword", embedding: [1, 0], updatedAt }),
   ];
-  const baseline = searchQ(tied, { query: "same keyword", limit: 2 }, [1, 0], { diversity: false });
-  const reranked = searchQ(tied, { query: "same keyword", limit: 2 }, [1, 0], { diversity: false, reranking: true });
+  // `dedupeExact: false` is required, not incidental. V5.7.0 T04 made exact
+  // duplicate suppression the default, and this test's two memories have identical
+  // text — so with the default they collapse to one and there is no tie left to
+  // break. The test is about reranking, and deduplication is orthogonal to it, so it
+  // opts out rather than the default being weakened.
+  const opts = { diversity: false, dedupeExact: false } as const;
+  const baseline = searchQ(tied, { query: "same keyword", limit: 2, dedupeExact: false }, [1, 0], opts);
+  const reranked = searchQ(tied, { query: "same keyword", limit: 2, dedupeExact: false }, [1, 0], { ...opts, reranking: true });
   assert.deepEqual(reranked.results.map((m) => m.id), ["z", "a"]);
   assert.deepEqual(
     reranked.results.map((m) => m.id),
-    searchQ(tied, { query: "same keyword", limit: 2 }, [1, 0], { diversity: false, reranking: true }).results.map((m) => m.id),
+    searchQ(tied, { query: "same keyword", limit: 2, dedupeExact: false }, [1, 0], { ...opts, reranking: true }).results.map((m) => m.id),
   );
   assert.ok(baseline.results.length === 2);
 });

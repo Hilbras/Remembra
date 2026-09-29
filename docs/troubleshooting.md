@@ -179,3 +179,24 @@ subpaths are side-effect-free and are covered by package smoke tests.
 Set `REMEMBRA_DEBUG=1` for bounded diagnostic logging, inspect structured
 provider events without logging keys or bodies, and use `GET /metrics` and
 `GET /audit` on an authenticated deployment. See [observability](observability.md).
+
+### The tenant benchmark aborts, and the release gate fails
+
+`npm run bench:tenant` (and therefore `release:check`) could fail with:
+
+```
+Aborted (core dumped)  node::RemoveEnvironmentCleanupHook(...)  Statement::~Statement()
+```
+
+This is the same native teardown abort described above — load-dependent, Node 24
+only, occurring *after* the measurement is written. `scripts/run-tests.mjs` has
+retried it for the test suite for some time, which is why the suite is reliable
+while the tenant benchmark was not: it made the **release gate** fail
+nondeterministically on work that had already completed.
+
+`scripts/bench-tenant.sh` now applies the same bounded retry
+(`REMEMBRA_BENCH_ATTEMPTS`, default 3). A run that fails for any other reason
+still fails on the first attempt, with its real exit code — verified by removing
+the sample script and confirming the benchmark exits non-zero after exhausting its
+attempts. Nothing about the measurement is weakened; the identical sample is simply
+re-run.

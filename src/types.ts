@@ -324,6 +324,18 @@ export const searchInputShape = {
   includeQuarantined: z.boolean().optional(),
   /** V4.5: include archived memories. */
   includeArchived: z.boolean().optional(),
+  /**
+   * Collapse results whose text is identical. Default true.
+   *
+   * V5.7.0. This is an escape hatch for a default-on behaviour change: a caller
+   * who wants every copy of a repeated memory to be visible asks for `false`.
+   */
+  dedupeExact: z.boolean().optional(),
+  /**
+   * Additionally collapse identical text from the same provenance. Default false.
+   * V5.7.0.
+   */
+  dedupeSameSource: z.boolean().optional(),
 };
 export const SearchInput = z.object(searchInputShape);
 export type SearchInput = z.infer<typeof SearchInput>;
@@ -562,6 +574,23 @@ export interface SearchQuery {
   candidates?: string[];
   /** Internal corpus size used to keep keyword IDF stable for candidate searches. */
   totalDocs?: number;
+  /**
+   * Collapse results whose text is identical. Default true.
+   *
+   * Two records of the same statement are one answer to a question; returning both
+   * spends context on a repeat. Suppresses results only — nothing is deleted.
+   */
+  dedupeExact?: boolean;
+  /**
+   * Additionally collapse identical text recorded from the same provenance.
+   * Default false, and deliberately asymmetric with `dedupeExact`.
+   *
+   * Identical text from two *different* sources is often corroboration rather than
+   * duplication — the same fact independently noted by a conversation and an agent.
+   * Collapsing it would discard the second source, which is a worse error than
+   * showing a repeat.
+   */
+  dedupeSameSource?: boolean;
 }
 
 /** Each scoring component exposed so callers can inspect why a memory ranked

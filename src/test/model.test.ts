@@ -11,7 +11,7 @@ import { MemoryService } from "../service.js";
 import { createHttpServer } from "../http.js";
 import { RemembraError } from "../errors.js";
 import { MemoryType, Memory, SNAPSHOT_FORMAT } from "../types.js";
-import { search, TRUST_POINTS } from "../retrieval.js";
+import { search, searchQ, TRUST_POINTS } from "../retrieval.js";
 
 async function tempStore(): Promise<MemoryStore> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-model-"));
@@ -396,13 +396,18 @@ test("trust layer orders ranking: system > verified > trusted > unverified (§4.
   assert.equal(TRUST_POINTS.trusted, 2);
   assert.equal(TRUST_POINTS.unverified, -8);
 
+  // Identical text is a convenient way to hold the lexical score constant and vary
+  // only trust — but V5.7.0 T04 made exact duplicate suppression the default, so
+  // these four collapse to one and the ordering cannot be observed. `dedupeExact:
+  // false` opts out: this test is about the trust layer, and deduplication is
+  // orthogonal to it.
   const store = [
     mem({ id: "u", trust: "unverified", content: "shared truth" }),
     mem({ id: "s", trust: "system", content: "shared truth" }),
     mem({ id: "v", trust: "verified", content: "shared truth" }),
     mem({ id: "t", trust: "trusted", content: "shared truth" }),
   ];
-  const r = search(store, { query: "shared truth", scope: "global" });
+  const r = searchQ(store, { query: "shared truth", scope: "global", dedupeExact: false }).results;
   assert.deepEqual(r.map((m) => m.id), ["s", "v", "t", "u"]);
 });
 

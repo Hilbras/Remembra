@@ -151,6 +151,107 @@ export function isExactDuplicate(a: Memory, b: Memory): boolean {
 }
 
 /**
+ * The provenance a memory was recorded from, for same-source grouping.
+ *
+ * `sourceType` alone is far too coarse — every hand-written memory is `manual`,
+ * so grouping on it would collapse unrelated notes that happen to read the same.
+ * The finer identifiers are included when present, so "the same agent in the same
+ * run" and "the same conversation" are distinguishable from "some agent".
+ */
+function sourceKey(m: Memory): string {
+  const p = m.provenance;
+  return [p.sourceType, p.agentId ?? "", p.conversationId ?? "", p.sessionId ?? "", p.runId ?? ""].join("|");
+}
+
+export interface DedupOptions {
+  /**
+   * Collapse memories with identical text. On by default, because two records of
+   * the same statement are one answer to a question, and returning both spends
+   * context on a repeat.
+   */
+  exact?: boolean;
+  /**
+   * Additionally collapse identical text recorded from the *same* provenance.
+   *
+   * Off by default, and deliberately asymmetric: identical text from two different
+   * sources is often two genuine memories — the same fact independently recorded by
+   * a conversation and an agent is corroboration, not duplication. Collapsing it
+   * would discard the second source, which is a worse error than showing a repeat.
+   */
+  sameSource?: boolean;
+  /**
+   * Maximum entries considered. The pass is O(n) over the ranked list, but a caller
+   * asking for 10 results should not have 10,000 deduplicated to find them.
+   */
+  window?: number;
+}
+
+const DEFAULT_DEDUP_WINDOW = 200;
+
+export interface DedupResult {
+  memories: Memory[];
+  /** Ids removed, in the order they were removed. */
+  removed: Array<{ id: string; keptId: string; reason: "exact" | "same_source" }>;
+}
+
+/**
+ * Remove duplicate results. Suppresses, never deletes.
+ *
+ * The audit found that the only existing pass — `mmrDedup` — is a diversity
+ * *reordering* that classifies nothing, and in the default
+ * `embeddingProvider: none` configuration it returns its input unchanged. This is
+ * detection instead, and it needs no embeddings, so it works in the mode most
+ * deployments actually run.
+ *
+ * The **first** occurrence wins, and the list is already sorted by score, so the
+ * surviving copy is the best-ranked one. That makes the result stable for a given
+ * ranking rather than dependent on input order.
+ */
+export function dedupeResults(ranked: readonly Memory[], options: DedupOptions = {}): DedupResult {
+  const exact = options.exact ?? true;
+  const sameSource = options.sameSource ?? false;
+  if (!exact && !sameSource) return { memories: [...ranked], removed: [] };
+
+  const window = Math.max(1, options.window ?? DEFAULT_DEDUP_WINDOW);
+  const seenText = new Map<string, Memory>();
+  const seenTextAndSource = new Map<string, Memory>();
+  const kept: Memory[] = [];
+  const removed: DedupResult["removed"] = [];
+
+  for (const memory of ranked.slice(0, window)) {
+    const text = duplicateKey(memory);
+    // An empty normalised key would collapse every blank-ish memory together.
+    if (text === "") {
+      kept.push(memory);
+      continue;
+    }
+    const source = sameSource ? sourceKey(memory) : "";
+    const pairKey = `${source}\u0000${text}`;
+    const priorPair = sameSource ? seenTextAndSource.get(pairKey) : undefined;
+    if (priorPair) {
+      removed.push({ id: memory.id, keptId: priorPair.id, reason: "same_source" });
+      continue;
+    }
+    const priorText = seenText.get(text);
+    if (priorText) {
+      // Same text, different source: corroboration, kept when sameSource is off.
+      if (!sameSource) {
+        removed.push({ id: memory.id, keptId: priorText.id, reason: "exact" });
+        continue;
+      }
+    }
+    if (!seenText.has(text)) seenText.set(text, memory);
+    if (sameSource && !seenTextAndSource.has(pairKey)) seenTextAndSource.set(pairKey, memory);
+    kept.push(memory);
+  }
+
+  // Anything past the window is passed through untouched rather than silently
+  // dropped: the window bounds the work, it does not define the result set.
+  kept.push(...ranked.slice(window));
+  return { memories: kept, removed };
+}
+
+/**
  * Relative credit for each lexical signal. Fractions are relative to a field's
  * exact-match credit, so a tag or a prefix hit is worth a *fraction* of the same
  * term matching prose, not an independently calibrated number.
@@ -814,7 +915,19 @@ export function searchQ(
     ranked = rerankWithEmbed(queryVec, ranked);
   }
 
-  // Step 10: MMR diversity (semantic mode with multiple vectors).
+  // Step 10a: duplicate suppression. Runs *before* MMR and on the already-sorted
+  // list, so the surviving copy of a duplicate is the best-ranked one and the
+  // result is stable for a given ranking. It needs no embeddings, which is the
+  // point: the audit found the previous pass returned its input unchanged in the
+  // default `embeddingProvider: none` configuration.
+  const dedupe = dedupeResults(ranked, {
+    exact: q.dedupeExact ?? true,
+    sameSource: q.dedupeSameSource ?? false,
+    window: Math.max(effectiveLimit * 10, 100),
+  });
+  ranked = dedupe.memories;
+
+  // Step 10b: MMR diversity (semantic mode with multiple vectors).
   // Cap the MMR candidate pool to `limit * 10` (min 100) to keep the
   // O(K·pool) loop bounded — full N-scan is prohibitively expensive at
   // audit scale (10K memories × 768-dim vectors).

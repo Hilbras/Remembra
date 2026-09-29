@@ -11,6 +11,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Exact and same-source duplicate suppression in search results**
+  (`src/retrieval.ts`), on by default. A repeated memory previously occupied
+  several slots in a result set — and the audit found the only existing pass,
+  `mmrDedup`, is a diversity *reordering* that classifies nothing, returning its
+  input unchanged in the default `REMEMBRA_EMBEDDINGS=none` configuration. Detection
+  now uses the same normalisation as the duplicate-rate metric and needs no
+  embeddings. `dedupeExact` and `dedupeSameSource` escape hatches are exposed on HTTP
+  search and the MCP `search` tool. Same-source collapsing is **off** by default:
+  identical text from two different sources is often corroboration, and discarding
+  the second source is a worse error than showing a repeat. Nothing is deleted —
+  suppression affects a result set, and the store still holds every copy.
+
+- **The tenant benchmark no longer fails the release gate nondeterministically.**
+  `scripts/bench-tenant.sh` now retries the known native SQLite teardown abort
+  (`RemoveEnvironmentCleanupHook`), which `scripts/run-tests.mjs` has retried for
+  the test suite for some time. The abort happens after the measurement is written,
+  so the gate was failing on completed work. A genuine failure still fails on the
+  first attempt with its real exit code.
+
 - **Real inverse document frequency in lexical scoring** (`src/retrieval.ts`).
   The old "idf" factor was computed from *the document being scored* — how many of
   the query's terms that document happened to contain — so it was a coverage

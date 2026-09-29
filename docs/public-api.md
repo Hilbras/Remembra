@@ -591,3 +591,32 @@ Events include `store`, `update`, `archive`, `revive`, `forget`, `import`.
 | `REMEMBRA_SECURE_HEADERS` | `1` | set to `0` to disable secure headers |
 | `REMEMBRA_SENSITIVE_POLICY` | `redact` | `allow` · `redact` · `reject` · `quarantine` |
 | `REMEMBRA_INJECTION_PATTERNS` | *(unset)* | custom comma-separated regex patterns |
+
+
+## Duplicate suppression in search results (V5.7.0)
+
+`GET /memories/search` and `GET /memories` collapse results whose text is
+identical, so one repeated memory no longer occupies several slots in a result set.
+This is **on by default** and is a behaviour change from 5.6.0.
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `dedupeExact` | `true` | Collapse results with identical text. Set `false` to see every copy. |
+| `dedupeSameSource` | `false` | Also collapse identical text recorded from the same provenance. |
+
+Both are also available on the MCP `search` tool.
+
+**Same-source collapsing is off by default, deliberately.** Identical text from two
+*different* sources is often corroboration — the same fact independently recorded by
+a conversation and an agent. Collapsing it would discard the second source, which is
+a worse error than showing a repeat. Identical text from the *same* provenance (same
+agent and run, same conversation) is treated as a duplicate import.
+
+Detection uses the same normalisation the duplicate-rate metric uses, and needs no
+embeddings — so it works in the default `REMEMBRA_EMBEDDINGS=none` configuration,
+where the previous diversity pass returned its input unchanged.
+
+Nothing is deleted. Suppression removes a result from a result *set*; the store
+still holds every copy, and each is still readable by id. The best-ranked copy
+survives, and where scores tie exactly the lowest id wins, so the result does not
+depend on input order.
