@@ -248,22 +248,40 @@ function loadIntegrityKeySync(root: string, supplied?: Buffer): Buffer {
   }
   const keyPath = path.join(root, "claims.key");
   assertSafeFileSync(keyPath);
+
+  // Publish the key atomically, with link(): it fails with EEXIST if the
+  // destination exists, and it never exposes a partial file.
+  //
+  // The previous version created the key with O_EXCL and *then* wrote 32 bytes into
+  // it, so a peer that lost the EEXIST race read a zero-byte file and refused to
+  // start with "integrity key has an invalid length" — a third manifestation of
+  // the same cold-start race this store has now produced three times (file mode,
+  // ledger generation metadata, and this). It is a real failure for a fleet starting
+  // two instances against one fresh directory.
+  const key = randomBytes(32);
+  const staging = path.join(root, `.claims.key.${process.pid}.${randomBytes(4).toString("hex")}.tmp`);
   try {
-    const handle = fs.openSync(keyPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
-    try {
-      const key = randomBytes(32);
-      fs.writeFileSync(handle, key);
-      return key;
-    } finally {
-      fs.closeSync(handle);
-    }
+    fs.writeFileSync(staging, key, { mode: 0o600, flag: "wx" });
+    fs.linkSync(staging, keyPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      fs.rmSync(staging, { force: true });
+      throw error;
+    }
+  } finally {
+    // The staging file must never survive, on either path: the constructor
+    // validates the claim directory by name and refuses anything unexpected, so a
+    // leftover here makes the *next* start fail with "claim directory contains
+    // unrelated files". My first version returned from inside the try and skipped
+    // this entirely, which 13 tests caught.
+    fs.rmSync(staging, { force: true });
   }
   assertSafeFileSync(keyPath);
-  const key = fs.readFileSync(keyPath);
-  if (key.length < 32 || key.length > 128) invalid("integrity key has an invalid length");
-  return key;
+  const existing = fs.readFileSync(keyPath);
+  // A wrong length here is genuine corruption — a key truncated by a crash — and is
+  // still refused. Only the *concurrent* window is gone, not the check.
+  if (existing.length < 32 || existing.length > 128) invalid("integrity key has an invalid length");
+  return existing;
 }
 
 function ledgerIdentitySync(root: string, databasePath: string): { identity: string; created: boolean } {

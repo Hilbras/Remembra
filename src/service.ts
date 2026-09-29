@@ -1153,7 +1153,7 @@ export class MemoryService {
   }
 
   async search(
-    q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean; includeExpired?: boolean; includeFuture?: boolean; includeQuarantined?: boolean; includeArchived?: boolean; candidates?: string[]; dedupeExact?: boolean; dedupeSameSource?: boolean } & AgentReadOptions,
+    q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean; includeExpired?: boolean; includeFuture?: boolean; includeQuarantined?: boolean; includeArchived?: boolean; candidates?: string[]; dedupeExact?: boolean; dedupeSameSource?: boolean; includeSuperseded?: boolean } & AgentReadOptions,
     execution: SearchExecutionOptions = {},
   ) {
     metrics.inc("remembra_memory_reads_total", { operation: "search" });

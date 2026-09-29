@@ -620,3 +620,28 @@ Nothing is deleted. Suppression removes a result from a result *set*; the store
 still holds every copy, and each is still readable by id. The best-ranked copy
 survives, and where scores tie exactly the lowest id wins, so the result does not
 depend on input order.
+
+### Superseded memories
+
+A memory that has been superseded by a newer one is **excluded from results by
+default**. `includeSuperseded=true` (or `dedupeExact`-style `includeSuperseded` on
+the MCP `search` tool) brings the old version back.
+
+```bash
+curl -H "x-api-key: $KEY"   "$BASE/api/v1/memories/search?query=refunds"                      # current version only
+curl -H "x-api-key: $KEY"   "$BASE/api/v1/memories/search?query=refunds&includeSuperseded=true"  # both versions
+```
+
+Two properties worth stating:
+
+- **Suppression only happens when the replacement is available.** If a memory's
+  `supersededBy` points at something missing, archived, or filtered out of the pool,
+  the old copy stays visible. Replacing a stale answer with *no* answer is the wrong
+  direction to fail in.
+- **Chains resolve to the newest link.** For `v1 → v2 → v3`, only `v3` is returned
+  by default. No chain handling is needed: each is suppressed because its successor
+  is present.
+
+Nothing is deleted. Suppression affects a result *set*; the store still holds every
+version, each is still readable by id, and the old copy still records what superseded
+it.

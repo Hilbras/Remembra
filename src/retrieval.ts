@@ -920,6 +920,25 @@ export function searchQ(
   // result is stable for a given ranking. It needs no embeddings, which is the
   // point: the audit found the previous pass returned its input unchanged in the
   // default `embeddingProvider: none` configuration.
+  // Step 9b: superseded suppression. Deliberately *after* the sort and *before*
+  // dedup, and only when the replacement is actually available: suppressing a copy
+  // whose superseder is missing, archived, or filtered out of this pool would replace
+  // a stale answer with no answer, which is the wrong direction to fail in.
+  if (q.includeSuperseded !== true) {
+    const available = new Set(memories.map((m) => m.id));
+    ranked = ranked.filter((m) => {
+      const replacement = m.supersededBy;
+      if (!replacement) return true;
+      if (!available.has(replacement)) return true;
+      // No chain handling is needed, and an attempt at it was actively wrong: I had
+      // suppressed a copy only when its superseder was *not itself* superseded, which
+      // meant a v1 → v2 → v3 line returned both v1 and v3. Chains resolve on their
+      // own — v1 is suppressed because v2 is available, and v2 is suppressed because
+      // v3 is — so the newest link is what survives.
+      return false;
+    });
+  }
+
   const dedupe = dedupeResults(ranked, {
     exact: q.dedupeExact ?? true,
     sameSource: q.dedupeSameSource ?? false,

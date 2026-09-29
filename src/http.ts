@@ -232,7 +232,7 @@ export function resolveListen(
  *   GET    / , /ui/*            → web dashboard shell + static assets (no auth, v4)
  *   POST   /memories            → store a memory
  *   GET    /memories/search     → ?query=&scope=&type=&limit=
- *   GET    /memories            → ?scope=&type=&includeArchived=&dedupeExact=&limit=
+ *   GET    /memories            → ?scope=&type=&includeArchived=&dedupeExact=&includeSuperseded=&limit=
  *   POST   /memories/digest     → LLM extraction
  *   POST   /maintain            → decay sweep + vector backfill
  *   GET    /memories/:id        → one memory + related + backlinks (Phase 8)
@@ -829,6 +829,7 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
             // caller who wants every copy sees every copy.
             dedupeExact: url.searchParams.get("dedupeExact") !== "false",
             dedupeSameSource: url.searchParams.get("dedupeSameSource") === "true",
+            includeSuperseded: url.searchParams.get("includeSuperseded") === "true",
             ...agentOptions,
           });
           applySecureHeaders(res);

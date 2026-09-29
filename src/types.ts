@@ -336,6 +336,13 @@ export const searchInputShape = {
    * V5.7.0.
    */
   dedupeSameSource: z.boolean().optional(),
+  /**
+   * Include memories that have been superseded by a newer one. Default false.
+   *
+   * V5.7.0. A superseded copy is normally not what a query is asking for, so it is
+   * suppressed unless the superseding memory is itself available in the results.
+   */
+  includeSuperseded: z.boolean().optional(),
 };
 export const SearchInput = z.object(searchInputShape);
 export type SearchInput = z.infer<typeof SearchInput>;
@@ -582,6 +589,18 @@ export interface SearchQuery {
    */
   dedupeExact?: boolean;
   /**
+   * Include memories that have been superseded by a newer one. Default false.
+   *
+   * V5.7.0. A superseded copy is normally not what a query is asking for — the
+   * current version is — so it is suppressed by default. The flag exists because
+   * "what did this used to say?" is a real question, and suppressing is a
+   * result-set decision rather than a deletion.
+   *
+   * Suppression only happens when the superseding memory is actually available in
+   * the candidate set. A dangling `supersededBy` therefore keeps the old copy
+   * visible rather than replacing it with nothing.
+   */
+  /**
    * Additionally collapse identical text recorded from the same provenance.
    * Default false, and deliberately asymmetric with `dedupeExact`.
    *
@@ -591,6 +610,14 @@ export interface SearchQuery {
    * showing a repeat.
    */
   dedupeSameSource?: boolean;
+  /**
+   * Include memories that have been superseded by a newer one. Default false.
+   *
+   * V5.7.0. Suppression only applies when the superseding memory is itself
+   * available in the candidate set, so a dangling reference keeps the old copy
+   * visible rather than replacing it with nothing.
+   */
+  includeSuperseded?: boolean;
 }
 
 /** Each scoring component exposed so callers can inspect why a memory ranked

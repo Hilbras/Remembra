@@ -11,6 +11,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Superseded memories are excluded from search results by default.** A query for
+  the current policy no longer returns v1 and v2 side by side, which the V5.7.0
+  audit reproduced. `includeSuperseded` brings the older version back, because "what
+  did this used to say?" is a real question. Suppression only applies when the
+  superseding memory is actually available — a dangling reference keeps the old copy
+  visible rather than replacing it with nothing — and chains resolve to the newest
+  link. Nothing is deleted; the store still holds every version and each is readable
+  by id.
+
+- **Fixed a third cold-start race in the batch idempotency ledger.** The integrity
+  key was created with `O_EXCL` and *then* written, so a process that lost the race
+  read a zero-byte file and refused to start with "integrity key has an invalid
+  length". The key is now published with `link()`, which is atomic and never exposes
+  a partial file. The check that refuses a genuinely truncated key is unchanged. This
+  store has now produced three separate manifestations of the same underlying
+  problem — file mode, ledger generation metadata, and this.
+
 - **Exact and same-source duplicate suppression in search results**
   (`src/retrieval.ts`), on by default. A repeated memory previously occupied
   several slots in a result set — and the audit found the only existing pass,
