@@ -11,6 +11,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Real inverse document frequency in lexical scoring** (`src/retrieval.ts`).
+  The old "idf" factor was computed from *the document being scored* — how many of
+  the query's terms that document happened to contain — so it was a coverage
+  discount wearing the name of IDF and could not tell a rare term from a common one.
+  Corpus document frequencies are now counted once per search using the backend's
+  true corpus total, and each term's credit is scaled by a normalised IDF. The
+  coverage ordering that was already correct is preserved, and the scorer's now-dead
+  `totalDocs` parameter is gone.
+
 - **Lexical retrieval now matches whole tokens, scores phrases, and weights
   fields** (`src/retrieval.ts`). A query for `cat` scored
   `"concatenate the streams"` at exactly the same 60.00 as `"the cat sat"`,

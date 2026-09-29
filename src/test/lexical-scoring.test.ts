@@ -39,9 +39,9 @@ function mem(content: string, tags: string[] = []): Memory {
   };
 }
 
-const DOCS = 10_000;
+/** Score with no corpus statistics, which is the V5.7.0 T02 behaviour. */
 const score = (m: Memory, terms: string[], w?: Partial<LexicalWeights>) =>
-  keywordScore(m, terms, DOCS, w ? { ...DEFAULT_LEXICAL_WEIGHTS, ...w } : DEFAULT_LEXICAL_WEIGHTS);
+  keywordScore(m, terms, w ? { ...DEFAULT_LEXICAL_WEIGHTS, ...w } : DEFAULT_LEXICAL_WEIGHTS);
 
 // --- Tokenizer -------------------------------------------------------------
 
@@ -193,7 +193,6 @@ test("T02-015: coverage is capped at 60, so the scale downstream expects is pres
   const dense = keywordScore(
     mem("alpha beta gamma delta epsilon"),
     ["alpha", "beta", "gamma", "delta", "epsilon"],
-    DOCS,
   );
   assert.ok(dense <= 60, `never exceeds the cap: ${dense}`);
   assert.ok(dense > 0);

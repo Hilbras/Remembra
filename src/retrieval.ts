@@ -231,6 +231,84 @@ export function tokenize(text: string): string[] {
 }
 
 /**
+ * Corpus term statistics for one search.
+ *
+ * The previous implementation derived its "idf" from **the document being
+ * scored** — how many of the query's terms that document happened to contain — so
+ * the factor was a coverage discount, not inverse document frequency, and it could
+ * not distinguish a rare term from a common one. Real IDF needs the corpus.
+ *
+ * Built once per search by `buildTermStatistics`; recomputing it per document would
+ * make scoring quadratic in the candidate count.
+ */
+export interface TermStatistics {
+  /** Lowercased term → how many documents in the corpus contain it. */
+  readonly documentFrequency: ReadonlyMap<string, number>;
+  /** How many documents the statistics were computed over. */
+  readonly documentCount: number;
+}
+
+/**
+ * Count, for each query term, how many documents contain it.
+ *
+ * Bounded to the query's own terms rather than the whole corpus vocabulary: a
+ * memory set of 100k memories with 60k distinct terms would otherwise cost a Map
+ * nobody reads, since only the query's terms are ever scored.
+ *
+ * Tags count as content for this purpose. A term that appears in many tags is
+ * genuinely common in the corpus, and treating it as rare would inflate exactly the
+ * documents least likely to be useful.
+ */
+export function buildTermStatistics(
+  memories: readonly Memory[],
+  terms: readonly string[],
+  documentCount: number = memories.length,
+): TermStatistics {
+  const wanted = new Set(terms.map((t) => t.toLowerCase()).filter((t) => t !== ""));
+  const documentFrequency = new Map<string, number>();
+  if (wanted.size === 0) return { documentFrequency, documentCount };
+
+  for (const memory of memories) {
+    const seen = new Set<string>();
+    for (const token of tokenize(memory.content)) {
+      if (wanted.has(token)) seen.add(token);
+    }
+    if (memory.tags.length > 0) {
+      for (const token of memory.tags.flatMap((tag) => tokenize(tag))) {
+        if (wanted.has(token)) seen.add(token);
+      }
+    }
+    for (const token of seen) {
+      documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
+    }
+  }
+  return { documentFrequency, documentCount };
+}
+
+/**
+ * Normalised IDF for one term, in (0, 1].
+ *
+ * Normalised against `log(1 + documentCount)` — the value a term appearing in
+ * exactly one document would get — so a term in every document contributes almost
+ * nothing and a rare one approaches 1. Normalising rather than using raw IDF is
+ * what keeps the coverage denominator fixed: a term's weight then never exceeds the
+ * exact-match credit, so `phrase` and the 60-point cap behave as documented
+ * instead of being rescaled by whichever term happens to be rarest.
+ *
+ * A term with no recorded frequency is treated as appearing in every document, the
+ * conservative choice: assuming a term is rare when it is actually common is how a
+ * stopword ends up dominating a result set.
+ */
+function normalisedIdf(term: string, stats: TermStatistics | undefined): number {
+  if (!stats || stats.documentCount <= 0) return 1;
+  const df = stats.documentFrequency.get(term);
+  const frequency = df === undefined ? stats.documentCount : Math.max(1, df);
+  const ceiling = Math.log(1 + stats.documentCount);
+  if (ceiling <= 0) return 1;
+  return Math.max(0, Math.min(1, Math.log(1 + stats.documentCount / frequency) / ceiling));
+}
+
+/**
  * Lexical relevance of a memory for a set of query terms.
  *
  * Three things this fixes, each of which was a single `String.includes` before:
@@ -251,8 +329,8 @@ export function tokenize(text: string): string[] {
 export function keywordScore(
   m: Memory,
   terms: string[],
-  totalDocs: number,
   weights: Readonly<LexicalWeights> = DEFAULT_LEXICAL_WEIGHTS,
+  stats?: TermStatistics,
 ): number {
   if (terms.length === 0) return 0;
 
@@ -269,17 +347,21 @@ export function keywordScore(
     if (term === "") continue;
     const isPrefix = (token: string): boolean => token.length > term.length && token.startsWith(term);
 
+    // The term's rarity scales everything it earns, so a document covering the
+    // same fraction of a query scores differently depending on how rare the shared
+    // terms are — which is the entire point of the factor the old code mislabelled.
+    const idf = normalisedIdf(term, stats);
     let credit = 0;
     if (contentSet.has(term)) {
-      credit += weights.content;
-      exactContentCredits += weights.content;
+      credit += weights.content * idf;
+      exactContentCredits += weights.content * idf;
     } else if (contentTokens.some(isPrefix)) {
-      credit += weights.content * weights.prefix;
+      credit += weights.content * weights.prefix * idf;
     }
     if (tagSet.has(term)) {
-      credit += weights.tags;
+      credit += weights.tags * idf;
     } else if (tagTokens.some(isPrefix)) {
-      credit += weights.tags * weights.prefix;
+      credit += weights.tags * weights.prefix * idf;
     }
     matched += credit;
   }
@@ -327,11 +409,8 @@ export function keywordScore(
   if (maxPossible <= 0) return 0;
   const coverage = matched / maxPossible;
   if (coverage <= 0) return 0;
-
-  // Simple idf proxy: rarer terms score higher. Replaced by real corpus
-  // statistics in V5.7.0 T03 — the signature is already shaped for that.
-  const idf = Math.log(1 + totalDocs / Math.max(1, matched));
-  return Math.min(60, coverage * 60 * (0.5 + 0.5 * Math.min(1, idf)));
+  if (coverage >= 1) return 60;
+  return coverage * 60;
 }
 
 // =============================================================================
@@ -622,6 +701,11 @@ export function searchQ(
   const requireRoleTrust = policy.requireRoleTrust ?? true;
   const diversity = policy.diversity ?? true;
   const { terms, temporal } = extractQuery(q.query);
+  // Built once, not per document: recomputing document frequencies inside the
+  // scoring loop would make a search quadratic in the candidate count. The count is
+  // the backend's total where it knows one, so a paginated candidate set still gets
+  // common terms discounted against the real corpus.
+  const termStats = buildTermStatistics(memories, terms, q.totalDocs ?? memories.length);
   const effectiveLimit = q.limit ?? 10;
   const explain = q.explain ?? false;
 
@@ -641,7 +725,7 @@ export function searchQ(
     const reasons: string[] = ["scope_match"];
     if (m.scope === "global") reasons.push("global");
     if (q.scope && m.scope === q.scope) reasons.push("scope_exact");
-    const kwScore = keywordScore(m, terms, q.totalDocs ?? memories.length);
+    const kwScore = keywordScore(m, terms, DEFAULT_LEXICAL_WEIGHTS, termStats);
     if (kwScore > 0) reasons.push("keyword_hit");
     const vecScore = queryVec ? vectorScore(m, queryVec) : 0;
     if (vecScore > 0) reasons.push("semantic_hit");
