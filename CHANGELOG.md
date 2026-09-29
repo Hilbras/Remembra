@@ -11,6 +11,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Lexical retrieval now matches whole tokens, scores phrases, and weights
+  fields** (`src/retrieval.ts`). A query for `cat` scored
+  `"concatenate the streams"` at exactly the same 60.00 as `"the cat sat"`,
+  because matching was a single `String.includes`. Terms now match whole tokens, a
+  prefix match is a distinct separately-weighted signal rather than a tie with an
+  exact one, a phrase adjacent and in order earns a bonus (scored, never filtered —
+  dropping a result for containing the words in the wrong order would lose
+  something the user asked for), and `content` and `tags` are weighted separately
+  instead of concatenated into one string where a tag mention was worth as much as
+  prose. CJK is tokenized per character. The 0..60 scale and the zero-means-zero
+  property the `keyword_hit` explanation depends on are unchanged.
+
 - **Token efficiency and duplicate rate** in the retrieval evaluation harness
   (`src/eval.ts`) — the two of roadmap §38's seven metrics that were missing, and
   the guardrail the deduplication work in V5.7.0 needs. Token efficiency is the

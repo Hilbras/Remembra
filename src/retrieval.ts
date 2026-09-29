@@ -150,15 +150,188 @@ export function isExactDuplicate(a: Memory, b: Memory): boolean {
   return a.id !== b.id && duplicateKey(a) === duplicateKey(b);
 }
 
-export function keywordScore(m: Memory, terms: string[], totalDocs: number): number {
+/**
+ * Relative credit for each lexical signal. Fractions are relative to a field's
+ * exact-match credit, so a tag or a prefix hit is worth a *fraction* of the same
+ * term matching prose, not an independently calibrated number.
+ */
+export interface LexicalWeights {
+  /**
+   * Credit for a term matching a whole token in the content.
+   *
+   * This is the **unit** the other weights are expressed against, so scaling it
+   * changes nothing: the numerator and the coverage denominator both move with it.
+   * That is deliberate rather than an oversight — `tags`, `prefix`, and `phrase`
+   * are the meaningful knobs, and an uncalibrated `content` would only make them
+   * harder to reason about. T02-012 pins the consequence so nobody later reads the
+   * field as tunable.
+   */
+  content: number;
+  /** Credit for a term matching a whole token in a tag. */
+  tags: number;
+  /**
+   * Credit for a term matching only the *start* of a token, as a fraction of that
+   * field's exact credit.
+   *
+   * A prefix hit is a real lexical signal — someone searching `deploy` wants
+   * `deployment` — but it must score strictly below an exact hit. That is what
+   * demotes `"concatenate the streams"` for the query `cat` instead of promoting
+   * it: the old substring test could not tell the two apart at all, and both
+   * scored 60.00.
+   */
+  prefix: number;
+  /**
+   * Multiplier applied to the exact credits of terms that appear **adjacently and
+   * in order** in the content. 1.5 means a phrase match earns its terms plus half
+   * again.
+   *
+   * Phrases are scored, never filtered: dropping a document for containing the
+   * words in the wrong order would lose a result the user asked for.
+   */
+  phrase: number;
+}
+
+export const DEFAULT_LEXICAL_WEIGHTS: Readonly<LexicalWeights> = Object.freeze({
+  content: 1,
+  tags: 0.5,
+  prefix: 0.35,
+  phrase: 1.5,
+});
+
+/**
+ * Fixed headroom for the coverage denominator. See `keywordScore`.
+ *
+ * At the default weights the best conceivable match is: every term exact in the
+ * content (1.0 each), every term also in a tag (0.5 each), and the terms as a
+ * phrase (a further 0.5 each) — 2.0 per term.
+ */
+const LEXICAL_HEADROOM = 2;
+
+const CJK_RANGE =
+  /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff]/;
+
+/**
+ * Split text into comparable tokens.
+ *
+ * Alphanumeric runs become one token, and each CJK character becomes its own token
+ * because CJK is not space-delimited: without this a Chinese query would only ever
+ * match an entire run of characters.
+ */
+export function tokenize(text: string): string[] {
+  const out: string[] = [];
+  for (const run of text.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+    if (run === "") continue;
+    if (CJK_RANGE.test(run)) {
+      for (const char of run) out.push(char);
+    } else {
+      out.push(run);
+    }
+  }
+  return out;
+}
+
+/**
+ * Lexical relevance of a memory for a set of query terms.
+ *
+ * Three things this fixes, each of which was a single `String.includes` before:
+ *
+ *  1. **Token boundaries.** A term matches a whole token. `"concatenate"` no longer
+ *     scores identically to `"cat"` for the query `cat`.
+ *  2. **Phrase.** Terms adjacent and in order earn a bonus, so `"the red car"`
+ *     outranks `"car the red"` and both outrank a document that merely contains
+ *     one of the words.
+ *  3. **Field weights.** Content and tags are scored separately. Previously they
+ *     were concatenated into one string, so a tag mention was worth exactly as
+ *     much as prose.
+ *
+ * The scale is unchanged (capped at 60) and the idf factor is still the placeholder
+ * T03 replaces, so downstream ranking shape and the `keyword_hit` explanation flag
+ * — which tests `> 0` — keep working.
+ */
+export function keywordScore(
+  m: Memory,
+  terms: string[],
+  totalDocs: number,
+  weights: Readonly<LexicalWeights> = DEFAULT_LEXICAL_WEIGHTS,
+): number {
   if (terms.length === 0) return 0;
-  const hay = (m.content + " " + m.tags.join(" ")).toLowerCase();
-  let hits = 0;
-  for (const t of terms) if (hay.includes(t)) hits++;
-  const tfRatio = hits / terms.length;
-  // Simple idf proxy: rarer terms score higher.
-  const idf = Math.log(1 + totalDocs / Math.max(1, hits));
-  return Math.min(60, tfRatio * 60 * (0.5 + 0.5 * Math.min(1, idf)));
+
+  const contentTokens = tokenize(m.content);
+  const contentSet = new Set(contentTokens);
+  const tagTokens = m.tags.flatMap((tag) => tokenize(tag));
+  const tagSet = new Set(tagTokens);
+
+  let matched = 0;
+  let exactContentCredits = 0;
+
+  for (const rawTerm of terms) {
+    const term = rawTerm.toLowerCase();
+    if (term === "") continue;
+    const isPrefix = (token: string): boolean => token.length > term.length && token.startsWith(term);
+
+    let credit = 0;
+    if (contentSet.has(term)) {
+      credit += weights.content;
+      exactContentCredits += weights.content;
+    } else if (contentTokens.some(isPrefix)) {
+      credit += weights.content * weights.prefix;
+    }
+    if (tagSet.has(term)) {
+      credit += weights.tags;
+    } else if (tagTokens.some(isPrefix)) {
+      credit += weights.tags * weights.prefix;
+    }
+    matched += credit;
+  }
+
+  // Phrase: the query's terms, adjacent and in order, in the content.
+  if (terms.length > 1 && exactContentCredits > 0) {
+    const ordered = terms.map((term) => term.toLowerCase());
+    for (let start = 0; start + ordered.length <= contentTokens.length; start++) {
+      let hit = true;
+      for (let offset = 0; offset < ordered.length; offset++) {
+        if (contentTokens[start + offset] !== ordered[offset]) {
+          hit = false;
+          break;
+        }
+      }
+      if (hit) {
+        matched += exactContentCredits * (weights.phrase - 1);
+        break;
+      }
+    }
+  }
+
+  // Coverage against the best conceivable match, so the result stays on the 0..1
+  // scale the downstream 60-point cap expects.
+  //
+  // The denominator is deliberately a **fixed** headroom factor rather than a
+  // function of `weights.phrase`. Two earlier attempts failed here, both by making
+  // the weights unobservable:
+  //
+  //   - Leaving the phrase bonus out let coverage exceed 1 for any query whose
+  //     terms all matched, so the 60 cap saturated and flattened exactly the
+  //     distinctions this change introduces: `"the red car"` and `"car the red"`
+  //     both scored 60.00.
+  //   - Putting `phrase` *into* the denominator fixed the saturation but made the
+  //     weight mathematically inert — numerator and denominator scaled together, so
+  //     phrase = 1, 1.5, 2, and 3 all produced an identical score. A weight nobody
+  //     can move is not a configurable weight.
+  //
+  // So: a constant 2, which is exactly the best conceivable result at the default
+  // weights (every term exact in content + in a tag + a phrase bonus). Every
+  // default-weight case lands at or below 1, and moving any weight moves the score.
+  // Extreme settings can still saturate at the 60 cap, which is the intended
+  // ceiling rather than a hidden one.
+  const maxPossible = terms.length * weights.content * LEXICAL_HEADROOM;
+  if (maxPossible <= 0) return 0;
+  const coverage = matched / maxPossible;
+  if (coverage <= 0) return 0;
+
+  // Simple idf proxy: rarer terms score higher. Replaced by real corpus
+  // statistics in V5.7.0 T03 — the signature is already shaped for that.
+  const idf = Math.log(1 + totalDocs / Math.max(1, matched));
+  return Math.min(60, coverage * 60 * (0.5 + 0.5 * Math.min(1, idf)));
 }
 
 // =============================================================================
