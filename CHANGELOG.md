@@ -9,6 +9,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Token efficiency and duplicate rate** in the retrieval evaluation harness
+  (`src/eval.ts`) — the two of roadmap §38's seven metrics that were missing, and
+  the guardrail the deduplication work in V5.7.0 needs. Token efficiency is the
+  fraction of returned context that belonged to relevant results, which separates a
+  change that made results *more relevant* from one that merely made them *longer*;
+  precision@k cannot tell those apart. Duplicate rate is the fraction of results
+  that repeat an earlier one, reported from the same `duplicateKey` the
+  deduplication pass will use, so it moves when deduplication lands. Raw counts are
+  reported alongside both ratios.
+
 ## [5.6.0] — 2026-09-29
 
 Distributed Remembra: cross-instance primitives, an optional Redis backend, and an

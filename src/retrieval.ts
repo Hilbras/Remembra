@@ -120,6 +120,36 @@ export function applyScopeFilter(
  * BM25-lite term overlap: tf·idf-style score, identical ceiling (60) to the
  * v4.1.x keyword heuristic so regression tests remain satisfied.
  */
+/**
+ * The key two memories share when they are the same text.
+ *
+ * This lives here rather than in the dedup pass because the evaluation metric and
+ * the detector must use **one** function. If the metric normalises differently
+ * from the detector, duplicate rate stays at zero after a deduplication change and
+ * the guardrail silently measures nothing — which is worse than not having it.
+ *
+ * Normalisation is deliberately conservative, because the cost of a false
+ * duplicate is a memory the user asked for and did not get:
+ *   - case-folded, so "Deploy" and "deploy" are the same memory;
+ *   - internal whitespace collapsed, so reflowing is not a new memory;
+ *   - trailing punctuation stripped, so "deploy." and "deploy" are the same;
+ *   - nothing else. Punctuation *inside* text is kept, tags are not folded in, and
+ *     no stemming or synonym handling happens here, because each of those would
+ *     merge genuinely different memories.
+ */
+export function duplicateKey(m: Memory): string {
+  return m.content
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.,;:!?]+$/, "");
+}
+
+/** True when two memories carry the same text. Exact, not near. */
+export function isExactDuplicate(a: Memory, b: Memory): boolean {
+  return a.id !== b.id && duplicateKey(a) === duplicateKey(b);
+}
+
 export function keywordScore(m: Memory, terms: string[], totalDocs: number): number {
   if (terms.length === 0) return 0;
   const hay = (m.content + " " + m.tags.join(" ")).toLowerCase();
