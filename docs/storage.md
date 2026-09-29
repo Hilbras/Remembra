@@ -219,6 +219,48 @@ Full env index: [clients.md](clients.md#environment). Migration/export:
 Migration CLI (`remembra migrate`, `export-markdown`, `import-markdown`,
 `backup`, `restore`) is documented in [public-api.md](public-api.md).
 
+## Durable job ledger (V5.6)
+
+`@hilbras/remembra/job-store` — a ledger of work that outlives the process that
+accepted it. It is opened **only** by `remembra worker` and
+`remembra scheduler`, at `<root>/.jobs.sqlite`; a single-process install never
+touches it, so it never needs a native database handle it did not need before.
+
+A job moves through the §27 states — `queued → running → completed`, with
+`retrying`, `failed`, and `cancelled` as the other outcomes — and carries a
+lease (`lease_owner` plus an absolute `lease_expires_at`) rather than a lock.
+
+```text
+queued ──claim──► running ──complete──► completed
+   ▲                   │
+   │                   ├──fail (attempts left)──► retrying ──claim──► running
+   │                   └──fail (budget spent)────► failed
+   └──reclaimExpired──────────────────────────────┘   (lease lapsed)
+```
+
+Two properties are load-bearing:
+
+- **Taking a job is one statement.** The claim is a single
+  `UPDATE … RETURNING`, not a read followed by a write. A read-then-write is
+  check-then-act, and under two workers both would claim the same job — the same
+  shape as the lost-update defect the `version` column already prevents for
+  memories.
+- **A lapsed lease is reclaimed, not abandoned.** A worker that dies holding a
+  job leaves a lease nobody will renew. Once it expires the job returns to
+  `retrying` and is re-run as the next attempt, with `attempt` passed to the
+  handler so it can tell which run it is. Nothing is dropped on the floor.
+
+`DurableWorker` (`@hilbras/remembra/worker`) renews the lease while a job runs.
+**If a renewal ever fails the job's `AbortSignal` fires** — finishing anyway
+would be the lost-update defect wearing a lease, with two workers each believing
+they own one job. A refused `complete()` is reported as `lease_lost`, never as
+success. Handlers are therefore required to be idempotent; nothing in the queue
+can make an arbitrary handler safe to run twice.
+
+Where the ledger does and does not reach is stated in [lock and jobs](lock.md).
+
+---
+
 ## SQLite Backend (V4.3.0)
 
 Since 4.3.0 the **runtime** backend is SQLite (`SqliteBackend`). The file tree

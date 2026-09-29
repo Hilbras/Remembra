@@ -46,6 +46,10 @@ paths:
       tags: [contract]
       operationId: getCapabilities
       summary: Published API capabilities and compatibility metadata
+      description: >-
+        The manifest describes the **build**, not the deployment. `distributed`
+        is present whether or not `REMEMBRA_REDIS_URL` is set, exactly as
+        `webhooks` is present whether or not `REMEMBRA_WEBHOOKS` is.
       responses:
         "200":
           description: Capability manifest
@@ -1292,6 +1296,10 @@ components:
           type: integer
     Health:
       type: object
+      description: |
+        Readiness payload. `shared` is present **only** when
+        `REMEMBRA_REDIS_URL` is configured; a single-host deployment's payload is
+        unchanged and carries no such field.
       properties:
         status:
           type: string
@@ -1303,6 +1311,24 @@ components:
           type: string
         version:
           type: string
+        shared:
+          $ref: "#/components/schemas/SharedState"
+    SharedState:
+      type: object
+      description: |
+        Shared-state view. Deliberately narrow: a Redis URL routinely embeds a
+        password and this endpoint is the one most likely to be logged, cached,
+        or exposed through a proxy, so no URL, host, port, or credential appears
+        here — only a classified label. While a configured store is unreachable
+        the limiter fails closed, so the process reports `unready` and returns to
+        `ok` on its own at the next successful operation.
+      properties:
+        mode:
+          type: string
+          enum: [connected, unreachable]
+        error:
+          type: string
+          description: Classified label, e.g. `SERVICE_UNAVAILABLE`. Never a message.
     StorageHealth:
       type: object
       description: |

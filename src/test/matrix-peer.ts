@@ -98,15 +98,18 @@ async function main(): Promise<Record<string, unknown>> {
       try {
         const service = svc;
         let outcome: "acquired" | "refused" | "other";
+        let detail: string | undefined;
         try {
           await service.beginBatchRestore("restore");
           outcome = "acquired";
         } catch (error) {
           outcome = isRestoreGateHeld(error) ? "refused" : "other";
+          detail = error instanceof RemembraError ? error.code : (error as Error)?.name ?? "non-error";
         }
         return {
           label,
           outcome,
+          detail,
           pending: service.batchIdempotencyRestorePending,
           owner: service.batchIdempotencyRestoreReason,
         };
@@ -152,15 +155,18 @@ async function main(): Promise<Record<string, unknown>> {
       try {
         const service = svc;
         let outcome: "acquired" | "refused" | "other";
+        let detail: string | undefined;
         try {
           await service.beginBatchRestore("migration");
           outcome = "acquired";
         } catch (error) {
           outcome = isRestoreGateHeld(error) ? "refused" : "other";
+          detail = error instanceof RemembraError ? error.code : (error as Error)?.name ?? "non-error";
         }
         return {
           label,
           outcome,
+          detail,
           pending: service.batchIdempotencyRestorePending,
           reason: service.batchIdempotencyRestoreReason,
         };

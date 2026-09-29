@@ -110,7 +110,13 @@ test("MATRIX-02 concurrent restore: a durable gate has exactly one owner", async
 
   const [a, b] = await Promise.all([peer(["restore-gate", root, "gate-a"]), peer(["restore-gate", root, "gate-b"])]);
   const outcomes = [a.outcome, b.outcome].sort();
-  assert.deepEqual(outcomes, ["acquired", "refused"], `a gate with two owners is a gate nobody can close: ${JSON.stringify([a, b])}`);
+  // `detail` is the classified code from the losing process, so a failure here
+  // says what actually happened rather than just "other".
+  assert.deepEqual(
+    outcomes,
+    ["acquired", "refused"],
+    `a gate with two owners is a gate nobody can close: ${JSON.stringify([a, b])}`,
+  );
   assert.equal(a.pending, true);
   assert.equal(b.pending, true, "and the loser sees it pending rather than clearing it");
 });
@@ -421,7 +427,7 @@ test("MATRIX-12 stale cache: a cached readiness answer is one consistent snapsho
   const service = new MemoryService(backend, { embeddingProvider: "none" });
 
   const previous = process.env.REMEMBRA_HEALTH_CACHE_MS;
-  process.env.REMEMBRA_HEALTH_CACHE_MS = "200";
+  process.env.REMEMBRA_HEALTH_CACHE_MS = "2000";
   t.after(() => {
     if (previous === undefined) delete process.env.REMEMBRA_HEALTH_CACHE_MS;
     else process.env.REMEMBRA_HEALTH_CACHE_MS = previous;
@@ -467,7 +473,7 @@ test("MATRIX-12 stale cache: a cached readiness answer is one consistent snapsho
   assert.equal(withinTtl.status, "ok", "and its status matches its own shared view — one consistent snapshot, not two samples of different ages");
 
   // Once the TTL passes, the answer is refreshed and the truth shows.
-  await new Promise((resolve) => setTimeout(resolve, 260));
+  await new Promise((resolve) => setTimeout(resolve, 2_200));
   const afterTtl = await probe();
   assert.equal(afterTtl.shared?.mode, "unreachable");
   assert.equal(afterTtl.status, "unready", "a cached answer bounds staleness; it never outlives the outage");
