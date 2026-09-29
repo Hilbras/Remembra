@@ -363,3 +363,60 @@ amplification the rate limit was added to prevent.
 Readiness is also cached for `REMEMBRA_HEALTH_CACHE_MS` (default 1s) so a polling
 probe does not drive a storage read per request, so a transition is reported at
 most one TTL late. `SHARED-006b` states that bound as a test.
+
+---
+
+# Process roles
+
+Roadmap §28. `src/process-roles.ts`, published as
+`@hilbras/remembra/process-roles`, wired into `src/index.ts`.
+
+| Command | HTTP | Worker | Scheduler |
+| --- | --- | --- | --- |
+| `remembra` *(no subcommand)* | yes | yes | yes |
+| `remembra serve [--port N]` | yes | no | no |
+| `remembra worker` | no | yes | no |
+| `remembra scheduler` | no | no | yes |
+
+**The default is unchanged and needs no configuration.** The no-subcommand path
+is `all` and behaves exactly as it did in 5.5.1. A role is a choice a deployment
+can make, not a requirement it inherits — which is the only way "nothing in
+V5.6.0 changes a single-process deployment's behaviour" survives contact with a
+new feature.
+
+## Duties are refused, not ignored
+
+`remembra worker --port 8080` is a startup error. Otherwise it would bind a port
+and serve traffic from a process whose entire premise is that it has no HTTP
+surface — a security regression wearing a convenience feature. The same applies to
+a data verb (`remembra worker export`), which would otherwise be silently
+ignored. The error names the alternative, so the fix is obvious:
+
+```
+the "worker" role has no HTTP surface; drop --http/--port, or use "remembra serve"
+```
+
+## The worker and scheduler
+
+`worker` opens a SQLite job ledger at `<root>/.jobs.sqlite` and runs a
+`DurableWorker` with a `maintenance` handler. SQLite because the ledger has to be
+shared by processes on different machines, which a file-per-process store cannot
+be; opened only in these roles, so a single-process install never touches it and
+never needs a native handle it did not need before.
+
+`scheduler` enqueues `maintenance` on an interval and runs no handlers — so
+exactly one worker anywhere claims the job, which is where audit S4's duplicated
+maintenance stops. Two honest limitations:
+
+- It skips a tick while **any** job is outstanding. That is a fleet-wide count,
+  not a per-type one, because the store has no listing operation and adding one
+  for a scheduler convenience would widen the T03 interface. If an unrelated type
+  is outstanding, one maintenance tick is skipped and the next enqueues, which is
+  harmless for work measured in hours.
+- The interval timer is deliberately **not** `unref`'d. A scheduler-only process
+  has no durable worker's poll timer to hold its event loop open, so without it
+  the process would exit immediately.
+
+The worker's stop is wired into the existing `stopWebhookDrain` shutdown phase
+rather than a second lifecycle, because a second one is something a later change
+would forget.

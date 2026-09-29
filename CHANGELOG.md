@@ -11,6 +11,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Process roles** (`src/process-roles.ts`, published as
+  `@hilbras/remembra/process-roles`): `remembra serve`, `remembra worker`, and
+  `remembra scheduler`. The no-subcommand path is unchanged and still requires no
+  configuration, so a single-process install is unaffected. A role without an HTTP
+  surface **refuses** `--http`/`--port` and refuses data verbs rather than ignoring
+  them — a `worker` that silently bound a port would serve traffic from a process
+  whose premise is that it has no HTTP surface. `worker` runs a durable worker over
+  a SQLite ledger; `scheduler` only enqueues periodic jobs, so exactly one worker
+  anywhere claims each one.
+
 - **Shared-state configuration with honest degradation**
   (`src/shared-state.ts`, published as `@hilbras/remembra/shared-state`). The
   capability manifest advertises `distributed` unconditionally — it describes the

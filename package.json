@@ -99,6 +99,11 @@
       "import": "./dist/shared-state.js",
       "default": "./dist/shared-state.js"
     },
+    "./process-roles": {
+      "types": "./dist/process-roles.d.ts",
+      "import": "./dist/process-roles.js",
+      "default": "./dist/process-roles.js"
+    },
     "./sqlite-recovery": {
       "types": "./dist/sqlite-recovery.d.ts",
       "import": "./dist/sqlite-recovery.js",

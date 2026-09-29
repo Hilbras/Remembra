@@ -10,6 +10,12 @@ let stopWebhookDrain: () => void = () => {};
 import { ShutdownCoordinator, closeServerBounded, registerStandardShutdownPhases } from "./shutdown.js";
 import { MemoryStore } from "./store.js";
 import { VERSION } from "./version.js";
+import { assertDuties, dutiesFor, resolveRole } from "./process-roles.js";
+import { SharedState } from "./shared-state.js";
+import { DurableWorker } from "./durable-worker.js";
+import { SqliteJobStore, type JobStore } from "./job-store.js";
+import { RemembraError, errorLabel } from "./errors.js";
+import Database from "better-sqlite3";
 import { SqliteBackend } from "./sqlite-backend.js";
 import { render } from "./store.js";
 import { MemoryService } from "./service.js";
@@ -49,6 +55,9 @@ const CLI_USAGE = `remembra ${VERSION} — external memory for AI assistants
 Usage:
   remembra                       Start the MCP server on stdio (default)
   remembra --http [--port N]     Start the HTTP API and dashboard
+  remembra serve [--port N]      The same, as an explicit subcommand
+  remembra worker                Durable worker only: no HTTP surface (V5.6.0)
+  remembra scheduler             Enqueue periodic jobs only (V5.6.0)
   remembra export <file.json>    Write a snapshot
   remembra import <file.json>    Preflighted, idempotent import
   remembra maintain              One-shot decay sweep and backfill
@@ -67,6 +76,12 @@ REMEMBRA_EMBEDDINGS, REMEMBRA_LLM, REMEMBRA_SNAPSHOT_KEY, REMEMBRA_WEBHOOKS.
 See docs/public-api.md for the full contract.`;
 
 const argv = process.argv.slice(2);
+
+// V5.6.0 (roadmap §28): the process split. Resolved first, so an impossible
+// combination is refused before any storage, port, or ledger is touched.
+const role = resolveRole(argv).role;
+if (role !== "all") assertDuties(role, argv);
+const duties = dutiesFor(role);
 
 // `--version` and `--help` must answer before anything else: no configuration
 // validation, no storage directory, no backend, and no server. A caller asking
@@ -159,6 +174,10 @@ const webhookDispatcher = webhookStore
   : undefined;
 for (const subscription of webhookSubscriptions) webhookDispatcher?.register(subscription);
 
+// V5.6.0: shared state. Absent unless REMEMBRA_REDIS_URL is set, in which case
+// this throws rather than starting on per-instance state.
+const sharedState = await SharedState.open(process.env);
+
 const backendSelection = await selectInitialBackend(validatedRoot, process.env);
 const store = backendSelection.store;
 const service = new MemoryService(store, {
@@ -189,7 +208,9 @@ if (initialHealth.status === "unready" && !isRecoveryCommand && !isRestoreComman
   throw new Error(`initial recovery health check failed: ${initialHealth.storage}`);
 }
 
-const httpFlag = argv.includes("--http");
+// `serve` implies the listener, since serving is its whole job. Every other
+// path is unchanged: `--http` still means `--http`.
+const httpFlag = duties.http && (role === "server" || argv.includes("--http"));
 const maintainFlag = argv.includes("maintain");
 const portArg = argv.indexOf("--port");
 const port = portArg !== -1 ? Number(argv[portArg + 1]) : undefined;
@@ -564,6 +585,42 @@ if (argv[0] === "recover" && argv[1] === "read-only") {
   });
   stopWebhookDrain = startWebhookDrain();
   installSignalHandlers(httpServer);
+} else if (duties.worker || duties.scheduler) {
+  // V5.6.0: a process with no HTTP surface. It polls or fills the durable ledger
+  // and nothing else, so splitting the duties is a deployment choice rather than
+  // a new requirement — the no-subcommand path below is unchanged.
+  const ledger = openJobLedger(validatedRoot);
+  const scheduler = duties.scheduler ? startDurableScheduler(ledger) : undefined;
+  const worker = duties.worker
+    ? new DurableWorker({
+        store: ledger,
+        // The types this process can run. Declared, not discovered, so a
+        // heterogeneous fleet never claims work it has no handler for.
+        handlers: { maintenance: async () => { await service.maintain(operatorOptions); } },
+        concurrency: Number(process.env.REMEMBRA_WORKER_CONCURRENCY ?? 2),
+        leaseMs: Number(process.env.REMEMBRA_WORKER_LEASE_MS ?? 60_000),
+      })
+    : undefined;
+  if (worker) worker.start();
+  if (!worker) {
+    // A scheduler-only process has no durable worker's ref'd poll timer to hold
+    // its event loop open, so the interval below is what keeps it alive. The
+    // timer is deliberately not unref'd, for the same reason.
+    logEvent("info", "scheduler.started", { role });
+  }
+  // The shutdown coordinator already runs `stopWebhookDrain` as its background
+  // phase, so the worker's stop is wired there rather than through a second,
+  // parallel lifecycle that could be forgotten.
+  stopWebhookDrain = () => {
+    void (async () => {
+      // Releasing in-flight leases rather than abandoning them means a peer takes
+      // the work immediately instead of waiting out the lease.
+      await worker?.stop(10_000);
+      scheduler?.();
+      ledger.close();
+    })();
+  };
+  installSignalHandlers(undefined);
 } else {
   // MCP mode (default): stdio transport launched by an MCP client.
   await startMcp(service, operatorOptions);
@@ -671,6 +728,66 @@ function startWebhookDrain(): () => void {
 // -------------------------------------------------------------------------
 //  Markdown helpers (V4.3.0 export/import)
 // -------------------------------------------------------------------------
+
+/**
+ * Open the durable job ledger for a worker or scheduler process.
+ *
+ * SQLite is used because the ledger has to be shared by processes on different
+ * machines, which a file-per-process store cannot be. Opened only in these roles,
+ * so a single-process install never touches it — and never needs the native
+ * handle a file-backed deployment would otherwise avoid.
+ */
+function openJobLedger(root: string): SqliteJobStore {
+  const file = path.join(root, ".jobs.sqlite");
+  try {
+    return new SqliteJobStore(new Database(file));
+  } catch (err) {
+    throw new RemembraError(
+      "SERVICE_UNAVAILABLE",
+      "could not open the durable job ledger; a worker or scheduler role needs a writable storage root",
+      { cause: err },
+    );
+  }
+}
+
+/**
+ * Enqueue periodic jobs onto the ledger.
+ *
+ * This is where audit S4's duplicated maintenance stops: a scheduler enqueues, and
+ * exactly one worker anywhere claims the job. The interval is a safety net, not
+ * the mechanism — `enqueue` is idempotent per interval, so several schedulers
+ * running at once still produce one job per window rather than one per scheduler.
+ */
+function startDurableScheduler(ledger: JobStore): () => void {
+  const intervalMs = Number(process.env.REMEMBRA_SCHEDULER_INTERVAL_MS ?? 900_000);
+  let lastEnqueuedFor = 0;
+  const tick = async () => {
+    try {
+      const bucket = Math.floor(Date.now() / intervalMs);
+      if (bucket === lastEnqueuedFor) return;
+      // Skip while any job is outstanding, so an interval shorter than the job's
+      // runtime cannot queue the same work repeatedly. This is a fleet-wide count
+      // rather than a per-type one — the store has no listing operation and adding
+      // one for this would widen the T03 interface for a scheduler convenience. If
+      // an unrelated type is outstanding, one maintenance tick is skipped and the
+      // next one enqueues, which is harmless for work measured in hours.
+      const open = await ledger.stats();
+      if (open.queued + open.running + open.retrying > 0) {
+        lastEnqueuedFor = bucket;
+        return;
+      }
+      await ledger.enqueue({ type: "maintenance", payload: {}, maxAttempts: 3 });
+      lastEnqueuedFor = bucket;
+    } catch (error) {
+      // A scheduler that dies on a transient store error would silently stop
+      // maintaining the store, so failures are logged and retried next tick.
+      logEvent("warn", "scheduler.enqueue_failed", { error: errorLabel(error) });
+    }
+  };
+  void tick();
+  const timer = setInterval(() => void tick(), Math.min(intervalMs, 30_000));
+  return () => clearInterval(timer);
+}
 
 async function globMdFiles(dir: string): Promise<string[]> {
   const result: string[] = [];
