@@ -288,3 +288,78 @@ client whose replies are canned, and there is no Redis in this project's test
 environment. Before relying on this in production, run it against a real server —
 in particular confirm the script loads under your Redis version and that
 `EVALSHA`/script caching behaves as the client expects.
+
+---
+
+# Configuration, capability reporting, and honest degradation
+
+Roadmap §26. `src/shared-state.ts`, published as `@hilbras/remembra/shared-state`.
+
+## `distributed` advertises the build, not the configuration
+
+`distributed` is in the capability manifest **unconditionally** — it is present
+whether or not `REMEMBRA_REDIS_URL` is set, exactly as `webhooks` is. A
+capability that only appeared once shared state was configured could not be used
+to reason about the package before configuring it, and a client that discovers
+`distributed` and then finds Redis absent is what `/health/ready`'s `shared`
+field is for.
+
+## A single-process deployment is byte-identical
+
+With nothing configured, the readiness payload is **exactly** what it was before
+this milestone — no new field, not even one saying `absent`. The code returns the
+*same object* rather than a copy with an extra key, because "nothing in V5.6.0
+changes a single-process deployment's behaviour" is much easier to keep true if
+it is literally true. `SHARED-002` asserts the payload gains no field.
+
+## Failing closed, not failing open
+
+A deployment configured `REMEMBRA_REDIS_URL` and then, for any reason, ends up
+enforcing **per-instance** limits. Two instances each allow 60/min, so the fleet
+allows 120/min, and every instance reports a limit it is not enforcing while
+looking perfectly healthy. So when the shared store fails:
+
+- the limiter **refuses** the request with `SERVICE_UNAVAILABLE` (503) instead of
+  granting it against a local budget;
+- `/health/ready` reports `unready`, so a load balancer stops sending traffic;
+- liveness stays up, so an operator can still reach the process to diagnose it;
+- and it **recovers on its own** — any successful operation marks the store
+  connected again. No restart, no operator action.
+
+Refusing is an availability cost; serving on local state is a correctness cost
+nobody asked for. A quota is a stated limit on a tenant's spend, so exceeding it
+quietly is worse than rejecting a request during a blip.
+
+The shared limiter replaces the in-process one **wholesale**, not per dimension.
+A mix would apply the shared budget to some dimensions and a per-instance budget
+to the rest, and the second is the one nobody watches. Both are built from one
+shared `quotaConfig` object and validated by the same exported `assertPolicy`, so
+switching stores cannot change either the limits or which configurations are
+accepted.
+
+## What is reported, and what is never
+
+```json
+{ "status": "ok", "shared": { "mode": "connected" } }
+{ "status": "unready", "shared": { "mode": "unreachable", "error": "SERVICE_UNAVAILABLE" } }
+```
+
+No URL, host, port, or password — a Redis URL routinely embeds a password, and
+this endpoint is behind authentication but is still the one most likely to be
+logged, cached, or exposed through a proxy. The error is a classified label; the
+client's own diagnostic (`READONLY You can't write against a read only replica at
+10.0.0.9:6379`) is carried as `cause` and never rendered.
+
+## One coupling worth knowing
+
+`/health/ready` sits *after* authentication and rate limiting, so when the shared
+store is down the request is refused by the limiter and never reaches the health
+body. The operator sees a shared-state 503 rather than a health payload carrying
+`shared` — still a 503, so a load balancer behaves correctly, but the diagnostic
+is not the one the route was written to give. `SHARED-006c` pins this down.
+Unchanged from V5.1: making the health routes unrated would reopen the storage-read
+amplification the rate limit was added to prevent.
+
+Readiness is also cached for `REMEMBRA_HEALTH_CACHE_MS` (default 1s) so a polling
+probe does not drive a storage read per request, so a transition is reported at
+most one TTL late. `SHARED-006b` states that bound as a test.

@@ -49,6 +49,12 @@ export const API_CAPABILITIES = [
   "audit",
   "quality",
   "agents",
+  // Present whenever this build is installed, whether or not REMEMBRA_REDIS_URL
+  // is set. A capability that appeared only once shared state was configured
+  // could not be used to reason about the build before configuring it — and a
+  // client discovering `distributed` and then finding Redis absent is exactly
+  // what /health/ready's `shared` field is for.
+  "distributed",
 ] as const;
 
 export type ApiCapability = (typeof API_CAPABILITIES)[number];

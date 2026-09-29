@@ -11,6 +11,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Shared-state configuration with honest degradation**
+  (`src/shared-state.ts`, published as `@hilbras/remembra/shared-state`). The
+  capability manifest advertises `distributed` unconditionally — it describes the
+  build, like `webhooks`, not the configuration. A single-process readiness
+  payload is byte-identical to the previous release: it does not even gain a field
+  saying "absent". When a configured store becomes unreachable the limiter
+  **fails closed** with 503 rather than degrading to per-instance limits, which
+  would let a fleet exceed a tenant's quota while every instance reported a limit
+  it was not enforcing; readiness reports `unready` so a load balancer drains the
+  instance, liveness stays up so it can be diagnosed, and it recovers on its own
+  at the next successful operation. Reports carry a classified label only — never
+  the URL, host, port, or password.
+
 - **An optional Redis adapter** (`src/redis.ts`, published as
   `@hilbras/remembra/redis`) providing `RedisLockProvider` and
   `RedisQuotaRateLimiter`. `redis` is an **optional peer dependency** and not a

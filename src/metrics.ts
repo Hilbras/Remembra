@@ -231,3 +231,5 @@ metrics.counter("remembra_recovery_operations_total", "Recovery operations by op
 metrics.counter("remembra_shutdown_total", "Process shutdowns by result (clean|forced)");
 metrics.counter("remembra_shutdown_phases_total", "Graceful shutdown phases by phase and status");
 metrics.counter("remembra_durable_jobs_total", "Durable worker jobs by type and outcome");
+metrics.counter("remembra_shared_state_failures_total", "Shared-state operations that failed closed");
+metrics.counter("remembra_shared_state_transitions_total", "Shared-state connectivity transitions, on the edge only");

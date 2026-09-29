@@ -94,6 +94,11 @@
       "import": "./dist/redis.js",
       "default": "./dist/redis.js"
     },
+    "./shared-state": {
+      "types": "./dist/shared-state.d.ts",
+      "import": "./dist/shared-state.js",
+      "default": "./dist/shared-state.js"
+    },
     "./sqlite-recovery": {
       "types": "./dist/sqlite-recovery.d.ts",
       "import": "./dist/sqlite-recovery.js",

@@ -16,6 +16,7 @@ import {
   type RateLimitIdentity,
 } from "./rate-limiter.js";
 import { QuotaRateLimiter, parseQuotaPolicies } from "./quota.js";
+import type { SharedState, SharedStateReport } from "./shared-state.js";
 import type { AgentContext } from "./agent.js";
 import type { TenantContext } from "./tenant.js";
 import type { TenantEntityKind, TenantEntityService } from "./tenant-entities.js";
@@ -57,6 +58,12 @@ export interface HttpOptions {
    * editing this file.
    */
   rateLimiter?: RateLimiter;
+  /**
+   * Shared-state handle, when the deployment configured one. Absent in
+   * single-host mode, in which case readiness is byte-identical to before this
+   * milestone and the in-process limiter is used unchanged.
+   */
+  sharedState?: SharedState;
 }
 
 const RESERVED_TENANT_KEYS = new Set([
@@ -249,14 +256,25 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
   // memory-exhaustion vector). The base budget is charged for every request, so
   // the pre-V5.1 per-identity window is preserved; any REMEMBRA_QUOTAS
   // dimensions are additional constraints layered on top of it.
+  // Computed once, then handed to whichever limiter is actually used. Building
+  // the two from separate expressions is how a deployment ends up with one set of
+  // limits in single-host mode and a subtly different set once Redis is on.
+  const quotaConfig = {
+    base: {
+      limit: Number(process.env.REMEMBRA_RATE_LIMIT ?? 60),
+      windowMs: Number(process.env.REMEMBRA_RATE_WINDOW_MS ?? 60_000),
+    },
+    policies: parseQuotaPolicies(process.env.REMEMBRA_QUOTAS),
+  };
+  // With shared state configured the shared limiter replaces the in-process one
+  // wholesale rather than per dimension, so a deployment cannot accidentally run
+  // half-shared quotas: a mix would apply the shared budget to some dimensions and
+  // a per-instance budget to the rest, and the second is the one nobody watches.
   const rateLimiter =
     opts.rateLimiter ??
+    opts.sharedState?.rateLimiter(quotaConfig) ??
     new QuotaRateLimiter({
-      base: {
-        limit: Number(process.env.REMEMBRA_RATE_LIMIT ?? 60),
-        windowMs: Number(process.env.REMEMBRA_RATE_WINDOW_MS ?? 60_000),
-      },
-      policies: parseQuotaPolicies(process.env.REMEMBRA_QUOTAS),
+      ...quotaConfig,
       ...(process.env.REMEMBRA_RATE_MAX_IDENTITIES
         ? { maxIdentities: Number(process.env.REMEMBRA_RATE_MAX_IDENTITIES) }
         : {}),
@@ -309,16 +327,38 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
   const healthCacheMs = Number(process.env.REMEMBRA_HEALTH_CACHE_MS ?? 1_000);
   let healthCached: { at: number; value: Awaited<ReturnType<MemoryService["health"]>> } | undefined;
   let healthInFlight: Promise<Awaited<ReturnType<MemoryService["health"]>>> | undefined;
+  /**
+   * Attach the shared-state view, or return the payload untouched.
+   *
+   * Returning the *same object* when nothing is configured is deliberate: a
+   * single-host deployment's readiness payload must not gain a field, because
+   * a deployment watching for an exact payload would break, and "nothing in
+   * V5.6.0 changes a single-process deployment's behaviour" is easier to keep if
+   * it is literally true.
+   */
+  function withSharedState(
+    health: Awaited<ReturnType<MemoryService["health"]>>,
+  ): Awaited<ReturnType<MemoryService["health"]>> & { shared?: SharedStateReport } {
+    const shared = opts.sharedState?.report;
+    if (!shared) return health;
+    // A configured store that has gone away makes the process unready: it is
+    // currently failing closed, and a load balancer that keeps sending traffic
+    // to it will collect 503s instead of noticing.
+    const status = shared.mode === "unreachable" ? "unready" : health.status;
+    return { ...health, status, shared };
+  }
+
   async function readiness(): Promise<Awaited<ReturnType<MemoryService["health"]>>> {
-    if (!Number.isFinite(healthCacheMs) || healthCacheMs <= 0) return service.health();
+    if (!Number.isFinite(healthCacheMs) || healthCacheMs <= 0) return withSharedState(await service.health());
     const now = Date.now();
     if (healthCached && now - healthCached.at < healthCacheMs) return healthCached.value;
     if (healthInFlight) return healthInFlight;
     healthInFlight = service
       .health()
       .then((value) => {
-        healthCached = { at: Date.now(), value };
-        return value;
+        const merged = withSharedState(value);
+        healthCached = { at: Date.now(), value: merged };
+        return merged;
       })
       .finally(() => {
         healthInFlight = undefined;
