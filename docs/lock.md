@@ -420,3 +420,54 @@ maintenance stops. Two honest limitations:
 The worker's stop is wired into the existing `stopWebhookDrain` shutdown phase
 rather than a second lifecycle, because a second one is something a later change
 would forget.
+
+---
+
+# The §30 failure matrix
+
+Roadmap §30. `src/test/failure-matrix.test.ts`, with a real second process in
+`src/test/matrix-peer.ts`.
+
+Every row asserts a **stated invariant**, because "did not crash" is not a
+result. The rows split by what they can honestly claim:
+
+| Row | Scenario | How it is exercised |
+| --- | --- | --- |
+| 01 | concurrent writes | two real processes, same expected version |
+| 02 | concurrent restore | two real processes, one durable gate |
+| 03 | concurrent migration | two real processes, migration gate and its reason |
+| 04 | tenant isolation | two tenants, one store, real context |
+| 05 | shared-state keys | key builders vs. a raw principal |
+| 06 | duplicate job execution | six workers, per-job concurrency |
+| 07 | expired leases | reclaim and re-run as attempt 2 |
+| 08 | worker crash | a claim whose owner never renews |
+| 09 | stale claims | a lost lease cannot report success |
+| 10 | Redis restart | fail closed, then recover unaided |
+| 11 | network partition | a partitioned worker cannot report success |
+| 12 | stale cache | a cached answer is one consistent snapshot |
+
+The two-process rows need real concurrency. JavaScript's single thread removes
+the interleaving that produced audit S1, so two objects in one event loop cannot
+reproduce a lost update — the row would pass while the defect was present.
+MATRIX-01 therefore *forces* the same expected version into both processes rather
+than hoping they interleave, and reverting the CAS fails it.
+
+## What this matrix does not establish
+
+There is no Redis server in this project's test environment. **MATRIX-10 and
+MATRIX-11 verify our response to a store outage, not Redis.** Specifically
+unverified:
+
+- that the Lua scripts load and run under a real server's Lua sandbox;
+- behaviour across a real network partition, as opposed to a client that throws;
+- Redis restart with in-flight commands, replication, and failover;
+- `EVALSHA` / script-cache behaviour with the real client.
+
+The scripts are separately executed through a Lua 5.3 VM with a shim of the
+commands they use (`scripts/verify-redis-lua.mjs`, 28 checks), which covers their
+logic but not a real server. `redis` is deliberately not installed, which keeps the
+missing-package startup failure a real test.
+
+**Closing this needs a Redis instance in CI.** Until then, shared-state operation
+is reviewed-and-unit-tested, not integration-tested, and should be described that
+way in any release note.

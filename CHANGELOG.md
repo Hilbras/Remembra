@@ -11,6 +11,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Fixed a cold-start race in the batch idempotency ledger.** Two processes
+  starting against a fresh ledger directory could observe each other's
+  not-yet-`0600` `claims.sqlite` — better-sqlite3 creates the file with the
+  process umask and it was only `chmod`ed after the open — and one would refuse to
+  start with "claim database must not be group/world accessible". The permission
+  check is unchanged; the file is now created `0600` with `O_CREAT|O_EXCL` before
+  it is opened, so there is no window to lose. Without this a fleet cannot
+  cold-start against a fresh store.
+
+- **The §30 failure matrix** (`src/test/failure-matrix.test.ts`, with a real
+  second OS process in `src/test/matrix-peer.ts`): all nine distributed-failure
+  scenarios, each asserting a stated invariant rather than "did not crash". The
+  two-process rows force the same expected version into both processes rather
+  than relying on interleaving, so they detect the lost-update defect that
+  motivated the milestone. **A live Redis is still not exercised** — the
+  outage rows verify our response to a store outage, not Redis itself.
+
 - **Process roles** (`src/process-roles.ts`, published as
   `@hilbras/remembra/process-roles`): `remembra serve`, `remembra worker`, and
   `remembra scheduler`. The no-subcommand path is unchanged and still requires no

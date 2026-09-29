@@ -392,6 +392,25 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
     const ledger = ledgerIdentitySync(resolvedRoot, this.databasePath);
     this.identity = ledger.identity;
     this.newLedger = ledger.created;
+    // Create the claim database owner-only *before* opening it. better-sqlite3
+    // creates the file with the process umask, so between its creation and the
+    // chmod further down there is a window in which the file is group- or
+    // world-readable — and a second process starting at the same moment can
+    // observe that window and refuse to start. The permission check below is
+    // correct and stays; this removes the race it was losing. A cold-start fleet
+    // must not fail to boot because two instances reached the same directory
+    // together.
+    try {
+      const handle = fs.openSync(
+        this.databasePath,
+        fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY,
+        0o600,
+      );
+      fs.closeSync(handle);
+    } catch (error) {
+      // EEXIST means a peer created it first, with the same 0600 mode.
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
     assertSafeFileSync(this.databasePath);
     try {
       this.db = new Database(this.databasePath, { readonly: false, fileMustExist: false });
