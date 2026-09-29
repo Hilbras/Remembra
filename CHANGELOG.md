@@ -9,16 +9,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-### Added
+## [5.6.0] — 2026-09-29
 
-- **Fixed a cold-start race in the batch idempotency ledger.** Two processes
-  starting against a fresh ledger directory could observe each other's
-  not-yet-`0600` `claims.sqlite` — better-sqlite3 creates the file with the
-  process umask and it was only `chmod`ed after the open — and one would refuse to
-  start with "claim database must not be group/world accessible". The permission
-  check is unchanged; the file is now created `0600` with `O_CREAT|O_EXCL` before
-  it is opened, so there is no window to lose. Without this a fleet cannot
-  cold-start against a fresh store.
+Distributed Remembra: cross-instance primitives, an optional Redis backend, and an
+explicit process split. **A single-process installation is unaffected** — with no
+`REMEMBRA_REDIS_URL` the optional package is never imported, no shared store is
+opened, and the readiness payload is byte-identical to 5.5.1.
+
+Runtime dependencies are unchanged at four. `redis` is an **optional peer** and is
+not even a devDependency, which is what keeps its missing-package startup failure
+a real test rather than a mocked one. Six new published subpaths: `./lock`,
+`./job-store`, `./worker`, `./redis`, `./shared-state`, `./process-roles`.
+
+**Not verified: a live Redis server.** The quota scripts are executed through a
+Lua 5.3 VM with a shim of the Redis commands they use (28 checks, covering their
+logic but not a real server), and the failure matrix verifies our response to a
+store outage rather than Redis itself. Treat shared-state operation as
+reviewed-and-unit-tested until a Redis instance is in CI.
+
+### Added
 
 - **The §30 failure matrix** (`src/test/failure-matrix.test.ts`, with a real
   second OS process in `src/test/matrix-peer.ts`): all nine distributed-failure
@@ -111,6 +120,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `isHeld()` never observed the lease it had just written.
 
 ### Fixed
+
+- **A cold-start race in the batch idempotency ledger.** Two processes
+  starting against a fresh ledger directory could observe each other's
+  not-yet-`0600` `claims.sqlite` — better-sqlite3 creates the file with the
+  process umask and it was only `chmod`ed after the open — and one would refuse to
+  start with "claim database must not be group/world accessible". The permission
+  check is unchanged; the file is now created `0600` with `O_CREAT|O_EXCL` before
+  it is opened, so there is no window to lose. Without this a fleet cannot
+  cold-start against a fresh store.
 
 - **A spurious `IO_ERROR` from a racing delete on the file backend.** Two
   `MemoryStore` instances deleting the same memory could have one unlink the file

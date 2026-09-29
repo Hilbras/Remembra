@@ -68,6 +68,77 @@ limits at least as large as the configured body limit, and monitor
 `GET /metrics`. Do not expose unbounded reverse-proxy buffering or worker
 processes in front of one memory root.
 
+## Running more than one process (V5.6)
+
+One process does everything by default. Splitting is a choice, not a
+requirement.
+
+| Command | HTTP | Worker | Scheduler |
+|---|---|---|---|
+| `remembra` *(no subcommand)* | yes | yes | yes |
+| `remembra serve [--port N]` | yes | no | no |
+| `remembra worker` | no | yes | no |
+| `remembra scheduler` | no | no | yes |
+
+A role that does not hold the HTTP duty **refuses** `--http` and `--port` at
+startup, before any storage is touched:
+
+```
+$ remembra worker --port 8080
+the "worker" role has no HTTP surface; drop --http/--port, or use "remembra serve"
+```
+
+This is deliberate. Ignoring the flag would let a `worker` bind a port and serve
+traffic from a process whose whole premise is that it has no HTTP surface.
+
+`worker` and `scheduler` need a writable storage root, because both open the
+durable job ledger at `<root>/.jobs.sqlite`. A single-process install never
+touches it and never needs a native database handle it did not need before.
+
+### Shared state across instances
+
+| `REMEMBRA_REDIS_URL` | Result |
+|---|---|
+| unset, empty, or whitespace | single-host. No Redis code is imported. |
+| `redis://…` / `rediss://…`, package present | shared state, connected at startup. |
+| set, package absent | **startup fails**, naming `npm install redis`. |
+| set, connection refused | **startup fails.** |
+| any other scheme | rejected as a configuration error. |
+
+`redis` is an **optional peer dependency**, not a dependency:
+
+```bash
+npm install redis
+export REMEMBRA_REDIS_URL='rediss://:password@host:6379'
+```
+
+**There is no fallback.** A deployment that asked for a shared budget and
+quietly got a per-instance one would allow *N* × the configured limit while every
+instance reported the limit it was not enforcing, and nothing in the logs would
+look wrong. So an unreachable Redis at startup is a failure to start, not a
+degraded mode.
+
+If the connection drops *after* startup:
+
+- the limiter **fails closed** with `503` rather than granting against a local
+  budget;
+- `/health/ready` reports `status: "unready"` and `shared.mode: "unreachable"`,
+  so a load balancer stops sending traffic;
+- `/health` liveness stays up, so you can still reach the process;
+- and it **recovers on its own** at the next successful operation — no restart,
+  no operator action.
+
+`shared` never carries the URL, host, port, or password. A Redis URL routinely
+embeds a password, and `/health/ready` is the endpoint most likely to be logged,
+cached, or exposed through a proxy.
+
+> **Verify against a real Redis before relying on this.** No Redis exists in this
+> project's test environment, so the scripts are verified by executing them
+> through a Lua VM with a command shim, and the failure matrix verifies our
+> response to a store outage — not Redis itself. See [lock and jobs](lock.md).
+
+---
+
 ## Agent deployments
 
 Agent mode is opt-in. A host embedding Remembra must establish identity after

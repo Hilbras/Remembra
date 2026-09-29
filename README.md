@@ -354,6 +354,49 @@ The complete isolation and migration contract is in [V5 tenant specification](do
 
 ---
 
+## Distributed deployments (V5.6)
+
+One process can still do everything — that is the default and it needs no
+configuration. Splitting the duties is a choice, not a requirement.
+
+| Command | HTTP | Worker | Scheduler |
+|---|---|---|---|
+| `remembra` *(no subcommand)* | yes | yes | yes |
+| `remembra serve [--port N]` | yes | no | no |
+| `remembra worker` | no | yes | no |
+| `remembra scheduler` | no | no | yes |
+
+A role without an HTTP surface **refuses** `--http` and `--port` rather than
+ignoring them: a `worker` that quietly bound a port would serve traffic from a
+process whose entire premise is that it has no HTTP surface.
+
+```bash
+npm install redis          # optional; not a dependency of this package
+export REMEMBRA_REDIS_URL=redis://:password@host:6379
+remembra serve             # instance 1
+remembra worker            # and/or a separate worker process
+```
+
+**Redis is optional, and there is no fallback.** With the variable unset, no
+Redis code is imported and no shared store is opened — `/health/ready` is
+byte-identical to a single-process install. With it set but unreachable,
+**startup fails** rather than degrading to per-instance limits, because two
+instances each allowing 60/min means a fleet allowing 120/min while every
+instance reports a limit it is not enforcing. If the connection drops *after*
+startup the limiter **fails closed** (503) and recovers on its own at the next
+successful operation; readiness reports `unready` so a load balancer drains the
+instance, while liveness stays up so it can be diagnosed.
+
+Runtime dependencies are unchanged at four. `redis` is an optional peer, not a
+dependency. The capability manifest advertises `distributed` whether or not the
+variable is set — it describes the **build**, like `webhooks`, not the
+deployment.
+
+> **Not integration-tested against a live Redis.** The quota scripts are
+> verified by executing them through a Lua 5.3 VM with a shim of the Redis
+> commands they use, and the failure matrix verifies our *response* to a store
+> outage rather than Redis itself. See [lock and jobs](docs/lock.md).
+
 ## Storage, lifecycle, and recovery
 
 ### Storage backends
@@ -470,6 +513,10 @@ Read [security](docs/security.md), [self-hosting](docs/self-hosting.md), [V5.0.2
 | `REMEMBRA_TENANT_ID` | — | Required organization selector in strict local mode |
 | `REMEMBRA_TENANT_MEMBERSHIP_VERSION` | — | Required current membership version in strict local mode |
 | `REMEMBRA_SNAPSHOT_KEY` | — | 64-character hex HMAC key for strict snapshots |
+| `REMEMBRA_REDIS_URL` | unset | Shared state for locks and quota budgets across instances. Unset means single-host, and no Redis code is imported at all. See [distributed deployments](#distributed-deployments-v56). |
+| `REMEMBRA_WORKER_CONCURRENCY` | `2` | Simultaneous jobs for `remembra worker` |
+| `REMEMBRA_WORKER_LEASE_MS` | `60000` | Claim lease a `worker` renews while a job runs |
+| `REMEMBRA_SCHEDULER_INTERVAL_MS` | `900000` | How often `remembra scheduler` enqueues periodic work |
 
 Additional limits and provider controls are documented in [self-hosting](docs/self-hosting.md), [security](docs/security.md), and [providers](docs/providers.md).
 
@@ -502,6 +549,13 @@ Additional limits and provider controls are documented in [self-hosting](docs/se
 │ Provider      │                       │ Tenant directory    │
 │ adapters      │                       │ in-memory / file    │
 └───────────────┘                       └────────────────────┘
+                          │
+                          ▼  (only when REMEMBRA_REDIS_URL is set)
+┌──────────────────────────────────────────────────────────────┐
+│ Shared state — optional                                       │
+│ LockProvider (leases) · JobStore (durable ledger) · quota     │
+│ reached only through a dynamic import of an optional peer      │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 Key design properties:
@@ -511,7 +565,10 @@ Key design properties:
 - SQLite and file backends implement the same tenant-aware contract;
 - atomic writes, advisory locking, and crash recovery protect local durability;
 - relation/history/audit/job paths apply the same tenant filter as primary reads;
-- provider failures are bounded and do not weaken storage correctness.
+- provider failures are bounded and do not weaken storage correctness;
+- cross-instance primitives are optional and additive: leases rather than held
+  locks, atomic claims rather than check-then-act, and a shared store that fails
+  closed rather than degrading to local state.
 
 See [architecture](docs/architecture.md), [memory model](docs/memory-model.md), and [storage format](docs/storage.md) for the detailed contracts.
 
@@ -559,7 +616,8 @@ The release gate includes build, tests, security/recovery matrices, documentatio
 | Storage and recovery | [Storage](docs/storage.md) · [Architecture](docs/architecture.md) |
 | Providers | [Providers](docs/providers.md) |
 | Operations | [Self-hosting](docs/self-hosting.md) · [Observability](docs/observability.md) · [UI](docs/ui.md) |
-| Project process | [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [V5 gates](docs/v5-release-gates.md) · [V5.4.0 compatibility](docs/v5.4.0-compatibility.md) |
+| Distributed | [Lock and jobs](docs/lock.md) · [V5.6.0 audit](docs/v5.6.0-audit.md) |
+| Project process | [Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [V5 gates](docs/v5-release-gates.md) · [V5.4.0 compatibility](docs/v5.4.0-compatibility.md) · [V5.5.0 compatibility](docs/v5.5.0-compatibility.md) · [V5.6.0 compatibility](docs/v5.6.0-compatibility.md) |
 | Future architecture | [V6 architecture specification](docs/v6-architecture-spec.md) |
 
 ---
@@ -568,6 +626,10 @@ The release gate includes build, tests, security/recovery matrices, documentatio
 
 - **V4.9 remains supported:** legacy HTTP routes, Markdown, existing clients, and all thirteen original MCP tools remain available.
 - **V5 is additive:** `memory_context`, tenant entities, and versioned APIs do not rename or remove the V4.9 surface.
+- **V5.6 is additive and opt-in:** locks, the job ledger, the durable worker, and
+  the Redis adapter are new subpaths. A single-process deployment is unchanged —
+  no new dependency, no new configuration, and an unchanged readiness payload.
+  See [V5.6.0 compatibility](docs/v5.6.0-compatibility.md).
 - **Current focus:** hardening the production memory platform, operational recovery, and measurable retrieval quality.
 - **V6 direction:** see the [V6 architecture specification](docs/v6-architecture-spec.md) for the security-first policy model, provider independence, offline-first core, migration lifecycle, and release roadmap.
 - **Schema boundary:** tenantless V4 records use schema `3`; tenant records use schema `4`.

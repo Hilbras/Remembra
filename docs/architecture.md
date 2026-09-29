@@ -44,6 +44,52 @@ Contract highlights:
   requires `tenantCapable` backends; the file backend keeps tenant namespaces
   out of unscoped legacy reads.
 
+## Process roles and shared state (V5.6)
+
+Everything above runs in one process, and that is still the default. The
+milestone added a way to *split* the duties, which is a deployment choice rather
+than a new requirement.
+
+```text
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│ serve        │  │ worker       │  │ scheduler    │
+│ HTTP + hooks │  │ claims jobs  │  │ enqueues jobs│
+└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+       │                 │                 │
+       └────────►  JobStore (durable ledger) ◄──────┘
+                         │
+                  (with REMEMBRA_REDIS_URL)
+                         ▼
+              LockProvider · shared quota
+```
+
+The rules the shape implies:
+
+- **Leases, not held locks.** A `LockProvider` hands out a claim with an owner
+  and an absolute expiry. A process that dies does not hold anything; its lease
+  lapses and a peer reclaims it. A held lock has no way to be released by a
+  process that no longer exists.
+- **Atomic claims, not check-then-act.** Taking a job is one statement
+  (`UPDATE … RETURNING`), and updating a record is `WHERE … AND version = ?`.
+  The lost-update defect that motivated this milestone was a check-then-act
+  bug: two instances both read version *N* and both were told they had written
+  *N+1*.
+- **One shared budget, not N.** The shared limiter evaluates every quota
+  dimension in a single Lua script and charges only if all of them allow. The
+  in-process limiter serializes with a mutex that does not cross instances, so
+  composing per-dimension Redis limiters under it would let a shared
+  organization budget be exceeded by interleaving.
+- **Fail closed.** A configured-but-unreachable store refuses requests rather
+  than degrading to per-instance state.
+- **Declared handlers.** A worker claims only the job types it declares, so a
+  heterogeneous fleet never claims work it cannot run — and a worker whose lease
+  is lost aborts its job's `AbortSignal` instead of finishing work a peer may
+  now be repeating.
+
+See [lock and jobs](lock.md) for the operator-facing contract.
+
+---
+
 ## Concurrency model (audit Phase 2: advisory locking)
 
 Three layers, from narrowest to widest:

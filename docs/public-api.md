@@ -130,6 +130,24 @@ authenticated, content-free discovery response containing the bounded v1
 capability manifest. The manifest describes the **build**, not the deployment:
 `webhooks` means the release supports signed webhook delivery, while actually
 delivering events additionally requires `REMEMBRA_WEBHOOKS` to be configured.
+`distributed` follows the same rule: it means the build contains locks, the job
+ledger, the durable worker, and an optional Redis adapter, while using them
+across instances additionally requires `REMEMBRA_REDIS_URL` and the optional
+`redis` package.
+
+When `REMEMBRA_REDIS_URL` is set, `/health/ready` and `/health` gain an optional
+`shared` object. It is **absent entirely** when the variable is unset, so a
+single-process install's payload is unchanged.
+
+```json
+{ "status": "ok",     "shared": { "mode": "connected" } }
+{ "status": "unready", "shared": { "mode": "unreachable", "error": "SERVICE_UNAVAILABLE" } }
+```
+
+`shared.error` is a classified label, never a message. The URL, host, port, and
+password are never included. While a configured store is unreachable the process
+is `unready` because the limiter is failing closed, and it returns to `ok` on its
+own at the next successful operation. See [lock and jobs](lock.md).
 A deployment that does not set it still advertises the capability, because the
 manifest is deliberately static, cacheable, and free of configuration detail.
 

@@ -132,6 +132,9 @@ stays exempt so unauthenticated readiness probes keep working.
 | `remembra_provider_failures_total` | counter | `provider`, `code` | Alias of the above, retained for existing alert rules. |
 | `remembra_snapshot_operations_total` | counter | `operation`, `result` | Snapshot `export`/`import`/`migrate`/`migrate_dry_run` as `started`/`completed` pairs. A `started` with no matching `completed` is itself the signal; failures also surface in `remembra_errors_total` with a snapshot error code. |
 | `remembra_recovery_operations_total` | counter | `operation`, `result` | Recovery-state transitions by event, plus explicit `read_only` entries and failures. `operation` is the closed transition enum, so it cannot grow. |
+| `remembra_durable_jobs_total` | counter | `type`, `outcome` | Durable worker jobs by declared type and outcome, where `outcome` is `completed`, `failed`, or `cancelled`. |
+| `remembra_shared_state_failures_total` | counter | `operation` | Shared-state operations that **failed closed**. A non-zero rate means requests are being refused, not silently allowed on local state. |
+| `remembra_shared_state_transitions_total` | counter | `to` | Shared-state connectivity transitions, recorded on the **edge only** — one increment per transition, not one per failed request, so a flapping store cannot flood the series. `to` is `connected` or `unreachable`. |
 
 ### Percentiles (V5.1.0)
 

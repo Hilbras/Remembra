@@ -209,10 +209,25 @@ test("brute-force cosine at audit scale: 10K memories × 768-dim vectors", (t) =
   const q = new Array<number>(D);
   for (let d = 0; d < D; d++) q[d] = rnd();
 
-  const started = performance.now();
-  const results = search(memories, { query: "", limit: 10 }, q);
-  const elapsed = performance.now() - started;
-  t.diagnostic(`brute-force search over ${N}×${D}: ${elapsed.toFixed(1)}ms`);
+  // Warm up before measuring. The first call into `search` runs on a cold JIT, and
+  // the 10,000x768 corpus above is ~60MB of freshly allocated doubles, so a single
+  // cold sample measures interpreter warmup and where a GC happened to land rather
+  // than the algorithm. Observed spread across runs was 249ms to 1053ms for
+  // identical input, which is a property of the measurement, not of the code.
+  //
+  // The budget is deliberately unchanged at 1000ms, and the best of three samples
+  // is what is compared against it: a real regression -- an accidentally quadratic
+  // scan, a lost early-exit -- still blows it comfortably, so this makes the check
+  // measure its own subject instead of the runtime's warmup curve.
+  search(memories.slice(0, 200), { query: "", limit: 10 }, q);
+  let elapsed = Number.POSITIVE_INFINITY;
+  let results: ReturnType<typeof search> = [];
+  for (let sample = 0; sample < 3; sample++) {
+    const started = performance.now();
+    results = search(memories, { query: "", limit: 10 }, q);
+    elapsed = Math.min(elapsed, performance.now() - started);
+  }
+  t.diagnostic(`brute-force search over ${N}x${D}: ${elapsed.toFixed(1)}ms (best of 3, warmed)`);
 
   assert.equal(results.length, 10);
   assert.ok(elapsed < 1000, `expected <1000ms at audit scale, took ${elapsed.toFixed(1)}ms`);
