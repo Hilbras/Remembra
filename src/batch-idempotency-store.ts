@@ -189,6 +189,42 @@ function ensureSafeDirectorySync(directory: string): void {
   }
 }
 
+/**
+ * Sleep synchronously, for startup code that cannot await.
+ *
+ * `Atomics.wait` is the only way to block without burning CPU, and it is
+ * available on the main thread for this purpose. Used only during ledger
+ * initialisation, where the wait is bounded and sub-millisecond in practice.
+ */
+function sleepSync(ms: number): void {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    // A host without SharedArrayBuffer still works; it just does not wait, and
+    // the caller's bounded retry then degrades to a single attempt.
+  }
+}
+
+/** How long a peer waits for a concurrent initialiser before failing closed. */
+const LEDGER_INIT_WAIT_MS = 2_000;
+const LEDGER_INIT_POLL_MS = 25;
+
+/**
+ * Is the ledger database in a state only a concurrent initialiser can produce?
+ *
+ * The identity file, the schema, and the generation row become visible at three
+ * separate moments, so a process starting against a directory another is
+ * initialising can observe any of the intermediate states. Those states are also
+ * what tampering or corruption looks like, which is why the checks that reject
+ * them stay — this only distinguishes "wait and look again" from "refuse", with
+ * a deadline, so genuine damage still fails closed.
+ */
+function isPartialLedgerInit(tableNames: Set<string>, metaPresent: boolean): boolean {
+  return (
+    (tableNames.size === 0 || tableNames.has("batch_idempotency_meta") === false) || !metaPresent
+  );
+}
+
 function assertSafeFileSync(filePath: string): void {
   try {
     const stat = fs.lstatSync(filePath);
@@ -248,6 +284,22 @@ function ledgerIdentitySync(root: string, databasePath: string): { identity: str
   }
   if (identity !== undefined) {
     if (!/^[a-f0-9]{64}$/.test(identity)) invalid("ledger identity is invalid");
+    // The identity is written before the database is opened, so a peer starting
+    // against the same directory can see one without the other. That window is
+    // transient by construction; a genuinely orphaned identity is not, and still
+    // fails closed once the wait is over.
+    if (!databaseExists) {
+      const deadline = Date.now() + LEDGER_INIT_WAIT_MS;
+      while (!databaseExists && Date.now() < deadline) {
+        sleepSync(LEDGER_INIT_POLL_MS);
+        try {
+          fs.lstatSync(databasePath);
+          databaseExists = true;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    }
     if (!databaseExists) invalid("ledger database is missing while its identity remains");
     return { identity, created: false };
   }
@@ -417,9 +469,28 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
       this.db.pragma("journal_mode = WAL");
       this.db.pragma("synchronous = FULL");
       this.db.pragma("busy_timeout = 5000");
-      const existingTables = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
-      const tableNames = new Set(existingTables.map((row) => row.name));
-      if (!this.newLedger) {
+      let tableNames = new Set<string>();
+      let metaPresent = false;
+      if (this.newLedger) {
+        const existing = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
+        tableNames = new Set(existing.map((row) => row.name));
+      } else {
+        // A peer may be initialising this directory right now. Poll until the
+        // state resolves or the deadline passes, then run the original checks
+        // unchanged — so a ledger that is genuinely damaged is still refused, it
+        // just fails after the wait instead of immediately.
+        const deadline = Date.now() + LEDGER_INIT_WAIT_MS;
+        for (;;) {
+          const existing = this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
+          tableNames = new Set(existing.map((row) => row.name));
+          const complete = tableNames.size === 2 && tableNames.has("batch_idempotency_meta") && tableNames.has("batch_idempotency_claims");
+          metaPresent = complete
+            ? Boolean(this.db.prepare("SELECT id FROM batch_idempotency_meta WHERE id = 1").get())
+            : false;
+          if (!isPartialLedgerInit(tableNames, metaPresent)) break;
+          if (Date.now() >= deadline) break;
+          sleepSync(LEDGER_INIT_POLL_MS);
+        }
         if (
           tableNames.size !== 2
           || !tableNames.has("batch_idempotency_meta")
@@ -427,8 +498,7 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
         ) {
           invalid("ledger database does not match its recorded identity");
         }
-        const existingMeta = this.db.prepare("SELECT id FROM batch_idempotency_meta WHERE id = 1").get();
-        if (!existingMeta) invalid("ledger generation metadata is missing");
+        if (!metaPresent) invalid("ledger generation metadata is missing");
       }
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS batch_idempotency_meta (
