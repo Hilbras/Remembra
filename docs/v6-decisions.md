@@ -1,6 +1,6 @@
 # V6 policy and version decisions (V6-T01)
 
-Status: **proposed — awaiting maintainer approval.**
+Status: **approved 2026-09-30.**
 
 Date: 2026-09-30
 
@@ -19,17 +19,21 @@ constant in `src/api-contract.ts`; the idempotency surface is
 reported state; and the MCP tool set is the fourteen `memory_*` tools in
 `src/mcp.ts`.
 
+All ten questions are now settled. Five were genuine forks rather than defaults
+and were put to the maintainer; each decision below carries the date and the
+reasoning that settled it, so a later reversal is visibly a reversal.
+
 ## How to read the status column
 
 | Status | Meaning |
 |---|---|
-| **Proposed** | Recommended here. Reversible without a schema migration. |
-| **Proposed, needs a call** | A real fork in the road. The recommendation is a default, not an answer. |
-| **Deferred** | Deliberately not decided now, with the safe default named. |
+| **Decided** | Settled. Five required a maintainer call; each carries the date inline. |
+| **Deferred** | Deliberately not decided now, with the safe default named and the decision's owner named. |
 
-Nine of the ten are **proposed** and follow from constraints V5 has already
-committed to. Four need your decision, marked below and collected in
-[Open decisions](#open-decisions-for-the-maintainer).
+Nine decisions were settled directly from constraints V5 has already committed
+to. Five of them were genuine forks and were put to the maintainer; all five
+came back with the recommended answer, and each records why below rather than
+being silently absorbed into the prose.
 
 ---
 
@@ -59,8 +63,9 @@ also keeps V6 additive.
 any response unless the caller holds a clearance for `secret` — never partially
 emitted, never summarised.
 
-**Needs a call:** whether `secret` memories may ever appear in aggregate counts
-that a lower-clearance caller can read (see [Decision 9](#9-audit-evidence-and-retention)).
+**Resolved by [Decision 9](#9-audit-evidence-and-retention):** a `secret` memory
+never appears in any aggregate a lower-clearance caller can read. The label's
+reach extends to existence, not only to content.
 
 ## 2. Expiration semantics
 
@@ -88,10 +93,13 @@ redefine it; it gains a companion `expiresAt` that V5 does not have.
 it — which is why an explicit `expiresAt` on a `neverExpire` memory is a validation
 error rather than a silent override.
 
-**Needs a call:** whether an expired memory may be renewed after expiry, or only
-before. Renewing after is a resurrection primitive and needs an audit reason; I
-recommend allowing it only with an explicit `renewalReason`, because the
-alternative silently forbids a legitimate correction.
+**Decided 2026-09-30: renewal after expiry is allowed, with an explicit
+audited `renewalReason`.** Renewing after expiry is a resurrection primitive, so
+the reason is mandatory and is recorded as an audit event. A renewal without a
+reason is `INVALID_INPUT`, not a default reason. This is the fork the ADR
+originally left open; it is now settled in favour of the looser option because
+forbidding it would make a legitimate correction impossible, and the audit trail
+is what keeps the looser option honest.
 
 ## 3. Legal hold
 
@@ -149,10 +157,10 @@ built-in engine refuses. This is a real limitation, deliberately accepted.
   `memory_relate`, `memory_history`, `memory_context`, `memory_batch`,
   `memory_digest`, and `memory_maintain`.
 
-**Needs a call:** whether `/api/v6` exists at all, or whether V6 is
-content-negotiation-only on `/api/v1`. I recommend both — the path is unambiguous
-in logs, negotiation is what lets a pinned caller adopt it — but shipping one
-means shipping half the mechanism.
+**Decided 2026-09-30: both.** `/api/v6` routes exist *and*
+`Accept: application/vnd.remembra.v6+json` is honoured, so a caller pinned to a
+base URL can opt in without rewriting URLs while the path keeps V6 unambiguous in
+logs. Shipping only one was rejected as half the mechanism.
 
 ## 6. Replay and idempotency
 
@@ -177,9 +185,10 @@ The concrete risk this closes: two different callers, or two different operation
 colliding on one key. Scoping by tenant and operation class is what makes
 collision impossible rather than unlikely.
 
-**Needs a call:** whether provider operations get their own class or share the
-write class. I recommend their own class, because a provider call is not a
-memory mutation and its replay semantics differ.
+**Decided 2026-09-30: provider operations get their own operation class.** A
+provider call is not a memory mutation and its replay semantics differ, so
+sharing the write class is rejected — it could let a provider replay be answered
+with a memory response.
 
 ## 7. Local vector and index implementations
 
@@ -222,11 +231,11 @@ unfalsifiable language into a document that is supposed to be a contract.
 - Events are append-only and bounded per tenant, with the same pagination and
   redaction as any other domain.
 
-**Needs a call:** whether a caller below `secret` clearance may see *that* a
-`secret` memory was accessed (counts and timestamps) without seeing its content.
-The safer default is no — deny entirely. I flag it because aggregate existence
-disclosure is a real leak channel and operators legitimately need the counts, so
-the answer is a product decision, not a technical one.
+**Decided 2026-09-30: deny entirely.** A caller below `secret` clearance may not
+learn that a `secret` memory exists — not even as an aggregate count or a
+timestamp. Existence disclosure is itself a leak channel, so an operator who
+needs the counts reads them from an audit surface that is itself access-controlled,
+not from a list endpoint.
 
 ## 10. V5 compatibility window
 
@@ -246,26 +255,29 @@ supported" untrustworthy.
 
 ---
 
-## Open decisions for the maintainer
+## Decisions that required a maintainer call
 
-Four of these are forks rather than defaults. Each has a recommendation, and none
-is implemented.
+Five questions were forks rather than defaults. Each was put to the maintainer on
+2026-09-30 with its recommendation and the cost of the alternative stated; all five
+came back with the recommendation. The table records what was asked, so the shape of
+the fork stays visible after it is closed.
 
-| # | Question | Recommendation | Cost of the other answer |
+| # | Question | Answered | Decision |
 |---|---|---|---|
-| 2 | May an expired memory be renewed, or only before expiry? | Allow after expiry, but only with an explicit `renewalReason` (audited) | Forbidding is simpler and safer; it makes a legitimate correction impossible |
-| 5 | `/api/v6` path, content negotiation, or both? | Both | Path-only needs URL rewriting for pinned callers; negotiation-only is ambiguous in logs |
-| 6 | Do provider operations get their own idempotency class? | Yes — their replay semantics differ from a memory write | Sharing the write class risks a provider replay being answered with a memory response |
-| 9 | May a sub-`secret` caller see *that* a `secret` memory was accessed? | No — deny entirely | Allowing leaks existence through aggregate counts; operators may need it, so it is a product call |
+| 2 | May an expired memory be renewed, or only before expiry? | Allow after expiry, with a mandatory audited `renewalReason` | Forbidding was rejected: it makes a legitimate correction impossible, and the audit trail is what keeps the looser answer honest |
+| 5 | `/api/v6` path, content negotiation, or both? | **Both** | Path-only needs URL rewriting for pinned callers; negotiation-only is ambiguous in logs. Shipping one is half the mechanism |
+| 6 | Do provider operations get their own idempotency class? | Yes, their own class | Sharing the write class could let a provider replay be answered with a memory response |
+| 9 | May a sub-`secret` caller see *that* a `secret` memory was accessed? | No — deny entirely | Allowing leaks existence through aggregate counts, which is itself a leak channel |
+| 1 | May `secret` memories appear in aggregate counts? | No — resolved by #9 | The label's reach extends to existence, not only to content |
 
-Everything else in §1–§10 is proposed and internally consistent: the sensitivity
-order, the fail-closed engine composition, and the scoped idempotency key are the
-three the rest of the plan leans on hardest.
+The three the rest of the plan leans on hardest — the sensitivity order, the
+fail-closed engine composition, and the scoped idempotency key — were not forks and
+were settled from constraints V5 has already committed to.
 
 ## Not decided here
 
-- **Implementation of any kind.** V6-T02 onward still requires this record to be
-  approved first; the plan's own gate says so.
+- **Implementation of any kind.** This record is approved; V6-T02 is unblocked and
+  is the first thing to build. Nothing here is implemented yet.
 - **V6-T03's schema shape.** Field names and defaults are T03's acceptance, and
   this record deliberately describes semantics rather than shapes.
 - **The two deferred items** (§7 local index choice, §8 distributed consistency)

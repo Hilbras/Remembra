@@ -1,39 +1,44 @@
 # V6.0.0 Task List
 
-Status: planning only. No task below authorizes implementation until the
-capability map and Phase 0 decision gate are approved.
+Status: **Phase 0 in progress.** V6-T01 is approved (2026-09-30) and the ten
+architecture decisions it freezes are recorded in
+[`docs/v6-decisions.md`](../docs/v6-decisions.md). V6-T02 onward is not yet
+authorized: it waits on the capability-map approval and the maintainer review in
+the [definition of done](#definition-of-done-for-the-planning-phase), both of
+which are maintainer acts rather than engineering ones.
 
 Source plan: [`v6-plan.md`](v6-plan.md)
 Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-spec.md)
 
 ## Phase 0: Decision gates and contracts
 
-- [ ] **V6-T01 — Freeze V6 policy and version decisions**
+- [x] **V6-T01 — Freeze V6 policy and version decisions**
   - Acceptance: trust, sensitivity, expiration, policy precedence, API versioning, replay/idempotency, and V5 compatibility decisions are approved.
   - Verify: architecture review and decision fixtures recorded; no blocking open question remains.
   - Depends on: none.
-  - **Drafted, not approved.** All ten open questions from the architecture spec
-    §15 are answered in [`docs/v6-decisions.md`](../docs/v6-decisions.md) with a
-    recommendation and its consequences for each. The V5 baseline each decision is
-    read against was checked against the source (`RetentionMode`, `API_PREFIX`,
-    `idempotencyKey`/`idempotencyScope`, the `memory_*` tool set) rather than
-    recalled. This box stays unticked because "approved" is a maintainer act.
-  - **Four decisions are genuine forks, not defaults**, and are the only thing
-    standing between here and approval: whether an expired memory may be renewed
-    (Q2), `/api/v6` path vs content negotiation vs both (Q5), whether provider
-    operations get their own idempotency class (Q6), and whether a sub-`secret`
-    caller may see *that* a `secret` memory was accessed (Q9). Each has a
-    recommendation in the ADR; the cost of the alternative answer is stated there.
-  - Two questions are deliberately **deferred with a safe default named** rather
-    than answered: the local index implementation (Q7, deferred to the storage
-    layer — the decided part is that no remote service may be required) and
-    distributed consistency (Q8, out of scope for a single-node V6.0.0, defaulting
-    to V5's single-writer fail-closed behaviour). That satisfies "every unresolved
-    decision has a safe default" without inventing a distributed model nobody
-    specified.
-  - Decision fixtures (allow/deny/redact/quarantine/expired/policy-invalid) are
-    **not yet written** — they are T02's first deliverable, since they are the
-    executable form of this record and cannot be written before it is approved.
+  - **Approved 2026-09-30.** All ten open questions from the architecture spec §15
+    are answered in [`docs/v6-decisions.md`](../docs/v6-decisions.md), each read
+    against what V5 actually does — those readings were checked against the source
+    (`RetentionMode`, `API_PREFIX`, `idempotencyKey`/`idempotencyScope`, the
+    `memory_*` tool set) rather than recalled, and two were corrected as a result.
+  - **Five were genuine forks, not defaults**, and were put to the maintainer with
+    the recommendation and the cost of the alternative stated. All five came back
+    with the recommendation: renewal after expiry is allowed with a mandatory
+    audited `renewalReason`; V6 is exposed by **both** `/api/v6` and
+    `Accept: application/vnd.remembra.v6+json`; provider operations get their own
+    idempotency class; existence of a `secret` memory is never disclosed to a
+    lower-clearance caller; and `secret` never appears in aggregates they can read.
+  - Two questions are **deferred with a safe default named** rather than answered:
+    the local index implementation (Q7, decided part — no remote service may be
+    required; deferred to the storage layer) and distributed consistency (Q8,
+    single-node V6.0.0, defaulting to V5's single-writer fail-closed behaviour).
+    Both are owned by later phases, which is what "every unresolved decision has a
+    safe default" asks for.
+  - **Decision fixtures are not written.** They are V6-T02's first deliverable: they
+    are the executable form of this record, and writing them before the record was
+    approved would have encoded assumptions as tests. This is the one Verify item
+    that remains open, and it is T02's, not T01's — T01's acceptance is the
+    approval, which is taken.
 
 - [ ] **V6-T02 — Define versioned policy and decision schemas**
   - Acceptance: versioned bounded policy documents, closed decision effects/reasons, deterministic precedence, and fail-closed validation.
@@ -236,8 +241,11 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
 Audited 2026-09-30. Four of the six are mechanically checkable and are now
 verified; two are maintainer acts.
 
-- [ ] Capability map and dependency order approved. *(Maintainer act — the map is
-  in `v6-plan.md` and internally consistent; the approval is not taken.)*
+- [ ] Capability map and dependency order approved. *(Maintainer act. The map is
+  in `v6-plan.md`; the task list's dependency order was machine-checked rather
+  than eyeballed — 26 tasks, 0 forward references, 0 unknown dependencies, 0 cycles,
+  and a single root (T01), so the graph is executable as written. The approval
+  itself is not taken.)*
 - [x] Every task has acceptance, verification, dependencies, scope, and size.
   Verified: all 26 tasks carry Acceptance/Verify/Depends on in `v6-todo.md` and
   Estimated scope in `v6-plan.md` (12×L, 10×M, and 4 with split guidance). The two
@@ -246,10 +254,12 @@ verified; two are maintainer acts.
   one file". An audit run against `v6-todo.md` alone reports all 26 as missing
   scope and size, which is a false reading.
 - [x] Open policy/schema/API/migration questions have owners and safe defaults.
-  All ten of the architecture spec's §15 questions are answered in
-  [`docs/v6-decisions.md`](../docs/v6-decisions.md); five carry a recommendation
-  flagged "Needs a call", three are deferred with the safe default named. The
-  remaining "owner" half is the maintainer's name against those five.
+  All ten of the architecture spec's §15 questions are answered and **approved** in
+  [`docs/v6-decisions.md`](../docs/v6-decisions.md). Five were forks requiring a
+  maintainer call and all five are settled, each carrying its date and reasoning.
+  The two deferred items have their safe default named and their owning phase
+  identified: Q7 (local index) is owned by the storage layer, Q8 (distributed
+  consistency) is explicitly out of scope for single-node V6.0.0.
 - [x] V5 compatibility/security/performance evidence is identified.
   `v5-tenant-spec.md`, `v5-threat-model.md`, `v5-release-gates.md`,
   `v5-performance.md`, `v5-policy.md` all exist and are linked from the spec.
