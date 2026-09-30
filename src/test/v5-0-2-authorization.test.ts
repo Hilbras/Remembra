@@ -18,6 +18,7 @@ import { TenantEntityService } from "../tenant-entities.js";
 import { MemoryStore } from "../store.js";
 import { SqliteBackend } from "../sqlite-backend.js";
 import { StoreInput } from "../types.js";
+import { FAKE_OPENAI_KEY } from "./key-fixtures.js";
 import {
   createTenantContext,
   memoryBelongsToTenant,
@@ -162,8 +163,8 @@ test("SEC-SENS-001: default sensitive-data redaction is applied by service store
   policy.sensitiveData.action = "redact";
   const service = new MemoryService(new MemoryStore(root), { embeddingProvider: "none", policy });
   try {
-    const stored = (await service.store(input("key sk-abc123def456ghi789jkl012mno345pqr"))).memory;
-    assert.equal(stored.content.includes("sk-abc123def456ghi789jkl012mno345pqr"), false);
+    const stored = (await service.store(input(`key ${FAKE_OPENAI_KEY}`))).memory;
+    assert.equal(stored.content.includes(FAKE_OPENAI_KEY), false);
     const updated = await service.update(stored.id, { content: "password: super-secret-value" });
     assert.equal(updated.memory.content.includes("super-secret-value"), false);
   } finally {

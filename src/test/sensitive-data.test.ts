@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { SensitiveDataDetector } from "../sensitive-data.js";
+import { FAKE_OPENAI_KEY, FAKE_OPENAI_KEY_IN_TEXT } from "./key-fixtures.js";
 
 test("sensitive-data: detects API key pattern", () => {
   const det = new SensitiveDataDetector("redact");
-  const r = det.scan("my key is sk-abc123def456ghi789jkl012mno345pqr");
+  const r = det.scan(FAKE_OPENAI_KEY_IN_TEXT);
   assert.equal(r.detected, true);
   assert.ok(r.categories.includes("api_key"));
-  assert.ok(!r.text.includes("sk-abc"));
+  assert.ok(!r.text.includes(FAKE_OPENAI_KEY));
 });
 
 test("sensitive-data: detects AWS key pattern", () => {

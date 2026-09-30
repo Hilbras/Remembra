@@ -15,6 +15,7 @@ import { RemembraError } from "../errors.js";
 import type { ExtractedMemory } from "../llm.js";
 import type { Memory } from "../types.js";
 import type http from "node:http";
+import { FAKE_OPENAI_KEY } from "./key-fixtures.js";
 
 async function tempStore(): Promise<{ store: MemoryStore; root: string }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-p8-"));
@@ -50,7 +51,7 @@ async function startServer(svc: MemoryService): Promise<{ server: http.Server; b
 test("redact: emails, SSN, Luhn-valid cards, phones, secrets → typed placeholders", () => {
   const r = redact(
     "Mail jane.doe+x@corp.example.com or call +1 (415) 555-0142. " +
-      "Card 4111 1111 1111 1111 expires 12/28, SSN 123-45-6789, key sk-abcd1234efgh5678ijkl.",
+      `Card 4111 1111 1111 1111 expires 12/28, SSN 123-45-6789, key ${FAKE_OPENAI_KEY}.`,
   );
   assert.ok(r.text.includes("<EMAIL>"));
   assert.ok(r.text.includes("<PHONE>"));

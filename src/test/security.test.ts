@@ -15,6 +15,7 @@ import {
 import { isRemembraError } from "../errors.js";
 import { InjectionDetector } from "../injection-detector.js";
 import { SensitiveDataDetector } from "../sensitive-data.js";
+import { FAKE_OPENAI_KEY_IN_TEXT } from "./key-fixtures.js";
 
 async function makeService(): Promise<MemoryService> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-security-"));
@@ -236,7 +237,7 @@ test("injection-detector: no false positive on normal text", () => {
 
 test("sensitive-data: detects API key pattern", () => {
   const det = new SensitiveDataDetector("redact");
-  const r = det.scan("my key is sk-abc123def456ghi789jkl012mno345pqr");
+  const r = det.scan(FAKE_OPENAI_KEY_IN_TEXT);
   assert.equal(r.detected, true);
   assert.ok(r.categories.includes("api_key"));
 });
