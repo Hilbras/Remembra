@@ -216,7 +216,24 @@ test("WORK-007: losing the lease aborts the job rather than letting it race a pe
   // would simply extend the lease again.
   const jobs = (store as unknown as { jobs: Map<string, { jobId: string; leaseOwner?: string; state: string }> }).jobs;
   for (const job of jobs.values()) job.leaseOwner = "thief";
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  // Wait for the handler to actually finish rather than assuming it has.
+  //
+  // This used to sleep a fixed 500ms and assert. That silently assumed the handler
+  // started within about 50ms of `worker.start()`, because the handler sleeps 700ms and
+  // the steal-then-assert window totals 750ms. Under load the worker's first poll comes
+  // late, the handler starts late, and the assertion fires before the handler has run
+  // to completion — the test failing with "the handler ran to completion" while the
+  // handler was still perfectly healthy. It passed 5/5 in isolation and failed once in
+  // a full-suite run, which is the signature of a load-sensitive measurement rather than
+  // a broken worker.
+  //
+  // Nothing is weakened: every assertion below still has to hold, including that the
+  // handler observed the abort. Only the *waiting* becomes a function of the thing being
+  // observed instead of of how busy the machine is.
+  const deadline = Date.now() + 5_000;
+  while (!finished && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 
   assert.equal(finished, true, "the handler ran to completion");
   assert.equal(aborted, true, "but observed that its lease was gone");
