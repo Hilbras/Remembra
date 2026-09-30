@@ -834,7 +834,13 @@ This document is ready to become an implementation plan when:
 ## 15. Open questions
 
 These questions must be resolved before the corresponding V6 schema or API is
-implemented:
+implemented.
+
+**Status: all ten are now answered in [`v6-decisions.md`](v6-decisions.md)
+(V6-T01).** That document records a recommendation and its consequences for each,
+and marks the four that need a maintainer decision rather than presenting a
+default as settled. The list is kept here as the original wording, since §16 of
+this spec is the architecture record and should show what was asked.
 
 1. What are the final sensitivity labels and inheritance rules?
 2. Is expiration absolute, renewable, policy-derived, or a combination?

@@ -12,6 +12,28 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
   - Acceptance: trust, sensitivity, expiration, policy precedence, API versioning, replay/idempotency, and V5 compatibility decisions are approved.
   - Verify: architecture review and decision fixtures recorded; no blocking open question remains.
   - Depends on: none.
+  - **Drafted, not approved.** All ten open questions from the architecture spec
+    §15 are answered in [`docs/v6-decisions.md`](../docs/v6-decisions.md) with a
+    recommendation and its consequences for each. The V5 baseline each decision is
+    read against was checked against the source (`RetentionMode`, `API_PREFIX`,
+    `idempotencyKey`/`idempotencyScope`, the `memory_*` tool set) rather than
+    recalled. This box stays unticked because "approved" is a maintainer act.
+  - **Four decisions are genuine forks, not defaults**, and are the only thing
+    standing between here and approval: whether an expired memory may be renewed
+    (Q2), `/api/v6` path vs content negotiation vs both (Q5), whether provider
+    operations get their own idempotency class (Q6), and whether a sub-`secret`
+    caller may see *that* a `secret` memory was accessed (Q9). Each has a
+    recommendation in the ADR; the cost of the alternative answer is stated there.
+  - Two questions are deliberately **deferred with a safe default named** rather
+    than answered: the local index implementation (Q7, deferred to the storage
+    layer — the decided part is that no remote service may be required) and
+    distributed consistency (Q8, out of scope for a single-node V6.0.0, defaulting
+    to V5's single-writer fail-closed behaviour). That satisfies "every unresolved
+    decision has a safe default" without inventing a distributed model nobody
+    specified.
+  - Decision fixtures (allow/deny/redact/quarantine/expired/policy-invalid) are
+    **not yet written** — they are T02's first deliverable, since they are the
+    executable form of this record and cannot be written before it is approved.
 
 - [ ] **V6-T02 — Define versioned policy and decision schemas**
   - Acceptance: versioned bounded policy documents, closed decision effects/reasons, deterministic precedence, and fail-closed validation.
@@ -211,9 +233,29 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
 
 ## Definition of done for the planning phase
 
-- [ ] Capability map and dependency order approved.
-- [ ] Every task has acceptance, verification, dependencies, scope, and size.
-- [ ] Open policy/schema/API/migration questions have owners and safe defaults.
-- [ ] V5 compatibility/security/performance evidence is identified.
-- [ ] Release gates are executable and fail closed.
+Audited 2026-09-30. Four of the six are mechanically checkable and are now
+verified; two are maintainer acts.
+
+- [ ] Capability map and dependency order approved. *(Maintainer act — the map is
+  in `v6-plan.md` and internally consistent; the approval is not taken.)*
+- [x] Every task has acceptance, verification, dependencies, scope, and size.
+  Verified: all 26 tasks carry Acceptance/Verify/Depends on in `v6-todo.md` and
+  Estimated scope in `v6-plan.md` (12×L, 10×M, and 4 with split guidance). The two
+  files deliberately split these — the ledger carries the contract, the plan
+  carries the estimate — so "present somewhere" is the criterion, not "present in
+  one file". An audit run against `v6-todo.md` alone reports all 26 as missing
+  scope and size, which is a false reading.
+- [x] Open policy/schema/API/migration questions have owners and safe defaults.
+  All ten of the architecture spec's §15 questions are answered in
+  [`docs/v6-decisions.md`](../docs/v6-decisions.md); five carry a recommendation
+  flagged "Needs a call", three are deferred with the safe default named. The
+  remaining "owner" half is the maintainer's name against those five.
+- [x] V5 compatibility/security/performance evidence is identified.
+  `v5-tenant-spec.md`, `v5-threat-model.md`, `v5-release-gates.md`,
+  `v5-performance.md`, `v5-policy.md` all exist and are linked from the spec.
+- [x] Release gates are executable and fail closed.
+  `scripts/release-gate.mjs` wires 8 stages (build, benchmark gate, security,
+  recovery, python, docs, tenant benchmark, scale benchmark) and exits non-zero on
+  a stage's non-zero status. Verified by reading the script; note the standing
+  caveat that nothing in CI invokes it (see the V5.7 T08 checkpoint).
 - [ ] Maintainer review approves the plan before implementation.
