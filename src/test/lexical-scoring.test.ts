@@ -300,25 +300,51 @@ describe("S7: the query side segments text the way the document side does", () =
     assert.deepEqual(plain.terms, ["记", "录", "回", "滚"]);
   });
 
-  test("S7-007: a temporal qualifier with a trailing body does not parse at all", () => {
+  test("S7-007: a temporal qualifier now carries a trailing body", () => {
     // Audit S8, found while writing S7-006 and unrelated to segmentation.
     //
-    // `TEMPORAL_RE` anchors the alternation with `$`, so each branch must consume
-    // the *entire* query. `latest(?:\\s+(\\d+))` matches "latest 3" and leaves
-    // "记录回滚" unconsumed, the anchor fails, no branch matches — and the qualifier
-    // is then tokenised as an ordinary word. So "latest 3 errors" searches for the
-    // literal words *latest* and *errors*: no recency boost, no "N most recent"
-    // limit, and a ranking that looks plausible because it is just a keyword search.
-    //
-    // Pinned here rather than in a dedicated file because it was found next to it,
-    // and a failing-looking assertion in an unrelated test would be worse. The fix is
-    // to let the qualifier branches carry a trailing remainder, which is what the
-    // `before`/`after` branches already do with `(.+)`.
-    const parsed = extractQuery("latest 3 记录回滚");
-    assert.equal(parsed.temporal.latestCount, undefined, "the qualifier is not recognised");
-    assert.ok(
-      parsed.terms.includes("latest"),
-      "and it becomes a search term instead \u2014 which is the bug: the words are searched for as if the user meant them",
-    );
+    // `TEMPORAL_RE` anchored its alternation with `$`, so each branch had to consume
+    // the *entire* query. `latest(?:\\s+(\\d+))` matched "latest 3" and left the body
+    // unconsumed, the anchor failed, no branch matched — and the qualifier was then
+    // tokenised as an ordinary word. So "latest 3 errors" ran as a plain keyword
+    // search for the words *latest* and *errors*: no "N most recent" limit, no recency
+    // boost, and a ranking that looked plausible precisely because that is what a
+    // keyword search returns. The `before`/`after` branches already carried a trailing
+    // `(.+)`; only `latest` and `recent` did not, which is the whole inconsistency.
+    assert.deepEqual(extractQuery("latest 3 errors").terms, ["errors"], "the body survives");
+    assert.equal(extractQuery("latest 3 errors").temporal.latestCount, 3, "and the qualifier is recognised");
+    assert.deepEqual(extractQuery("latest 5 errors in prod").terms, ["errors", "in", "prod"]);
+    assert.equal(extractQuery("recent 2 incidents").temporal.recentCount, 2);
+    assert.deepEqual(extractQuery("recent 2 incidents").terms, ["incidents"]);
+  });
+
+  test("S7-008: a word that merely starts like a qualifier is still an ordinary term", () => {
+    // The counter-case, and the reason `\\s+(\\d+)` stays required. Making the count
+    // optional would let "latest news about the deployment" parse as a qualifier and
+    // swallow the rest of the query as its body — silently deleting three terms the
+    // user wrote. The number is what tells the two readings apart.
+    for (const q of ["latest news", "latest news about deployments", "recent", "latestly deployed"]) {
+      const parsed = extractQuery(q);
+      assert.equal(parsed.temporal.latestCount, undefined, `${q}: not a qualifier`);
+      assert.equal(parsed.temporal.recentCount, undefined, `${q}: not a qualifier`);
+      assert.ok(parsed.terms.length > 0, `${q}: its words are still searched for`);
+    }
+    assert.deepEqual(extractQuery("latest news about deployments").terms, [
+      "latest",
+      "news",
+      "about",
+      "deployments",
+    ]);
+  });
+
+  test("S7-009: before/after still parse exactly as they did", () => {
+    // Unchanged by this fix — the point of the assertion is that widening `latest`
+    // did not disturb the branches that already worked.
+    const before = extractQuery("before 2026-08-01");
+    assert.equal(typeof before.temporal.beforeMs, "number");
+    assert.deepEqual(before.terms, [], "a qualifier that consumes the query leaves no terms");
+    const after = extractQuery("after yesterday");
+    assert.equal(typeof after.temporal.afterMs, "number");
+    assert.deepEqual(after.terms, []);
   });
 });

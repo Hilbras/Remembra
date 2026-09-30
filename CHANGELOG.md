@@ -49,15 +49,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   matches a document containing `don't` — which it previously could not. This is the
   tokeniser being consistent with the document side rather than a new rule.
 
-- **`latest N <query>` still does not work** (audit S8, found while writing the tests
-  for the above and *not* fixed). `TEMPORAL_RE` anchors its alternation with `$`, so
-  each branch must consume the entire query: `latest(?:\s+(\d+))` matches `"latest 3"`
-  and leaves the body unconsumed, the anchor fails, and the qualifier is tokenised as
-  an ordinary word. `latest 3 errors` therefore performs a plain keyword search for
-  the words *latest* and *errors* — no "three most recent" limit, no recency boost, and
-  a plausible-looking result, because that is what a keyword search returns. The
-  `before` and `after` branches already carry a trailing `(.+)`, so only these two are
-  affected. Both S7 and S8 touch the same line, so they should land together. That comparison is now a compile-time assertion, so a drift fails
+- **`latest N <query>` now parses** (audit S8, found while writing the tests for the
+  above). `TEMPORAL_RE` anchored its alternation with `$`, so each branch had to
+  consume the entire query: `latest(?:\s+(\d+))` matched `"latest 3"`, left the body
+  unconsumed, the anchor failed, and the qualifier was tokenised as an ordinary word.
+  `latest 3 errors` therefore ran as a plain keyword search for the words *latest* and
+  *errors*. Both branches now carry a trailing remainder, and the digit count stays
+  required so `"latest news about the deployment"` is still an ordinary query rather
+  than a qualifier that swallows the rest of the sentence.
+
+  **This restores parsing, not meaning.** The qualifier's values are read in exactly
+  one place — `modifierScore`, where they switch the recency multiplier from `0.5` to
+  `2`. So `latestCount` still does not limit to the N most recent, and `before` /
+  `after` still filter nothing. Measured, with four documents of decreasing age and
+  all four matching:
+
+  ```
+  search(pool, "incident review")   -> d1, d2, d3, d4
+  search(pool, "latest 2")          -> d1, d2, d3, d4
+  search(pool, "before 2026-08-01") -> d1, d2, d3, d4
+  ```
+
+  Making them count and filter is new behaviour rather than a bug fix — it changes the
+  result set for every temporal query, and needs a decision about ties, archiving and
+  `validUntil`. Recorded in full in `docs/v5.7.0-audit.md` (S8). That comparison is now a compile-time assertion, so a drift fails
   the build. It needed three attempts to get right, and each wrong version failed
   silently or reported the wrong field: the first only named a type alias, the second
   reported on `type` and `scope` because `Record` makes keys required where the shape

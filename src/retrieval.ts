@@ -52,8 +52,22 @@ export interface RetrievalPolicyOptions {
 //  [1] Normalize + temporal extraction
 // =============================================================================
 
+/**
+ * Capture groups: 1 latestN, 2 latestBody, 3 recentN, 4 recentBody, 5 before, 6 after.
+ *
+ * `latest` and `recent` carry a trailing remainder. They previously did not, so the
+ * `$` anchor could only be satisfied by a query that was *nothing but* a qualifier:
+ * `latest 3 errors` failed to match and fell through to being tokenised as the
+ * ordinary words "latest" and "errors" \u2014 a plain keyword search that looks like an
+ * answer, because that is exactly what it returns. The `before`/`after` branches
+ * already had `(.+)`; these two did not, which is the whole inconsistency.
+ *
+ * `\s+(\d+)` stays required, deliberately. Making the count optional would make
+ * "latest news about the deployment" parse as a qualifier and swallow the rest of
+ * the query as its body. The number is what distinguishes the two readings.
+ */
 const TEMPORAL_RE =
-  /^(?:latest(?:\s+(\d+))|recent(?:\s+(\d+))|before\s+(.+)|after\s+(.+))$/i;
+  /^(?:latest\s+(\d+)(?:\s+(.*))?|recent\s+(\d+)(?:\s+(.*))?|before\s+(.+)|after\s+(.+)$)/i;
 
 /** Parse a query string into structured terms + temporal qualifiers. */
 export function extractQuery(raw: string | undefined): {
@@ -72,13 +86,9 @@ export function extractQuery(raw: string | undefined): {
   const temporal = tempMatch
     ? {
         ...(tempMatch[1] ? { latestCount: Number(tempMatch[1]) } : {}),
-        ...(tempMatch[2] ? { recentCount: Number(tempMatch[2]) } : {}),
-        ...(tempMatch[3]
-          ? { beforeMs: parseDateToken(tempMatch[3].trim()) }
-          : {}),
-        ...(tempMatch[4]
-          ? { afterMs: parseDateToken(tempMatch[4].trim()) }
-          : {}),
+        ...(tempMatch[3] ? { recentCount: Number(tempMatch[3]) } : {}),
+        ...(tempMatch[5] ? { beforeMs: parseDateToken(tempMatch[5].trim()) } : {}),
+        ...(tempMatch[6] ? { afterMs: parseDateToken(tempMatch[6].trim()) } : {}),
       }
     : {};
   // The remainder after the qualifier (if any) provides the keyword terms.
@@ -93,7 +103,10 @@ export function extractQuery(raw: string | undefined): {
   // Sharing the tokeniser also stops the two halves drifting again, which is how the
   // CJK branch in `tokenize` came to be unreachable: the document side segmented and
   // the query side refused, and no test compared them.
-  const body = tempMatch ? q.slice(tempMatch[0].length).trim() : q;
+  // The qualifier's own remainder, or empty when it consumed the whole query. The old
+  // `q.slice(tempMatch[0].length)` is equivalent for `before`/`after` but wrong for the
+  // new groups, whose match does not necessarily start where the body does.
+  const body = tempMatch ? (tempMatch[2] ?? tempMatch[4] ?? "").trim() : q;
   const terms = tokenize(body).filter(
     // Single ASCII letters are dropped, preserving the previous behaviour for a query
     // like "a b c" — but a single CJK character is kept, because per-character
