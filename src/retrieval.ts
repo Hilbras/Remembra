@@ -41,6 +41,11 @@ export interface RetrievalPolicyOptions {
   reranking?: boolean;
   /** Expand only through already-authorized pool relations. */
   relationExpansion?: boolean;
+  /**
+   * §34 fusion and modifier weights. Omit for today's behaviour exactly; supply to
+   * tune how lexical, semantic, metadata, recency and confidence contribute.
+   */
+  fusionWeights?: Partial<FusionWeights>;
 }
 
 // =============================================================================
@@ -563,6 +568,64 @@ export function vectorScore(m: Memory, queryVec: number[]): number {
 const RRF_K = 1.6; // standard RRF constant (rec.combined/)
 
 /**
+ * Fusion and modifier weights (roadmap §34).
+ *
+ * §34 names five signals — lexical, semantic, metadata, recency, confidence — and
+ * requires their weights to be configurable. They were hardcoded, so a deployment
+ * could not express "this corpus is keyword-shaped" or "recency does not matter
+ * here".
+ *
+ * **Every default reproduces the pre-existing behaviour exactly.** `keyword`,
+ * `semantic`, `metadata`, `recency` and `confidence` are all 1, so the arithmetic is
+ * unchanged; `rrfK` and `fusionScale` carry today's literals. T07-001 pins that by
+ * asserting the weighted and unweighted pipelines agree on a fixed corpus, so a
+ * future "harmless" change to a default cannot pass unnoticed.
+ */
+export interface FusionWeights {
+  /** Weight on the lexical (RRF) contribution. Default 1. */
+  keyword: number;
+  /** Weight on the semantic (RRF) contribution. Default 1. */
+  semantic: number;
+  /**
+   * Weight on the metadata modifiers: provenance, trust, retention, importance.
+   * Default 1.
+   */
+  metadata: number;
+  /** Weight on the recency modifier. Default 1. */
+  recency: number;
+  /** Weight on the confidence modifier. Default 1. */
+  confidence: number;
+  /** Reciprocal-rank-fusion constant. Default 1.6, the standard value. */
+  rrfK: number;
+  /** Scale applied to the fused score before modifiers are added. Default 50. */
+  fusionScale: number;
+}
+
+export const DEFAULT_FUSION_WEIGHTS: Readonly<FusionWeights> = Object.freeze({
+  keyword: 1,
+  semantic: 1,
+  metadata: 1,
+  recency: 1,
+  confidence: 1,
+  rrfK: RRF_K,
+  fusionScale: 50,
+});
+
+function assertValidFusionWeights(w: Readonly<FusionWeights>): void {
+  for (const name of ["keyword", "semantic", "metadata", "recency", "confidence", "rrfK", "fusionScale"] as const) {
+    const value = w[name];
+    if (!Number.isFinite(value) || value < 0) {
+      throw new RemembraError("INVALID_INPUT", `fusion weight ${name} must be a non-negative finite number`);
+    }
+  }
+  if (w.rrfK === 0) {
+    // A zero k makes every RRF contribution identical, so the whole ranking
+    // collapses to a tie-break on recency. Refused rather than accepted.
+    throw new RemembraError("INVALID_INPUT", "fusion weight rrfK must be greater than zero");
+  }
+}
+
+/**
  * Fuse two ranked lists (keyword, vector) via Reciprocal Rank Fusion.
  * Tied scores receive the same (average) rank so positional bias doesn't
  * compete with later modifier layers.
@@ -570,9 +633,13 @@ const RRF_K = 1.6; // standard RRF constant (rec.combined/)
 export function rrfFuse(
   kwRank: ReadonlyArray<{ id: string; score: number }>,
   vecRank: ReadonlyArray<{ id: string; score: number }>,
+  weights: Readonly<FusionWeights> = DEFAULT_FUSION_WEIGHTS,
 ): Map<string, number> {
   const fuse = new Map<string, number>();
-  const addList = (list: ReadonlyArray<{ id: string; score: number }>) => {
+  // The per-list weight scales the whole contribution, which is what makes
+  // "weight lexical above semantic" expressible at all — RRF itself is rank-based
+  // and has no notion of a signal's importance.
+  const addList = (list: ReadonlyArray<{ id: string; score: number }>, listWeight: number) => {
     let i = 0;
     while (i < list.length) {
       let j = i + 1;
@@ -581,13 +648,13 @@ export function rrfFuse(
       const avgRank = (i + 1 + j) / 2;
       for (let k = i; k < j; k++) {
         const key = list[k].id;
-        fuse.set(key, (fuse.get(key) ?? 0) + 1 / (RRF_K + avgRank));
+        fuse.set(key, (fuse.get(key) ?? 0) + listWeight / (weights.rrfK + avgRank));
       }
       i = j;
     }
   };
-  addList(kwRank);
-  addList(vecRank);
+  addList(kwRank, weights.keyword);
+  addList(vecRank, weights.semantic);
   return fuse;
 }
 
@@ -610,25 +677,28 @@ export function modifierScore(
   m: Memory,
   temporalOverride: { latestCount?: number; recentCount?: number },
   now: number,
+  weights: Readonly<FusionWeights> = DEFAULT_FUSION_WEIGHTS,
 ): number {
   let s = 0;
+  // §34 groups provenance, trust, retention and importance as "metadata", so they
+  // share one weight: a deployment that does not care about provenance or pinning
+  // has one knob rather than four, and cannot accidentally move one of them.
+  let metadata = 0;
   // Provenance: deliberate manual stores beat auto-extracts (audit #4).
-  if (m.provenance?.sourceType === "manual") s += 10;
+  if (m.provenance?.sourceType === "manual") metadata += 10;
   // Trust layer (plan §4.5 / 4.1.0-Q3): additive, retunable.
-  s += TRUST_POINTS[m.trust];
+  metadata += TRUST_POINTS[m.trust];
   // Retention: pinned surfaces near the top regardless of age (plan §4.8).
-  if (m.retention === "pinned") s += 50;
+  if (m.retention === "pinned") metadata += 50;
   // Importance (both modes): multiplicative boost.
-  s += m.importance * 4;
+  metadata += m.importance * 4;
+  s += metadata * weights.metadata;
   // Confidence (V4.2.0 — integrate now per user decision): direct signal.
-  s += (m.confidence ?? 1) * 20;
+  s += (m.confidence ?? 1) * 20 * weights.confidence;
   // Recency (modulated by temporal qualifiers).
-  if (temporalOverride.latestCount !== undefined || temporalOverride.recentCount !== undefined) {
-    // Temporal mode boosts recent heavily; use a linear factor based on rank.
-    s += recencyScore(m, now) * 2;
-  } else {
-    s += recencyScore(m, now) * 0.5;
-  }
+  const recencyMultiplier =
+    temporalOverride.latestCount !== undefined || temporalOverride.recentCount !== undefined ? 2 : 0.5;
+  s += recencyScore(m, now) * recencyMultiplier * weights.recency;
   return s;
 }
 
@@ -838,6 +908,10 @@ export function searchQ(
   const startedAtRef = typeof performance !== "undefined" ? performance.now() : Date.now();
   const budget = q.budget;
   if (budget) assertValidBudget(budget);
+  const weights: Readonly<FusionWeights> = policy.fusionWeights
+    ? { ...DEFAULT_FUSION_WEIGHTS, ...policy.fusionWeights }
+    : DEFAULT_FUSION_WEIGHTS;
+  if (policy.fusionWeights) assertValidFusionWeights(weights);
   const requireRoleTrust = policy.requireRoleTrust ?? true;
   const diversity = policy.diversity ?? true;
   const { terms, temporal } = extractQuery(q.query);
@@ -901,7 +975,10 @@ export function searchQ(
     .map((e) => ({ id: e.m.id, score: e.vecScore }))
     .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id));
   // Short-circuit RRF when only one signal is present — no fusion needed.
-  const singleListRanks = (list: ReadonlyArray<{ id: string; score: number }>) => {
+  const singleListRanks = (
+    list: ReadonlyArray<{ id: string; score: number }>,
+    listWeight: number,
+  ) => {
     // Same average-rank logic as rrfFuse but for a single list.
     const out = new Map<string, number>();
     let i = 0;
@@ -909,27 +986,27 @@ export function searchQ(
       let j = i + 1;
       while (j < list.length && list[j].score === list[i].score) j++;
       const avgRank = (i + 1 + j) / 2;
-      for (let k = i; k < j; k++) out.set(list[k].id, 1 / (RRF_K + avgRank));
+      for (let k = i; k < j; k++) out.set(list[k].id, listWeight / (weights.rrfK + avgRank));
       i = j;
     }
     return out;
   };
   const fuseScores =
     kwRanked.length === 0
-      ? singleListRanks(vecRanked)
+      ? singleListRanks(vecRanked, weights.semantic)
       : vecRanked.length === 0
-        ? singleListRanks(kwRanked)
-        : rrfFuse(kwRanked, vecRanked);
+        ? singleListRanks(kwRanked, weights.keyword)
+        : rrfFuse(kwRanked, vecRanked, weights);
 
   // Step 7: modifiers on top of RRF.
   type Merged = { m: Memory; fuse: number; mod: number; final: number; comp: Record<string, number>; reasons: string[] };
   const merged: Merged[] = scored.map((e) => {
     const fuse = fuseScores.get(e.m.id) ?? 0;
-    const mod = modifierScore(e.m, temporal, now);
-    const finalScore = (fuse * 50) + mod + e.scopeScore;
+    const mod = modifierScore(e.m, temporal, now, weights);
+    const finalScore = fuse * weights.fusionScale + mod + e.scopeScore;
     const comp: Record<string, number> = {
       scope: e.scopeScore,
-      fusion: Math.round(fuse * 50 * 100) / 100,
+      fusion: Math.round(fuse * weights.fusionScale * 100) / 100,
       modifiers: mod,
     };
     if (e.kwScore > 0) comp.keyword = e.kwScore;

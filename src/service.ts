@@ -1237,16 +1237,22 @@ export class MemoryService {
     assertSearchNotCancelled(execution.signal);
     pool ??= (await this.#backend.all(q.includeArchived, tenant)).filter(eligible);
 
+    // Built once and reused by the relation-expansion re-rank below. Spelling the
+    // policy out at both call sites let them drift — a weight could be applied to
+    // the first ranking and silently missing from the second, which reorders
+    // results only on the paths that happen to use relations.
+    const searchPolicy = {
+      requireRoleTrust: this.policy.roles.requireTrust,
+      diversity: this.policy.retrieval.diversity,
+      reranking: this.policy.retrieval.reranking,
+      relationExpansion: this.policy.retrieval.relationExpansion,
+      fusionWeights: this.policy.retrieval.fusionWeights,
+    };
     let { results: ranked, explanations } = searchQ(
       pool,
       totalDocs === undefined ? q : { ...q, totalDocs },
       queryVec,
-      {
-        requireRoleTrust: this.policy.roles.requireTrust,
-        diversity: this.policy.retrieval.diversity,
-        reranking: this.policy.retrieval.reranking,
-        relationExpansion: this.policy.retrieval.relationExpansion,
-      },
+      searchPolicy,
     );
     if (this.policy.retrieval.relationExpansion && !q.candidates?.length) {
       const expanded = expandRelationCandidates(pool, ranked, { maxDepth: 1, maxEdges: 32 });
@@ -1258,12 +1264,8 @@ export class MemoryService {
             candidates: expanded.map((memory) => memory.id),
           },
           queryVec,
-          {
-            requireRoleTrust: this.policy.roles.requireTrust,
-            diversity: this.policy.retrieval.diversity,
-            reranking: this.policy.retrieval.reranking,
-            relationExpansion: false,
-          },
+          // Relations are already expanded here, so the flag is off for this pass.
+          { ...searchPolicy, relationExpansion: false },
         );
         ranked = reranked.results;
         explanations = reranked.explanations;

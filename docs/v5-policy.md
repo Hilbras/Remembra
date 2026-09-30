@@ -45,10 +45,49 @@ The following trusted environment variables override file values:
 | `REMEMBRA_RETRIEVAL_DIVERSITY` | `true`/`false` | `true` |
 | `REMEMBRA_RETRIEVAL_RELATION_EXPANSION` | `true`/`false` | `false` |
 | `REMEMBRA_PROVENANCE_REQUIRED` | `true`/`false` | `true` |
+| `REMEMBRA_RETRIEVAL_FUSION_WEIGHTS` | `name=value,...` | unconfigured |
 
 Precedence is: validated defaults → policy file → environment overrides.
 The policy object can also be injected directly in trusted application code via
 `new MemoryService(backend, { policy })`.
+
+### Fusion weights
+
+`retrieval.fusionWeights` makes the ranking tunable per deployment. Every default
+reproduces the behaviour that shipped before the weights existed, so leaving the
+section out changes nothing.
+
+| Weight | Scales | Default |
+|---|---|---|
+| `keyword` | the lexical (reciprocal-rank) contribution | `1` |
+| `semantic` | the semantic (reciprocal-rank) contribution | `1` |
+| `metadata` | provenance, trust, retention and importance, together | `1` |
+| `recency` | the recency modifier | `1` |
+| `confidence` | the confidence modifier | `1` |
+| `rrfK` | how steeply fused score falls off with rank | `1.6` |
+| `fusionScale` | the scale of the fused score against the modifiers | `50` |
+
+```yaml
+retrieval:
+  fusionWeights:
+    keyword: 2
+    semantic: 0.5
+    recency: 0
+```
+
+Equivalently, `REMEMBRA_RETRIEVAL_FUSION_WEIGHTS=keyword=2,semantic=0.5,recency=0`.
+
+A weight of `0` is legal and is the point of the knob: it turns that signal off.
+Weights must be non-negative and finite, and `rrfK` must be above zero. An
+unknown weight name is an error rather than a silent no-op, so a typo cannot
+leave a deployment running on defaults it did not ask for.
+
+Two things are worth knowing before tuning. The metadata weight covers four
+signals at once, so there is one knob rather than four. And `rrfK` and
+`fusionScale` cannot reorder a list on their own — the first is monotone in rank
+and the second is a common multiplier — so they change *scores*, not order; to
+see either one move a result, the fusion and the modifiers have to disagree
+first.
 
 ## Enforcement notes
 

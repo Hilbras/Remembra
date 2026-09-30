@@ -4,15 +4,35 @@ import { z } from "zod";
 import { RemembraError } from "./errors.js";
 import type { RetentionMode } from "./types.js";
 import type { SensitivePolicy } from "./sensitive-data.js";
+import { DEFAULT_FUSION_WEIGHTS, type FusionWeights } from "./retrieval.js";
 
 export interface MemoryPolicy {
   extraction: { enabled: boolean };
   roles: { requireTrust: boolean };
   sensitiveData: { action: SensitivePolicy };
   lifecycle: { default: RetentionMode };
-  retrieval: { reranking: boolean; diversity: boolean; relationExpansion: boolean };
+  retrieval: {
+    reranking: boolean;
+    diversity: boolean;
+    relationExpansion: boolean;
+    /**
+     * §34 fusion weights. Absent by default rather than pre-filled, so an
+     * unconfigured deployment takes searchQ's own `DEFAULT_FUSION_WEIGHTS` path
+     * instead of an object that happens to equal it. Those are the same numbers
+     * today, but one of them is the single source of truth.
+     */
+    fusionWeights?: Partial<FusionWeights>;
+  };
   provenance: { required: boolean };
 }
+
+/**
+ * A weight must be a real, non-negative, finite number. `NaN` and `Infinity` pass
+ * `z.number()`, and either one silently destroys every ranking it touches — a
+ * score of NaN sorts nowhere, so the query returns results in a meaningless order
+ * rather than failing.
+ */
+const weightSchema = z.number().finite().nonnegative();
 
 const SensitiveAction = z.enum(["allow", "redact", "reject", "quarantine"]);
 const RetentionDefault = z.enum(["pinned", "persistent", "ephemeral", "decaying", "neverExpire"]);
@@ -23,7 +43,34 @@ const policyFileSchema = z
     roles: z.object({ requireTrust: z.boolean() }).strict(),
     sensitiveData: z.object({ action: SensitiveAction }).strict(),
     lifecycle: z.object({ default: RetentionDefault }).strict(),
-    retrieval: z.object({ reranking: z.boolean(), diversity: z.boolean(), relationExpansion: z.boolean() }).strict(),
+    retrieval: z
+      .object({
+        reranking: z.boolean(),
+        diversity: z.boolean(),
+        relationExpansion: z.boolean(),
+        // Written out rather than `.partial()`, deliberately. In zod 3.25 a
+        // `.strict().partial()` object used as a *nested* key comes back required —
+        // the optionality does not survive nesting, so an unconfigured deployment
+        // failed to load at all. `.optional()` on the key and on each field is the
+        // form that behaves. Do not "simplify" this back to `.partial()`.
+        //
+        // `.strict()` earns its place on the *names*: an unknown weight is a typo
+        // that would otherwise be stripped silently, leaving the deployment on
+        // defaults it did not ask for and believing they were applied.
+        fusionWeights: z
+          .object({
+            keyword: weightSchema.optional(),
+            semantic: weightSchema.optional(),
+            metadata: weightSchema.optional(),
+            recency: weightSchema.optional(),
+            confidence: weightSchema.optional(),
+            rrfK: weightSchema.refine((v) => v > 0, "rrfK must be greater than zero").optional(),
+            fusionScale: weightSchema.optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict(),
     provenance: z.object({ required: z.boolean() }).strict(),
   })
   .strict();
@@ -38,6 +85,9 @@ export function defaultMemoryPolicy(): MemoryPolicy {
     provenance: { required: true },
   };
 }
+
+export { DEFAULT_FUSION_WEIGHTS };
+export type { FusionWeights };
 
 export interface PolicyLoadOptions {
   env?: NodeJS.ProcessEnv;
@@ -60,6 +110,48 @@ function boolEnv(env: NodeJS.ProcessEnv, name: string): boolean | undefined {
   invalid(`${name} must be a boolean`);
 }
 
+function numberEnv(env: NodeJS.ProcessEnv, name: string): number | undefined {
+  const value = env[name];
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) invalid(`${name} must be a non-negative finite number`);
+  return parsed;
+}
+
+/**
+ * `REMEMBRA_RETRIEVAL_FUSION_WEIGHTS=keyword=2,semantic=0.5,recency=0`
+ *
+ * One env var rather than seven, because weights are almost always tuned
+ * together, and an operator setting a "lexical-first" profile should not have to
+ * know that doing so also means spelling out the six they are not changing.
+ */
+const FUSION_WEIGHT_NAMES = ["keyword", "semantic", "metadata", "recency", "confidence", "rrfK", "fusionScale"] as const;
+
+function fusionWeightsEnv(env: NodeJS.ProcessEnv): Partial<FusionWeights> | undefined {
+  const raw = env.REMEMBRA_RETRIEVAL_FUSION_WEIGHTS?.trim();
+  if (!raw) return undefined;
+  const out: Record<string, number> = {};
+  for (const pair of raw.split(",")) {
+    const trimmed = pair.trim();
+    if (!trimmed) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) invalid(`REMEMBRA_RETRIEVAL_FUSION_WEIGHTS entry "${trimmed}" must be name=value`);
+    const name = trimmed.slice(0, eq).trim();
+    if (!FUSION_WEIGHT_NAMES.includes(name as (typeof FUSION_WEIGHT_NAMES)[number])) {
+      // Silently ignoring an unknown name is the worst outcome: the deployment
+      // would run on a default it did not ask for and believe otherwise.
+      invalid(`REMEMBRA_RETRIEVAL_FUSION_WEIGHTS: unknown weight "${name}"; expected one of ${FUSION_WEIGHT_NAMES.join(", ")}`);
+    }
+    const value = Number(trimmed.slice(eq + 1).trim());
+    if (!Number.isFinite(value) || value < 0) {
+      invalid(`REMEMBRA_RETRIEVAL_FUSION_WEIGHTS: ${name} must be a non-negative finite number`);
+    }
+    if (name === "rrfK" && value === 0) invalid("REMEMBRA_RETRIEVAL_FUSION_WEIGHTS: rrfK must be greater than zero");
+    out[name] = value;
+  }
+  return Object.keys(out).length > 0 ? (out as Partial<FusionWeights>) : undefined;
+}
+
 function mergeSections(value: unknown): unknown {
   if (value === undefined) return {};
   if (!isRecord(value)) invalid("policy file must contain an object");
@@ -74,7 +166,10 @@ function mergeSections(value: unknown): unknown {
       ...(isRecord(value.sensitiveData) ? value.sensitiveData : {}),
     },
     lifecycle: { ...defaults.lifecycle, ...(isRecord(value.lifecycle) ? value.lifecycle : {}) },
-    retrieval: { ...defaults.retrieval, ...(isRecord(value.retrieval) ? value.retrieval : {}) },
+    retrieval: {
+      ...defaults.retrieval,
+      ...(isRecord(value.retrieval) ? value.retrieval : {}),
+    },
     provenance: { ...defaults.provenance, ...(isRecord(value.provenance) ? value.provenance : {}) },
   };
 }
@@ -109,6 +204,7 @@ export function loadMemoryPolicy(options: PolicyLoadOptions = {}): MemoryPolicy 
   const diversity = boolEnv(env, "REMEMBRA_RETRIEVAL_DIVERSITY");
   const relationExpansion = boolEnv(env, "REMEMBRA_RETRIEVAL_RELATION_EXPANSION");
   const provenanceRequired = boolEnv(env, "REMEMBRA_PROVENANCE_REQUIRED");
+  const fusionWeights = fusionWeightsEnv(env);
   const sensitive = env.REMEMBRA_SENSITIVE_POLICY?.trim();
   const lifecycle = env.REMEMBRA_LIFECYCLE_DEFAULT?.trim();
 
@@ -117,6 +213,7 @@ export function loadMemoryPolicy(options: PolicyLoadOptions = {}): MemoryPolicy 
   if (reranking !== undefined) merged.retrieval = { ...(merged.retrieval as object), reranking };
   if (diversity !== undefined) merged.retrieval = { ...(merged.retrieval as object), diversity };
   if (relationExpansion !== undefined) merged.retrieval = { ...(merged.retrieval as object), relationExpansion };
+  if (fusionWeights) merged.retrieval = { ...(merged.retrieval as object), fusionWeights };
   if (provenanceRequired !== undefined) merged.provenance = { ...(merged.provenance as object), required: provenanceRequired };
   if (sensitive) merged.sensitiveData = { ...(merged.sensitiveData as object), action: sensitive };
   if (lifecycle) merged.lifecycle = { ...(merged.lifecycle as object), default: lifecycle };
