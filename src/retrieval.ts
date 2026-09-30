@@ -82,11 +82,25 @@ export function extractQuery(raw: string | undefined): {
       }
     : {};
   // The remainder after the qualifier (if any) provides the keyword terms.
+  //
+  // These go through `tokenize`, the same function the document side uses. They used
+  // to be filtered by `/^[a-z0-9]+$/u`, which meant **every** non-ASCII query
+  // produced zero terms and therefore no keyword list at all: a CJK query, a Russian
+  // query, a Greek query — all of them silently returned nothing lexical, and fell
+  // back to the vector path alone, which is nothing at all when no embedding provider
+  // is configured. The filter looked like it was excluding punctuation.
+  //
+  // Sharing the tokeniser also stops the two halves drifting again, which is how the
+  // CJK branch in `tokenize` came to be unreachable: the document side segmented and
+  // the query side refused, and no test compared them.
   const body = tempMatch ? q.slice(tempMatch[0].length).trim() : q;
-  const terms = body
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((t) => t.length > 1 && /^[a-z0-9]+$/u.test(t));
+  const terms = tokenize(body).filter(
+    // Single ASCII letters are dropped, preserving the previous behaviour for a query
+    // like "a b c" — but a single CJK character is kept, because per-character
+    // segmentation means every CJK term is one character long. Dropping them on
+    // length alone is what made CJK unreachable even once the filter was widened.
+    (t) => t.length > 1 || CJK_RANGE.test(t),
+  );
   return { terms, temporal };
 }
 

@@ -27,7 +27,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   All of it escaped the suite because no test compared `SearchInput` with
   `SearchQuery`, or `SearchResponse` with what the server actually returns —
   hand-maintained descriptions of the same thing at two different layers, with nothing
-  comparing them. That comparison is now a compile-time assertion, so a drift fails
+  comparing them.
+
+- **Non-ASCII queries now reach the lexical path.** `extractQuery` filtered query
+  terms with `/^[a-z0-9]+$/u`, so every non-ASCII query produced **zero** terms, no
+  keyword list was built, and retrieval fell back to the vector path alone — which is
+  nothing at all when no embedding provider is configured. A CJK, Russian, Greek,
+  Hangul or Thai query returned an empty result set with no error and no warning, and
+  a query returning nothing is indistinguishable from a query with no match.
+
+  The two halves of retrieval now share one tokeniser, so they cannot drift apart
+  again — which is how the CJK branch in `tokenize` came to be unreachable: the
+  document side segmented, the query side refused, and no test compared them. Scripts
+  that segment per character (Han, hiragana, katakana) yield per-character terms;
+  scripts that tokenise as words (Hangul, Thai, Greek, Cyrillic) yield whole words,
+  which is what the document side already did.
+
+  One ASCII behaviour changes, deliberately pinned by a test: a query containing
+  internal punctuation now contributes its alphanumeric parts, where before the whole
+  whitespace-delimited run had to be alphanumeric. So `don't` contributes `don` and
+  matches a document containing `don't` — which it previously could not. This is the
+  tokeniser being consistent with the document side rather than a new rule.
+
+- **`latest N <query>` still does not work** (audit S8, found while writing the tests
+  for the above and *not* fixed). `TEMPORAL_RE` anchors its alternation with `$`, so
+  each branch must consume the entire query: `latest(?:\s+(\d+))` matches `"latest 3"`
+  and leaves the body unconsumed, the anchor fails, and the qualifier is tokenised as
+  an ordinary word. `latest 3 errors` therefore performs a plain keyword search for
+  the words *latest* and *errors* — no "three most recent" limit, no recency boost, and
+  a plausible-looking result, because that is what a keyword search returns. The
+  `before` and `after` branches already carry a trailing `(.+)`, so only these two are
+  affected. Both S7 and S8 touch the same line, so they should land together. That comparison is now a compile-time assertion, so a drift fails
   the build. It needed three attempts to get right, and each wrong version failed
   silently or reported the wrong field: the first only named a type alias, the second
   reported on `type` and `scope` because `Record` makes keys required where the shape
