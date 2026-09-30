@@ -6,7 +6,7 @@ import { timingSafeEqual, createHash, createHmac, randomUUID } from "node:crypto
 import { MemoryService } from "./service.js";
 import { API_CAPABILITY_MANIFEST, API_PREFIX, API_VERSION, API_VERSION_HEADER, IDEMPOTENCY_KEY_HEADER, REQUEST_ID_HEADER, isValidIdempotencyKey, isValidRequestId } from "./api-contract.js";
 import { batchIdempotencyScope } from "./batch-idempotency-store.js";
-import { DigestInput } from "./types.js";
+import { DigestInput, type RetrievalBudget } from "./types.js";
 import { isRemembraError, statusFor, errorLabel, publicErrorMessage, RemembraError } from "./errors.js";
 import { logEvent, withLogContext } from "./log.js";
 import { metrics } from "./metrics.js";
@@ -231,8 +231,8 @@ export function resolveListen(
  *   GET    /metrics             → Prometheus text format (auth when keyed)
  *   GET    / , /ui/*            → web dashboard shell + static assets (no auth, v4)
  *   POST   /memories            → store a memory
- *   GET    /memories/search     → ?query=&scope=&type=&limit=
- *   GET    /memories            → ?scope=&type=&includeArchived=&dedupeExact=&includeSuperseded=&limit=
+ *   GET    /memories            → ?scope=&type=&includeArchived=&offset=&limit=
+ *   GET    /memories/search     → ?query=&scope=&type=&limit=&budget.maxTokens=&budget.maxItems=
  *   POST   /memories/digest     → LLM extraction
  *   POST   /maintain            → decay sweep + vector backfill
  *   GET    /memories/:id        → one memory + related + backlinks (Phase 8)
@@ -815,11 +815,30 @@ export function createHttpServer(service: MemoryService, opts: HttpOptions = {})
         if (req.method === "GET" && path === "/memories/search") {
           const rawLimit = url.searchParams.get("limit");
           const limit = rawLimit && Number.isFinite(Number(rawLimit)) ? Number(rawLimit) : undefined;
+          // Roadmap §37. Without this the budget exists only in-process: the bound is
+          // there so retrieval degrades under load, and the deployments that feel
+          // that load are the ones reaching retrieval over HTTP. Dotted params rather
+          // than nested JSON so a caller can set one bound without restating the rest.
+          const budget: RetrievalBudget = {};
+          for (const bound of ["maxTokens", "maxItems", "maxBytes", "maxLatencyMs"] as const) {
+            const raw = url.searchParams.get(`budget.${bound}`);
+            if (raw === null || raw.trim() === "") continue;
+            const parsed = Number(raw);
+            // Rejected rather than ignored, like every other malformed numeric param
+            // here: a silently dropped budget reads as "no budget was set", which is
+            // exactly the state an operator did not intend.
+            if (!Number.isFinite(parsed) || parsed < 0) {
+              return send(res, 400, { error: { code: "INVALID_INPUT", message: `budget.${bound} must be a non-negative finite number` } });
+            }
+            budget[bound] = parsed;
+          }
+          const hasBudget = Object.keys(budget).length > 0;
           const result = await service.search({
             query: url.searchParams.get("query") ?? url.searchParams.get("q") ?? undefined,
             scope: url.searchParams.get("scope") ?? undefined,
             type: (url.searchParams.get("type") as never) ?? undefined,
             limit,
+            ...(hasBudget ? { budget } : {}),
             explain: url.searchParams.get("explain") === "true",
             includeExpired: url.searchParams.get("includeExpired") === "true",
             includeFuture: url.searchParams.get("includeFuture") === "true",

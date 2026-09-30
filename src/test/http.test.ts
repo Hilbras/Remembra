@@ -409,3 +409,64 @@ test("digest without transcript returns 400", async () => {
   });
   assert.equal(res.status, 400);
 });
+
+/**
+ * Roadmap §37's budget over HTTP.
+ *
+ * The bound exists so retrieval degrades under load, and the deployments that feel
+ * that load are the ones reaching retrieval over HTTP. It was in-process only,
+ * which meant the feature was undeliverable for most callers — the gap was found
+ * while writing this release's compatibility statement, by asking how a client
+ * would actually set it.
+ */
+test("§37: the retrieval budget is settable over HTTP and reported back", async () => {
+  const headers = { "x-api-key": "test-key", "content-type": "application/json" };
+  // Distinct lengths, so a byte bound has something to bite on.
+  for (const content of ["a short note", "a considerably longer note ".repeat(40)]) {
+    const res = await fetch(`${base}/memories`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ type: "fact", content }),
+    });
+    assert.equal(res.status, 201);
+  }
+
+  const unbudgeted = await fetch(`${base}/memories/search?query=note`, { headers });
+  assert.equal(unbudgeted.status, 200);
+  const withoutReport = (await unbudgeted.json()) as { budget?: unknown };
+  assert.equal(withoutReport.budget, undefined, "no budget asked for means no budget report");
+
+  const budgeted = await fetch(`${base}/memories/search?query=note&budget.maxItems=1`, { headers });
+  assert.equal(budgeted.status, 200);
+  // I wrote `bound`/`applied` from imagination here and had to correct it against
+  // the real BudgetReport, which is `truncated` plus `truncated_by`. Asserting a
+  // guessed field name would have passed nothing and taught nothing.
+  const withReport = (await budgeted.json()) as {
+    results: unknown[];
+    budget?: { requested: Record<string, unknown>; items: number; truncated: boolean; truncated_by: string[] };
+  };
+  assert.ok(withReport.budget, "a budget was asked for, so a report comes back");
+  assert.equal(withReport.results.length, 1, "and maxItems held");
+  assert.equal(withReport.budget.truncated, true, "the report says something was removed");
+  assert.deepEqual(withReport.budget.truncated_by, ["maxItems"], "and which bound was responsible");
+  assert.deepEqual(withReport.budget.requested, { maxItems: 1 }, "echoing what was requested, not what was applied");
+  assert.equal(withReport.budget.items, withReport.results.length, "the counts agree with the payload");
+});
+
+test("§37: a malformed budget param is rejected, not silently dropped", async () => {
+  const headers = { "x-api-key": "test-key" };
+  for (const raw of ["abc", "-1", "NaN", "Infinity"]) {
+    const res = await fetch(`${base}/memories/search?query=note&budget.maxTokens=${raw}`, { headers });
+    assert.equal(res.status, 400, `rejected: budget.maxTokens=${raw}`);
+  }
+  // An empty value is not a malformed budget — it means "unset this bound".
+  const blank = await fetch(`${base}/memories/search?query=note&budget.maxTokens=`, { headers });
+  assert.equal(blank.status, 200, "a blank bound is treated as unset, not as an error");
+});
+
+test("§37: an empty budget is no budget", async () => {
+  const res = await fetch(`${base}/memories/search?query=note&budget.maxTokens=`, { headers: { "x-api-key": "test-key" } });
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { budget?: unknown };
+  assert.equal(body.budget, undefined, "a budget with every bound unset reports nothing, rather than an empty report");
+});

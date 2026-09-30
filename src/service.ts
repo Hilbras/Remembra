@@ -26,7 +26,7 @@ import { VERSION } from "./version.js";
 import { performance } from "node:perf_hooks";
 import { redact, redactTags, redactionEnabled, RedactionKind } from "./redact.js";
 import { unifiedDiff } from "./diff.js";
-import { RelateInput, HistoryInput, UpdateInput } from "./types.js";
+import { RelateInput, HistoryInput, UpdateInput, type RetrievalBudget } from "./types.js";
 import {
   resolveLlmProvider,
   extractMemories,
@@ -1153,7 +1153,28 @@ export class MemoryService {
   }
 
   async search(
-    q: { query?: string; scope?: string; type?: MemoryType; limit?: number; explain?: boolean; includeExpired?: boolean; includeFuture?: boolean; includeQuarantined?: boolean; includeArchived?: boolean; candidates?: string[]; dedupeExact?: boolean; dedupeSameSource?: boolean; includeSuperseded?: boolean } & AgentReadOptions,
+    // The accepted input was a hand-written list of fields, which is how roadmap
+    // §37's `budget` ended up missing: `SearchQuery` had it and `searchQ` honoured it,
+    // but the service — the entry point most callers actually use — neither accepted
+    // nor returned it. T06's tests called `searchQ` directly, so nothing noticed. The
+    // fields stay spelled out rather than derived from `SearchQuery`, because several
+    // of those are deliberately not caller-settable here.
+    q: {
+      query?: string;
+      scope?: string;
+      type?: MemoryType;
+      limit?: number;
+      explain?: boolean;
+      includeExpired?: boolean;
+      includeFuture?: boolean;
+      includeQuarantined?: boolean;
+      includeArchived?: boolean;
+      candidates?: string[];
+      dedupeExact?: boolean;
+      dedupeSameSource?: boolean;
+      includeSuperseded?: boolean;
+      budget?: RetrievalBudget;
+    } & AgentReadOptions,
     execution: SearchExecutionOptions = {},
   ) {
     metrics.inc("remembra_memory_reads_total", { operation: "search" });
@@ -1248,12 +1269,16 @@ export class MemoryService {
       relationExpansion: this.policy.retrieval.relationExpansion,
       fusionWeights: this.policy.retrieval.fusionWeights,
     };
-    let { results: ranked, explanations } = searchQ(
+    let { results: ranked, explanations, budget: firstBudget } = searchQ(
       pool,
       totalDocs === undefined ? q : { ...q, totalDocs },
       queryVec,
       searchPolicy,
     );
+    // The relation-expansion re-rank is a second search, so the report that matters
+    // is the one describing the results actually returned — the re-ranked pass's, not
+    // the discarded first pass's.
+    let budgetReport = firstBudget;
     if (this.policy.retrieval.relationExpansion && !q.candidates?.length) {
       const expanded = expandRelationCandidates(pool, ranked, { maxDepth: 1, maxEdges: 32 });
       if (expanded.length > ranked.length) {
@@ -1269,6 +1294,7 @@ export class MemoryService {
         );
         ranked = reranked.results;
         explanations = reranked.explanations;
+        budgetReport = reranked.budget;
       }
     }
     const visibleIds = new Set(pool.map((memory) => memory.id));
@@ -1312,7 +1338,14 @@ export class MemoryService {
                 `[${m.id}] ${m.type.toUpperCase()} (scope: ${m.scope}, importance: ${m.importance}, ${m.updatedAt.slice(0, 10)})\n${m.content}`,
             )
             .join("\n\n");
-    return { text, results: publicRanked, ...(explanations ? { explanations } : {}) };
+    return {
+      text,
+      results: publicRanked,
+      ...(explanations ? { explanations } : {}),
+      // Only present when a budget was asked for; its absence means "no budget was
+      // requested", which is different from "the budget removed nothing".
+      ...(budgetReport ? { budget: budgetReport } : {}),
+    };
   }
 
   /** Build a deterministic, token-bounded context from the ranked search path. */

@@ -9,9 +9,72 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [5.7.0] — 2026-09-30
+
+Roadmap §31–§38, the Advanced Retrieval Engine milestone. The intent of every
+roadmap item is delivered; see [V5.7.0 compatibility report](docs/v5.7.0-compatibility.md)
+for the two default-on behaviour changes and the known limitations, and
+[the benchmark gate](docs/benchmark-gate.md) for the new guardrail.
+
 ### Added
 
-- **One retrieval budget object** covering all four roadmap §37 dimensions.
+- **Configurable fusion weights** (`retrieval.fusionWeights`, or
+  `REMEMBRA_RETRIEVAL_FUSION_WEIGHTS=keyword=2,semantic=0.5`). The lexical,
+  semantic, metadata, recency and confidence weights were hardcoded, so a
+  deployment could not express "this corpus is keyword-shaped" or "recency does
+  not matter here". Every default reproduces the previous behaviour exactly, so an
+  unconfigured deployment is unchanged — a weight whose default was wrong would be
+  a silent behaviour change shipped as a feature. A weight of `0` is legal and is
+  the point of the knob. An unknown weight name is rejected rather than ignored, so
+  a typo cannot leave a deployment running on defaults it did not ask for.
+
+- **The retrieval benchmark gate is now a release stage** (`npm run bench:gate`).
+  §38 asks that every retrieval-engine change be measured against a benchmark set;
+  that was a rule people followed by intention, which is to say a rule people could
+  forget. A labelled 23-scenario set now runs through the real retrieval pipeline
+  and is compared against a committed baseline, failing on a regression in
+  precision, recall, MRR, nDCG, duplicate rate, or a latency percentile. Each
+  scenario names the regression it guards. Latency is checked only when the
+  benchmark runs alone, because the suite runs files in parallel and a wall-clock
+  number measured there describes scheduling rather than retrieval.
+
+### Fixed
+
+- **Roadmap §37's budget was unreachable and its report was discarded.** `SearchQuery`
+  gained `budget` in this milestone and `searchQ` honoured it, but `MemoryService.search`
+  — the entry point most callers actually use — did not *accept* a budget in its
+  signature and did not *return* the report: it destructured only `results` and
+  `explanations`. The budget was computed and then dropped, so no caller on any
+  surface could set a bound or learn which one bound. Both are fixed, the budget is
+  also settable over HTTP as `?budget.maxItems=` and friends, and a malformed bound
+  is rejected with a 400 rather than silently ignored — a dropped budget reads as "no
+  budget was set", which is the one state an operator never intends. T06's tests
+  called `searchQ` directly, which is why the gap survived the task that introduced
+  the feature.
+
+- **The relation-expansion re-rank no longer builds its search policy separately**
+  from the first search, so a configured fusion weight can no longer apply to one
+  ranking and silently not the other — a reordering confined to the paths that
+  happen to use relations. Both call sites now share one policy object.
+
+### Known limitations
+
+- **Non-ASCII queries return no lexical results.** `extractQuery` filters query
+  terms with `/^[a-z0-9]+$/u`, so a query in any non-ASCII script produces zero
+  terms and retrieval falls back to the vector path alone — nothing at all when no
+  embedding provider is configured. The CJK branch in `tokenize` is therefore
+  unreachable from the query path: it looks like support and is not. Documents in
+  those scripts are stored and tokenised correctly; it is querying that is
+  affected. Not fixed in this release because the one-line change alters what
+  existing deployments get back for non-ASCII input. Reproduction and the full
+  analysis are in `docs/v5.7.0-audit.md` (S7). The benchmark gate deliberately has
+  no CJK scenario: a stage that fails on correct code is not a gate.
+
+
+### Added
+
+- **One retrieval budget object** covering all four roadmap §37 dimensions,
+  settable through `MemoryService.search` and over HTTP.
   `maxBytes` and `maxLatencyMs` did not exist anywhere in the tree; `maxTokens` and
   `maxItems` existed as unrelated parameters, so a caller could satisfy two bounds
   and violate the third without noticing. The budget is optional, and when supplied

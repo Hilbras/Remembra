@@ -70,4 +70,6 @@ semantic search or injecting a local adapter.
 - [Security and deployment](security.md)
 - [Backup and migration](migration-v4.9.md)
 - [Retrieval benchmark gate](benchmark-gate.md) — what §38 requires and what it catches
+- [V5.7.0 compatibility report](v5.7.0-compatibility.md) — the two default-on
+  ranking changes, and their escape hatches
 - [Troubleshooting](troubleshooting.md)

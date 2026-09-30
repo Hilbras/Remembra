@@ -10,9 +10,15 @@
  * so far and reports the truncation**, never an error. A bound that returns nothing
  * has not degraded, it has failed.
  */
-import { test } from "node:test";
+import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { searchQ } from "../retrieval.js";
+import { MemoryService } from "../service.js";
+import { MemoryStore } from "../store.js";
+import { defaultMemoryPolicy } from "../policy.js";
 import { isRemembraError } from "../errors.js";
 import type { Memory } from "../types.js";
 
@@ -198,4 +204,96 @@ test("T06-015: a budget over an empty candidate set is honest about it", () => {
   assert.equal(results.budget?.truncated, false, "nothing was removed, because there was nothing to remove");
   assert.equal(results.budget?.items, 0);
   assert.equal(results.budget?.bytes, 0);
+});
+
+/**
+ * The two tests above every one in this file calls `searchQ` directly, and that is
+ * how a defect survived T06: the service destructured only `results` and
+ * `explanations` from `searchQ`, so the budget was computed and then dropped, and
+ * the report reached no caller on any surface. A test that stops at the function
+ * under test cannot see a field another layer forgets to forward.
+ */
+describe("T06: the budget report survives the service", () => {
+  test("T06-020: service.search returns the report it was given", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-budget-svc-"));
+    try {
+      // The store creates files but not its own directory.
+      const storeDir = path.join(dir, "plain");
+      await fs.mkdir(storeDir, { recursive: true });
+      const service = new MemoryService(new MemoryStore(storeDir));
+      for (const content of ["alpha note one", "beta note two", "gamma note three"]) {
+        await service.store({ type: "fact", content });
+      }
+
+      const unbudgeted = await service.search({ query: "note" });
+      assert.equal(unbudgeted.budget, undefined, "no budget asked for means no report");
+
+      const budgeted = await service.search({ query: "note", budget: { maxItems: 2 } });
+      assert.ok(budgeted.budget, "a budget was asked for, so a report comes back");
+      assert.equal(budgeted.budget.truncated, true);
+      assert.deepEqual(budgeted.budget.truncated_by, ["maxItems"]);
+      assert.equal(
+        budgeted.budget.items,
+        budgeted.results.length,
+        "the report counts agree with what was actually returned",
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    }
+  });
+
+  test("T06-021: the report describes the results returned, not a discarded pass", async () => {
+    // Relation expansion runs a *second* search over the expanded pool. If the
+    // report from the first pass is the one returned, the caller is told about
+    // results they did not get. Keeping the stale report survived mutation testing,
+    // because no test had relation expansion and a budget in the same call.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-budget-rerank-"));
+    try {
+      const policy = defaultMemoryPolicy();
+      policy.retrieval.relationExpansion = true;
+      const storeDir = path.join(dir, "rerank");
+      await fs.mkdir(storeDir, { recursive: true });
+      const service = new MemoryService(new MemoryStore(storeDir), { embeddingProvider: "none", policy });
+
+      const seed = await service.store({ type: "fact", content: "needle seed" });
+      const neighbour = await service.store({ type: "fact", content: "related neighbour", importance: 5 });
+      await service.relate({ id: seed.id, related: [neighbour.id], action: "add" });
+      for (let i = 0; i < 8; i++) {
+        await service.store({ type: "observation", content: `unrelated ${i}`, importance: 1, source: `old-${i}` });
+      }
+
+      const hits = await service.search({ query: "needle", limit: 10, budget: { maxItems: 4 } });
+      assert.ok(hits.budget, "a report came back");
+      assert.equal(
+        hits.budget.items,
+        hits.results.length,
+        "the report counts the returned results, which is the only thing a caller can check",
+      );
+      assert.ok(hits.budget.items <= 4, "and the bound held through the re-rank");
+      // Item *count* is not enough to catch a stale report here: both passes hit
+      // maxItems, so the counts agree while describing different documents. Bytes do
+      // not, and the caller can check them — they are the size of the payload they hold.
+      const returnedBytes = Buffer.byteLength(
+        hits.results.map((m) => m.content).join(""),
+        "utf8",
+      );
+      assert.equal(
+        hits.budget.bytes,
+        returnedBytes,
+        "the report describes the bytes actually returned, not the discarded pass's",
+      );
+      // What this test does NOT prove: that the re-ranked pass's report is the one
+      // returned. Mutation testing could not reach it. Relation expansion re-ranks a
+      // *superset* of the pool the first pass already searched, so both passes apply
+      // the same budget to the same corpus and their reports agree — the item counts and
+      // the bytes are identical either way. Passing a candidate list would make the
+      // first pass search a subset, but that is exactly the condition under which
+      // expansion is skipped, so the two cases cannot be made to differ. The
+      // assignment of the re-ranked report is still correct and still worth having,
+      // but it is structural, not mutation-verified, and claiming otherwise would
+      // overstate what this test checks.
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }).catch(() => undefined);
+    }
+  });
 });
