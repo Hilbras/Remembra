@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { promises as fs } from "node:fs";
+import { promises as fs, default as fsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -1014,6 +1014,114 @@ test("a staging file that outlives its publisher fails closed", async () => {
         error instanceof RemembraError && /outlived its publisher/.test(error.message),
     );
   } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
+  }
+});
+
+/**
+ * `stagingEntry` must exempt *both* publication artifacts.
+ *
+ * The integrity key got this treatment in 5.7.1; the ledger identity, published by
+ * `link()` the same way, must be exempt too. Narrowing the pattern back to
+ * `.claims.key.*` is the exact regression the 5.6.0 fix had, one file over — the fix
+ * covered `claims.key` and its sibling `claims.identity` was left out.
+ *
+ * This test exists because neither the unit suite nor 15 rounds of 16 concurrent cold
+ * starts detect that narrowing: a single process never sees its own identity staging
+ * file at scan time (the scan runs before the ledger identity is published), and 16
+ * processes essentially never interleave that publication window. The defect is
+ * reachable only when a peer is *already inside* its window, which is what the plant
+ * below simulates — the same trick the key-staging test uses, applied to the file
+ * whose exemption was actually at risk.
+ *
+ * The discriminator is the error message. Under the correct pattern the constructor
+ * waits out its budget and reports "a staging file outlived its publisher"; under a
+ * key-only pattern it refuses on sight with the generic "unrelated files". Asserting
+ * the message therefore distinguishes the two, where asserting only that it throws
+ * would not.
+ */
+test("an identity staging file is tolerated and waited on, not refused as unrelated", async () => {
+  const { dir, claim } = await claimDir();
+  try {
+    // Exactly the name `ledgerIdentitySync` creates, with exactly the content length
+    // it writes.
+    await fs.writeFile(path.join(claim, `.claims.identity.77777.beef1234.tmp`), `${"a".repeat(64)}\n`, { mode: 0o600 });
+
+    const started = Date.now();
+    assert.throws(
+      () => new FileBatchIdempotencyStore(claim),
+      // The discriminator is the parenthetical. Under the correct pattern the message
+      // is "claim directory contains unrelated files (a staging file outlived its
+      // publisher)"; under a key-only pattern it is the bare "claim directory contains
+      // unrelated files", refused on sight with no wait. Note both contain "unrelated
+      // files", so that substring alone cannot tell them apart.
+      (error: unknown) =>
+        error instanceof RemembraError && /outlived its publisher/.test(error.message),
+    );
+    const waited = Date.now() - started;
+    assert.ok(waited >= 1_900, `and waited out the bounded budget (${waited}ms)`);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
+  }
+});
+
+/**
+ * The fifth manifestation: the ledger identity was published empty.
+ *
+ * `open(O_CREAT|O_EXCL)` then write created the file *at its final path* and filled it
+ * afterwards, so a peer reading in between saw `""`, failed `/^[a-f0-9]{64}$/`, and
+ * refused to start with "ledger identity is invalid". This is the same defect as the
+ * zero-byte `claims.key` fixed in 5.6.0, which survived there because the fix was
+ * applied to `claims.key` and not to `claims.identity`.
+ *
+ * This cannot be asserted the way the staging race is. There, the defect was a
+ * *visible* extra file, so the test could plant one. Here the defect is a window in
+ * which a file is visible and *empty*, so a test that plants an empty `claims.identity`
+ * would pass against the broken code — planting it is exactly what the broken code
+ * produces, and the correct behaviour is to reject it. Waiting for the window to
+ * reopen is the flaky shape this suite has been bitten by repeatedly.
+ *
+ * So the assertion is on the *publication mechanism* instead: the final path must never
+ * be created by an O_CREAT open. Under `link()` it appears atomically via `linkSync`,
+ * and the content is written to a staging file that is not yet the identity. That is a
+ * property of the code, not of a timing window, and it is deterministic.
+ *
+ * The spy is installed on the `fs` default export — the same object the compiled store
+ * closes over (`import fs from "node:fs"`), verified to observe the real calls.
+ */
+test("the ledger identity is published atomically, never created empty at its final path", async () => {
+  const { dir, claim } = await claimDir();
+  const identityPath = path.join(claim, "claims.identity");
+  // The default export's members are typed read-only; go through a mutable view.
+  const target = fsSync as unknown as Record<string, unknown>;
+  const realOpen = fsSync.openSync;
+  const realLink = fsSync.linkSync;
+  const createdAtFinalPath: string[] = [];
+  const linkedIntoFinalPath: string[] = [];
+  try {
+    target.openSync = (p: Parameters<typeof fsSync.openSync>[0], flags: number | string, ...rest: unknown[]) => {
+      // O_CREAT is bit 0o100. Watching for it on the *final* path is the whole test:
+      // the pre-fix code passed exactly this path to openSync with O_CREAT|O_EXCL.
+      if (typeof p === "string" && p === identityPath && typeof flags === "number" && (flags & 0o100) !== 0) {
+        createdAtFinalPath.push(p);
+      }
+      return (realOpen as (...a: unknown[]) => unknown)(p, flags, ...rest);
+    };
+    target.linkSync = (from: string, to: string) => {
+      if (to === identityPath) linkedIntoFinalPath.push(to);
+      return realLink(from, to);
+    };
+
+    const store = new FileBatchIdempotencyStore(claim);
+    store.close();
+
+    assert.deepEqual(createdAtFinalPath, [], "claims.identity was never created empty at its final path");
+    // Guard the guard: if linkSync were never observed, the assertion above would be
+    // vacuous — a store that never published an identity at all would satisfy it.
+    assert.deepEqual(linkedIntoFinalPath, [identityPath], "and it did appear, via an atomic link");
+  } finally {
+    target.openSync = realOpen;
+    target.linkSync = realLink;
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
   }
 });
