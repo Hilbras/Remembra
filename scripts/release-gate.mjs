@@ -20,6 +20,9 @@ if (expectedVersion && packageJson.version !== expectedVersion) {
 const commands = [
   ["build", "npm", ["run", "build"]],
   ["tests", "npm", ["test"]],
+  // Before the security matrix: a retrieval regression is a correctness problem,
+  // and the benchmark gate is the only stage that can see one.
+  ["retrieval benchmark gate", "npm", ["run", "bench:gate"]],
   ["security matrix", "npm", ["run", "security:check"]],
   ["recovery matrix", "npm", ["run", "recovery:check"]],
   ["python sdk", "npm", ["run", "python:test"]],

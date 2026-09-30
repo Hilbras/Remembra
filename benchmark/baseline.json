@@ -1,0 +1,165 @@
+{
+  "corpus": 30,
+  "scenarios": 23,
+  "k": 5,
+  "scenarioIds": [
+    "token-boundary-hyphen",
+    "token-boundary-underscore",
+    "token-boundary-camel",
+    "token-decoy-not-matched",
+    "phrase-order-matters",
+    "idf-rare-term-wins",
+    "field-weight-beats-body",
+    "dedup-exact-removed",
+    "dedup-cross-source-kept",
+    "superseded-suppressed",
+    "metadata-modifier-applies",
+    "modifier-trust-decides",
+    "modifier-importance-decides",
+    "modifier-confidence-decides",
+    "modifier-pinned-decides",
+    "modifier-recency-decides",
+    "prefix-partial-word",
+    "token-case-folded",
+    "hard-decoy-denser",
+    "hard-refresh-token",
+    "hard-incremental-index",
+    "breadth-ranking",
+    "breadth-schema"
+  ],
+  "aggregate": {
+    "precision_at_k": 0.31304347826086965,
+    "recall_at_k": 0.9782608695652174,
+    "mrr": 0.9420289855072462,
+    "ndcg_at_k": 0.9331953086217485,
+    "hit_rate_at_k": 1,
+    "avg_latency_ms": 1.4,
+    "p50_latency_ms": 0.6,
+    "p95_latency_ms": 1.4,
+    "p99_latency_ms": 20,
+    "queries_evaluated": 23,
+    "token_efficiency": 0.3167948652063423,
+    "duplicate_rate": 0,
+    "tokens_total": 983,
+    "tokens_relevant": 261,
+    "duplicates": 0,
+    "returned": 91
+  },
+  "perScenario": [
+    {
+      "id": "token-boundary-hyphen",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "token-boundary-underscore",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "token-boundary-camel",
+      "mrr": 1,
+      "ndcg_at_k": 0.8503449055347546
+    },
+    {
+      "id": "token-decoy-not-matched",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "phrase-order-matters",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "idf-rare-term-wins",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "field-weight-beats-body",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "dedup-exact-removed",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "dedup-cross-source-kept",
+      "mrr": 1,
+      "ndcg_at_k": 0.6131471927654584
+    },
+    {
+      "id": "superseded-suppressed",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "metadata-modifier-applies",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "modifier-trust-decides",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "modifier-importance-decides",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "modifier-confidence-decides",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "modifier-pinned-decides",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "modifier-recency-decides",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "prefix-partial-word",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "token-case-folded",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "hard-decoy-denser",
+      "mrr": 0.3333333333333333,
+      "ndcg_at_k": 0.5
+    },
+    {
+      "id": "hard-refresh-token",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "hard-incremental-index",
+      "mrr": 0.3333333333333333,
+      "ndcg_at_k": 0.5
+    },
+    {
+      "id": "breadth-ranking",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    },
+    {
+      "id": "breadth-schema",
+      "mrr": 1,
+      "ndcg_at_k": 1
+    }
+  ]
+}

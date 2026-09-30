@@ -69,4 +69,5 @@ semantic search or injecting a local adapter.
 - [MCP tools](tools.md)
 - [Security and deployment](security.md)
 - [Backup and migration](migration-v4.9.md)
+- [Retrieval benchmark gate](benchmark-gate.md) — what §38 requires and what it catches
 - [Troubleshooting](troubleshooting.md)
