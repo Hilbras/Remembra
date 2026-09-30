@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Remembra, RemembraApiError, RemembraNetworkError, RemembraTimeoutError, type FetchLike, type LegacyBatchRequest } from "../sdk.js";
+import { Remembra, RemembraApiError, RemembraNetworkError, RemembraTimeoutError, type FetchLike, type LegacyBatchRequest, type SearchResponse } from "../sdk.js";
+import type { BudgetReport } from "../types.js";
 import { MemoryStore } from "../store.js";
 import { MemoryService } from "../service.js";
 import { createHttpServer } from "../http.js";
@@ -619,4 +620,85 @@ test("SDK rejects invalid endpoints and does not require an API key", async () =
     fetch: async () => jsonResponse({ text: "ok", results: [] }),
   });
   assert.equal((await client.search({ query: "x" })).text, "ok");
+});
+
+/**
+ * Roadmap §37's budget through the typed SDK.
+ *
+ * Found by publishing 5.7.0 and then installing it from the registry: the type
+ * rejected `budget`, and once the type allowed it, the query builder serialised the
+ * nested object with `String(value)` — the literal string "[object Object]" — which
+ * the server silently ignored. So a typed caller could neither express the budget
+ * nor learn it was being dropped. Both halves are pinned here.
+ */
+test("SDK flattens a structured search param instead of stringifying it", async () => {
+  const calls: string[] = [];
+  const fetchImpl: FetchLike = async (input) => {
+    calls.push(String(input));
+    return jsonResponse({ text: "found", results: [] });
+  };
+  const client = new Remembra({ endpoint: "https://memory.example.test", fetch: fetchImpl });
+
+  await client.search({ query: "note", budget: { maxItems: 2, maxBytes: 4096 } });
+
+  const url = new URL(calls[0]!);
+  assert.equal(url.searchParams.get("budget.maxItems"), "2", "the bound reached the wire");
+  assert.equal(url.searchParams.get("budget.maxBytes"), "4096");
+  assert.equal(url.searchParams.get("budget"), null, "and the object itself was not stringified");
+  assert.ok(!calls[0]!.includes("%5Bobject"), "the literal '[object Object]' is not in the URL");
+
+  // An unset bound inside the object must not become `budget.maxTokens=undefined`.
+  await client.search({ query: "note", budget: { maxItems: 1 } });
+  assert.equal(new URL(calls[1]!).searchParams.get("budget.maxTokens"), null);
+});
+
+test("SDK search options accept every field §37 and §35 added", async () => {
+  const calls: string[] = [];
+  const fetchImpl: FetchLike = async (input) => {
+    calls.push(String(input));
+    return jsonResponse({ text: "found", results: [] });
+  };
+  const client = new Remembra({ endpoint: "https://memory.example.test", fetch: fetchImpl });
+
+  await client.search({
+    query: "note",
+    dedupeExact: false,
+    dedupeSameSource: true,
+    includeSuperseded: true,
+    budget: { maxLatencyMs: 250 },
+  });
+
+  const params = new URL(calls[0]!).searchParams;
+  assert.equal(params.get("dedupeExact"), "false");
+  assert.equal(params.get("dedupeSameSource"), "true");
+  assert.equal(params.get("includeSuperseded"), "true");
+  assert.equal(params.get("budget.maxLatencyMs"), "250");
+});
+
+/**
+ * The read side of the same gap. The server has returned `budget` since §37 shipped,
+ * but `SearchResponse` did not declare it — found by installing 5.7.0 from the
+ * registry, where the JSON plainly contained `budget` and the type said it could not
+ * exist. A typed caller could set a bound (once the request type was fixed) and still
+ * not learn which one applied, which is the entire point of the report.
+ *
+ * A compile-time assertion, because that is where a declared response surface is
+ * verified: nothing at runtime can tell you a field is missing from a type.
+ */
+test("SDK SearchResponse declares the budget report", () => {
+  const report: BudgetReport = {
+    requested: { maxItems: 2 },
+    elapsed_ms: 1.7,
+    items: 2,
+    bytes: 63,
+    truncated: true,
+    truncated_by: ["maxItems"],
+  };
+  const response: SearchResponse = { text: "", results: [], budget: report };
+  assert.equal(response.budget?.truncated_by[0], "maxItems");
+
+  // And absent is a distinct, declared state rather than an error: no budget asked
+  // for is not the same claim as a budget that trimmed nothing.
+  const without: SearchResponse = { text: "", results: [] };
+  assert.equal(without.budget, undefined);
 });

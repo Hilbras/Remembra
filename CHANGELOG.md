@@ -9,6 +9,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Roadmap §37's budget is reachable through the typed SDK.** Published in 5.7.0 and
+  then installed from the registry, which is where this surfaced: `SearchInput` —
+  which the SDK's `SearchOptions` is an alias of — never gained `budget`, so a typed
+  caller could not set one. Adding it exposed a second half: the SDK serialises query
+  parameters with `String(value)`, so a nested object became the literal string
+  `"[object Object]"` and the server ignored it. Nested parameters are now flattened
+  as `parent.child`, which is how the search route already read them.
+
+  The response side had the same problem in reverse: the server has returned `budget`
+  since §37 shipped, but `SearchResponse` did not declare it. A typed caller could
+  set a bound and still not learn which one applied, which is the entire point of the
+  report.
+
+  All of it escaped the suite because no test compared `SearchInput` with
+  `SearchQuery`, or `SearchResponse` with what the server actually returns —
+  hand-maintained descriptions of the same thing at two different layers, with nothing
+  comparing them. That comparison is now a compile-time assertion, so a drift fails
+  the build. It needed three attempts to get right, and each wrong version failed
+  silently or reported the wrong field: the first only named a type alias, the second
+  reported on `type` and `scope` because `Record` makes keys required where the shape
+  makes them optional, and the third built its source from the very keys it was
+  checking, so removing `budget` produced no error at all. It is now expressed as "the
+  missing set is empty", which cannot be satisfied by the thing it checks.
+
 ## [5.7.0] — 2026-09-30
 
 Roadmap §31–§38, the Advanced Retrieval Engine milestone. The intent of every

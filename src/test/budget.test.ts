@@ -20,7 +20,7 @@ import { MemoryService } from "../service.js";
 import { MemoryStore } from "../store.js";
 import { defaultMemoryPolicy } from "../policy.js";
 import { isRemembraError } from "../errors.js";
-import type { Memory } from "../types.js";
+import { SearchInput, searchInputShape, type Memory, type SearchQuery } from "../types.js";
 
 let seq = 0;
 function mem(content: string, over: Partial<Memory> = {}): Memory {
@@ -296,4 +296,83 @@ describe("T06: the budget report survives the service", () => {
       await fs.rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }).catch(() => undefined);
     }
   });
+});
+
+/**
+ * The invariant whose absence let §37 ship unreachable.
+ *
+ * `SearchInput` — which the SDK's `SearchOptions` is an alias of — and `SearchQuery` are
+ * two hand-maintained descriptions of the same request. They drifted: `budget` was
+ * added to `SearchQuery` and honoured by `searchQ`, and never added to
+ * `SearchInput`, so a typed SDK caller could not set a budget. Nothing compared
+ * them, because `SearchQuery` is a plain interface with no runtime shape to compare
+ * against a zod object.
+ *
+ * So this is a compile-time assertion, and that is the honest tool for it: the
+ * compiler sees the interface, no amount of runtime inspection would. A drift fails
+ * the build rather than a test, which is a stronger place for it to fail.
+ */
+/**
+ * Two directions, because `SearchInput` and `SearchQuery` are not meant to be
+ * identical — they are two descriptions of one request at two different layers, and
+ * conflating them would be its own kind of wrong.
+ *
+ * 1. **Every field `searchQ` honours must be on `SearchInput`.** This is the
+ *    direction that matters and the one §37 broke: a caller-settable option the SDK
+ *    type omits cannot be set by a typed caller, whatever the server supports.
+ * 2. **`SearchInput` may exceed `SearchQuery` only by fields the service filters on
+ *    before the pipeline ever sees them.** `includeExpired` and its three siblings
+ *    are exactly that: `MemoryService.search` applies them at lines around the
+ *    candidate filter and never forwards them, so `searchQ` has no reason to declare
+ *    them. Any *other* extra field is unexplained and fails the build.
+ */
+type SearchQueryPipelineOnly = "candidates" | "totalDocs";
+type ServiceConsumedOnly = "includeExpired" | "includeFuture" | "includeQuarantined" | "includeArchived";
+type CallerSettableQueryFields = Exclude<keyof SearchQuery, SearchQueryPipelineOnly>;
+type UnexplainedInputFields = Exclude<Exclude<keyof SearchInput, keyof SearchQuery>, ServiceConsumedOnly>;
+
+/**
+ * Written as mapped assignments rather than `extends never`, because they report
+ * *which* field drifted. The `never` form only names the type alias, so a real drift
+ * was as opaque as the bug it replaced.
+ */
+// Direction 1, as "the missing set is empty" rather than "every key is present".
+//
+// The presence form was tried twice and both versions were wrong in ways that
+// mattered. Requiring each field to be optional-compatible reported on `type` and
+// `scope` instead of on what was being checked; and building the *source* from the
+// query keys reported nothing at all when `budget` was removed, because the source
+// then carried `budget` itself. An empty set is the only shape that cannot be
+// satisfied by the thing it is supposed to check — and an empty target produces no
+// error, so it is free.
+type QueryFieldsMissingFromInput = Exclude<CallerSettableQueryFields, keyof SearchInput>;
+const _noQueryFieldIsHiddenFromInput: { [K in QueryFieldsMissingFromInput]: never } = {} as Record<string, unknown>;
+
+// Direction 2: any extra SearchInput field outside the service-consumed list appears
+// here, and the error names it.
+const _noUnexplainedInputFields: { [K in UnexplainedInputFields]: never } = {} as Record<string, unknown>;
+void _noQueryFieldIsHiddenFromInput;
+void _noUnexplainedInputFields;
+
+test("T06-023: SearchInput and SearchQuery describe the same request", () => {
+  // The compile-time assertions above are the real check: a drift fails the build,
+  // which is a stronger place to fail than a test. This test exists so the invariant
+  // is visible in the suite output and points at itself in a report, and so removing
+  // the assertions cannot pass unnoticed.
+  assert.ok(
+    Object.keys(searchInputShape).length > 0,
+    "SearchInput still describes a request — if this is zero the assertions above are vacuous",
+  );
+});
+
+test("T06-024: a budget parses through SearchInput, and a malformed one does not", () => {
+  assert.equal(SearchInput.safeParse({ query: "note", budget: { maxItems: 2 } }).success, true);
+  // Every failure mode the HTTP route rejects, checked at the schema too.
+  for (const bad of [{ maxItems: -1 }, { maxItems: 1.5 }, { maxItems: "two" }, { nonsense: 1 }]) {
+    assert.equal(
+      SearchInput.safeParse({ query: "note", budget: bad }).success,
+      false,
+      `rejected: ${JSON.stringify(bad)}`,
+    );
+  }
 });

@@ -15,6 +15,7 @@ import type {
   Memory,
   MemoryType,
   RelationKind,
+  BudgetReport,
   RetrievalExplanation,
   SearchInput,
   StoreInput,
@@ -209,6 +210,19 @@ export interface SearchResponse {
   text: string;
   results: Memory[];
   explanations?: RetrievalExplanation[];
+  /**
+   * Which bound applied, if one was asked for.
+   *
+   * V5.7.1. The server has returned this since §37 shipped, but the type did not
+   * declare it — found by installing 5.7.0 from the registry and reading the payload,
+   * where the JSON plainly had `budget` and the type said it could not exist. A typed
+   * caller therefore could not learn *which* bound trimmed the result set, which is
+   * the one thing the report is for.
+   *
+   * Its absence means "no budget was requested", which is different from "the budget
+   * removed nothing" — hence optional rather than defaulted.
+   */
+  budget?: BudgetReport;
 }
 
 export interface ListResponse {
@@ -596,6 +610,16 @@ export class Remembra {
       if (value === undefined || value === null) continue;
       if (Array.isArray(value)) {
         for (const item of value) url.searchParams.append(key, String(item));
+      } else if (typeof value === "object") {
+        // Flatten one level as `parent.child`, which is how the search route reads
+        // structured params such as `budget.maxItems`. Without this a nested option
+        // serialised to the literal string "[object Object]" and was silently
+        // ignored by the server — the SDK accepted the argument, the type allowed it,
+        // and the bound was never applied.
+        for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+          if (childValue === undefined || childValue === null) continue;
+          url.searchParams.set(`${key}.${childKey}`, String(childValue));
+        }
       } else {
         url.searchParams.set(key, String(value));
       }

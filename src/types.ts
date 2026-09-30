@@ -343,6 +343,24 @@ export const searchInputShape = {
    * suppressed unless the superseding memory is itself available in the results.
    */
   includeSuperseded: z.boolean().optional(),
+  /**
+   * A retrieval budget (roadmap §37).
+   *
+   * V5.7.1. This was missing here through 5.7.0 while `SearchQuery` had it, and the
+   * SDK's `SearchOptions` is an alias of this type — so a typed SDK caller could not
+   * set a budget at all, and the gap only surfaced when 5.7.0 was installed from the
+   * registry and used. Found by publishing, not by the suite: nothing in the tests
+   * asserted that this shape and `SearchQuery` agree.
+   */
+  budget: z
+    .object({
+      maxItems: z.number().int().min(0).optional(),
+      maxTokens: z.number().int().min(0).optional(),
+      maxBytes: z.number().int().min(0).optional(),
+      maxLatencyMs: z.number().int().min(0).optional(),
+    })
+    .strict()
+    .optional(),
 };
 export const SearchInput = z.object(searchInputShape);
 export type SearchInput = z.infer<typeof SearchInput>;
