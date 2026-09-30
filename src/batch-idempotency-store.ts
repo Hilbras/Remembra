@@ -323,17 +323,37 @@ function ledgerIdentitySync(root: string, databasePath: string): { identity: str
   }
   if (databaseExists) invalid("ledger database exists without its identity; refuse to reset claim history");
   const createdIdentity = randomBytes(32).toString("hex");
-  let handle: number | undefined;
+  // Publish with link(), exactly as the integrity key does below.
+  //
+  // This used to be `open(O_EXCL)` followed by a write, which creates the file
+  // *empty* and fills it afterwards. A peer reading in between saw an empty string,
+  // it failed the 64-hex check, and the peer refused to start with "ledger identity is
+  // invalid". That is the same defect as the zero-byte integrity key fixed in 5.6.0,
+  // and it survived there because that fix was applied to `claims.key` and not to
+  // `claims.identity`. Measured at roughly 1 in 300 concurrent cold starts, which is
+  // about once per full-suite run.
+  //
+  // With link() a peer sees either no file at all or the complete one, never a
+  // partial. "No file" is not a problem: it takes the create branch, loses the link
+  // race with EEXIST, and recurses to read the file that is by then complete.
+  const identityStaging = path.join(
+    root,
+    `.claims.identity.${process.pid}.${randomBytes(4).toString("hex")}.tmp`,
+  );
   try {
-    handle = fs.openSync(identityPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
-    fs.writeFileSync(handle, `${createdIdentity}\n`, "utf8");
-    fs.fsyncSync(handle);
-    fs.closeSync(handle);
-    handle = undefined;
+    fs.writeFileSync(identityStaging, `${createdIdentity}\n`, { mode: 0o600, flag: "wx" });
+    fs.linkSync(identityStaging, identityPath);
   } catch (error) {
-    if (handle !== undefined) fs.closeSync(handle);
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") return ledgerIdentitySync(root, databasePath);
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      fs.rmSync(identityStaging, { force: true });
+      return ledgerIdentitySync(root, databasePath);
+    }
+    fs.rmSync(identityStaging, { force: true });
     throw new RemembraError("SERVICE_UNAVAILABLE", "ledger identity could not be created", { cause: error });
+  } finally {
+    // Never left behind on any path: the constructor validates the claim directory by
+    // name, so a surviving staging file makes the *next* start fail.
+    fs.rmSync(identityStaging, { force: true });
   }
   return { identity: createdIdentity, created: true };
 }
@@ -436,8 +456,42 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
       invalid("legacy JSON claim files require explicit operator migration");
     }
     const allowedEntries = /^(claims\.sqlite(?:-journal|-wal|-shm)?|claims\.identity|claims\.key|restore\.pending)$/;
-    if (entries.some((name) => !allowedEntries.test(name))) {
-      invalid("claim directory contains unrelated files");
+    // A peer's integrity-key staging file is transient and legitimate: `link()` needs
+    // the source to exist, so publication necessarily has a window in which a
+    // `.claims.key.<pid>.<hex>.tmp` file is visible in this directory. This scan used
+    // to reject that name outright, so a peer starting during another peer's
+    // publication window failed with "claim directory contains unrelated files" — the
+    // fourth manifestation of this store's cold-start race, after file mode, ledger
+    // generation metadata, and the zero-byte key.
+    //
+    // Widening `allowedEntries` outright would be the wrong fix: this check exists to
+    // refuse a claim directory that is not the one we expect, and a permanent
+    // exemption makes that weaker. Instead the *only* tolerated unexpected name is a
+    // staging file this code creates, and we wait for the peer to finish removing it
+    // — the same bounded-poll-then-fail-closed shape the ledger initialisation already
+    // uses a few lines away. Anything else is refused immediately, and a staging file
+    // still present after the wait is refused too.
+    // Both publication artifacts, not just the key: `claims.identity` is now published
+    // the same way, and exempting only one of them would mean the fix above traded a
+    // partial-read failure for an unexpected-file failure.
+    const stagingEntry = /^\.claims\.(?:key|identity)\.\d+\.[0-9a-f]{8}\.tmp$/;
+    const unexpected = () => {
+      const unexpectedNow = fs.readdirSync(resolvedRoot).filter((name) => !allowedEntries.test(name));
+      return unexpectedNow;
+    };
+    let unexpectedEntries = unexpected();
+    if (unexpectedEntries.length > 0) {
+      const deadline = Date.now() + LEDGER_INIT_WAIT_MS;
+      while (unexpectedEntries.length > 0) {
+        if (!unexpectedEntries.every((name) => stagingEntry.test(name))) {
+          invalid("claim directory contains unrelated files");
+        }
+        if (Date.now() >= deadline) {
+          invalid("claim directory contains unrelated files (a staging file outlived its publisher)");
+        }
+        sleepSync(LEDGER_INIT_POLL_MS);
+        unexpectedEntries = unexpected();
+      }
     }
     this.restoreMarkerPath = path.join(resolvedRoot, "restore.pending");
     this.databasePath = path.join(resolvedRoot, "claims.sqlite");

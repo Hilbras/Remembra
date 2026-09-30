@@ -9,6 +9,78 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [5.7.1] — 2026-09-30
+
+Three fixes, all found by installing 5.7.0 from the registry and using it rather than
+by anything in the suite. Full compatibility statement: `docs/v5.7.0-compatibility.md`.
+Findings and measurements: `docs/v5.7.0-audit.md`.
+
+### Fixed
+
+- **Roadmap §37's budget is reachable through the typed SDK.** `SearchInput` — which
+  the SDK's `SearchOptions` is an alias of — never gained `budget`, so a typed caller
+  could not set one. Adding it exposed a second half: the SDK serialises query
+  parameters with `String(value)`, so a nested object became the literal string
+  `"[object Object]"` and the server ignored it. The SDK accepted the argument, the type
+  allowed it, and the bound was never applied. Nested parameters are now flattened as
+  `parent.child`, which is how the search route already read them. The response side had
+  the same gap in reverse: the server has returned `budget` since §37 shipped and
+  `SearchResponse` did not declare it, so a typed caller could not learn which bound
+  applied — the entire point of the report.
+
+- **Non-ASCII queries now reach the lexical path.** `extractQuery` filtered query terms
+  with `/^[a-z0-9]+$/u`, so every non-ASCII query produced **zero** terms, no keyword
+  list was built, and retrieval fell back to the vector path alone — which is nothing
+  at all when no embedding provider is configured. A CJK, Russian, Greek, Hangul or Thai
+  query returned an empty result set with no error and no warning, and a query returning
+  nothing is indistinguishable from a query with no match.
+
+  The two halves of retrieval now share one tokeniser, so they cannot drift apart again
+  — which is how the CJK branch in `tokenize` came to be unreachable: the document side
+  segmented, the query side refused, and no test compared them. Scripts that segment per
+  character (Han, hiragana, katakana) yield per-character terms; scripts that tokenise as
+  words (Hangul, Thai, Greek, Cyrillic) yield whole words, which is what the document
+  side already did.
+
+  One ASCII behaviour changes, deliberately pinned by a test: a query containing internal
+  punctuation now contributes its alphanumeric parts, where before the whole
+  whitespace-delimited run had to be alphanumeric. So `don't` contributes `don` and
+  matches a document containing `don't` — which it previously could not. This is the
+  tokeniser becoming consistent with the document side rather than a new rule.
+
+- **`latest N <query>` now parses.** `TEMPORAL_RE` anchored its alternation with `$`, so
+  each branch had to consume the entire query: `latest(?:\s+(\d+))` matched `"latest 3"`,
+  left the body unconsumed, the anchor failed, and the qualifier was tokenised as an
+  ordinary word. `latest 3 errors` therefore ran as a plain keyword search for the words
+  *latest* and *errors*. Both branches now carry a trailing remainder, and the digit
+  count stays required so `"latest news about the deployment"` is still an ordinary query
+  rather than a qualifier that swallows the rest of the sentence.
+
+  **This restores parsing, not meaning**, and the difference is worth stating plainly.
+  The qualifier's values are read in exactly one place — `modifierScore`, where they
+  switch the recency multiplier from `0.5` to `2`. So `latestCount` still does not limit
+  to the N most recent, and `before` / `after` still filter nothing. Measured, with four
+  documents of decreasing age and all four matching:
+
+  ```
+  search(pool, "incident review")   -> d1, d2, d3, d4
+  search(pool, "latest 2")          -> d1, d2, d3, d4
+  search(pool, "before 2026-08-01") -> d1, d2, d3, d4
+  ```
+
+  Making them count and filter is new behaviour rather than a bug fix: it changes the
+  result set for every temporal query, and needs a decision about what "the 3 most recent"
+  means when ties, archiving and `validUntil` are in play. Recorded in full as audit S8.
+
+### Known limitations
+
+- The temporal qualifier parses but does almost nothing beyond the recency multiplier.
+  See audit S8.
+- The benchmark set contains no temporal query and no non-ASCII document, so the gate
+  cannot see either of the two fixes above. The unit tests are what cover them; both are
+  gaps in the gate, recorded rather than papered over.
+
+
 ### Fixed
 
 - **Roadmap §37's budget is reachable through the typed SDK.** Published in 5.7.0 and
@@ -48,6 +120,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   whitespace-delimited run had to be alphanumeric. So `don't` contributes `don` and
   matches a document containing `don't` — which it previously could not. This is the
   tokeniser being consistent with the document side rather than a new rule.
+
+- **Two cold-start races in the batch idempotency ledger**, both found by deliberately
+  cold-starting a store from many concurrent processes against one fresh claim
+  directory — a reproduction built because the original symptom surfaced as a single
+  MATRIX-02 failure that passed on every rerun, which is the hardest shape of defect to
+  catch.
+
+  - A peer's integrity-key **staging file** made the next start fail with "claim
+    directory contains unrelated files". `link()` needs its source to exist, so
+    publishing the key necessarily has a window in which a
+    `.claims.key.<pid>.<hex>.tmp` file is visible in the claim directory, and the
+    constructor's allowlist rejected that name. The only tolerated unexpected name is
+    now a staging file this code creates, and the constructor waits for its publisher
+    to remove it — the bounded-poll-then-fail-closed shape the ledger already uses.
+    Anything else is still refused immediately, and a staging file that outlives its
+    publisher is still refused, with a message that says why it waited.
+  - The **ledger identity** was published with `open(O_EXCL)` followed by a write, so
+    the file existed *empty* before it was filled. A peer reading in between saw an
+    empty string, failed the 64-hex check, and refused to start with "ledger identity is
+    invalid". This is the same defect as the zero-byte integrity key fixed in 5.6.0,
+    and it survived there because that fix was applied to `claims.key` and not to
+    `claims.identity`. It is now published with `link()` too, so a peer sees either no
+    file or the complete one.
+
+  Measured over 60 rounds of 16 concurrent processes cold-starting against a fresh
+  claim directory:
+
+  | | before | after |
+  |---|---|---|
+  | claim directory contains unrelated files | routine, hundreds of failures | 0 |
+  | ledger identity is invalid | ~1 in 300 | 0 |
+
+  Two rarer symptoms in the same family remain and are **not** fixed, because they are
+  in code this change does not touch and because a per-symptom wait is what produced
+  five manifestations in the first place: "ledger database exists without its identity"
+  and "batch idempotency database could not be opened" (SQLite contention under heavy
+  concurrency). Roughly 3 occurrences across ~250,000 cold starts. The 5.6.0 note on
+  this store prescribes the actual fix — a single atomic initialisation rather than
+  another patch — and this release should not pretend six patches reach it.
 
 - **`latest N <query>` now parses** (audit S8, found while writing the tests for the
   above). `TEMPORAL_RE` anchored its alternation with `$`, so each branch had to

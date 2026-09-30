@@ -58,7 +58,7 @@ export interface RetrievalPolicyOptions {
  * `latest` and `recent` carry a trailing remainder. They previously did not, so the
  * `$` anchor could only be satisfied by a query that was *nothing but* a qualifier:
  * `latest 3 errors` failed to match and fell through to being tokenised as the
- * ordinary words "latest" and "errors" \u2014 a plain keyword search that looks like an
+ * ordinary words "latest" and "errors" — a plain keyword search that looks like an
  * answer, because that is exactly what it returns. The `before`/`after` branches
  * already had `(.+)`; these two did not, which is the whole inconsistency.
  *

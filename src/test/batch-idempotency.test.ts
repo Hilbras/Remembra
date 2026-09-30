@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { FileBatchIdempotencyStore, batchIdempotencyFingerprint, batchIdempotencyScope } from "../batch-idempotency-store.js";
@@ -901,5 +902,118 @@ test("MemoryService replays a durable batch without creating duplicate memories"
   } finally {
     await service.shutdownBackgroundJobs();
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The fourth manifestation of this store's cold-start race.
+ *
+ * The first three were file mode, ledger generation metadata, and the zero-byte
+ * integrity key. This one is subtler: `link()` needs its source to exist, so
+ * publishing the key necessarily has a window in which a
+ * `.claims.key.<pid>.<hex>.tmp` file is visible in the claim directory — and the
+ * constructor's allowlist check rejected that name outright. A peer starting inside
+ * another peer's publication window therefore failed with "claim directory contains
+ * unrelated files".
+ *
+ * It surfaced as a single MATRIX-02 failure in one full-suite run and passed on every
+ * rerun, which is the hardest shape of defect to catch: load-dependent, and in a suite
+ * where a rerun is the normal response. Reproduced deliberately by cold-starting a
+ * store from 12 concurrent processes against a fresh claim directory, 25 rounds:
+ *
+ *   before the fix: 24 of 300 processes failed
+ *   after the fix:   0 of 300
+ *
+ * The regression test below is the deterministic version — it plants the staging file
+ * from a *separate process*, because a `setTimeout` on this thread would never fire:
+ * the constructor blocks in `Atomics.wait`, which is exactly why a real peer has to be
+ * a real process.
+ */
+const claimDir = async (): Promise<{ dir: string; claim: string }> => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "remembra-staging-race-"));
+  const claim = path.join(dir, "claims");
+  await fs.mkdir(claim, { recursive: true, mode: 0o700 });
+  return { dir, claim };
+};
+
+test("a peer's integrity-key staging file does not make the next start fail", async () => {
+  const { dir, claim } = await claimDir();
+  try {
+    // Exactly the name `loadIntegrityKeySync` creates, and exactly the permissions it
+    // creates them with.
+    const staging = path.join(claim, `.claims.key.99999.deadbeef.tmp`);
+    await fs.writeFile(staging, "x".repeat(32), { mode: 0o600 });
+
+    // A slow peer, deliberately. With a 150ms peer this test also passed against the
+    // *wrong* fix — permanently widening `allowedEntries` exempts the staging name, so
+    // the constructor refuses nothing and returns in about a millisecond, which
+    // satisfied a bare `waited > 0`. The wait is the thing being asserted, so the peer
+    // has to be slow enough that "did not wait" is unambiguous.
+    const peer = spawn(
+      process.execPath,
+      ["-e", `setTimeout(() => require("fs").rmSync(process.argv[1], { force: true }), 400)`, staging],
+    );
+    // Deliberately *not* unref'd, and not awaited on `exit`: awaiting the child's exit
+    // raced the event loop, because the constructor blocks this thread in
+    // `Atomics.wait` and the child can exit while nothing is listening. Poll the file
+    // instead, which is the thing actually being asserted.
+
+    const started = Date.now();
+    const store = new FileBatchIdempotencyStore(claim);
+    const waited = Date.now() - started;
+    store.close();
+
+    // Proves it waited for the publisher rather than either refusing (M1) or simply
+    // treating the name as allowed (M2).
+    assert.ok(waited >= 250, `the constructor waited for the publisher (${waited}ms)`);
+    assert.ok(waited < 2_000, `and gave up well before the full budget (${waited}ms)`);
+    let stillThere = true;
+    for (let i = 0; i < 100 && stillThere; i++) {
+      stillThere = (await fs.readdir(claim)).includes(path.basename(staging));
+      if (stillThere) await new Promise<void>((r) => setTimeout(r, 20));
+    }
+    assert.equal(stillThere, false, "and the peer's staging file is gone");
+    await new Promise<void>((r) => {
+      if (peer.exitCode !== null || peer.signalCode !== null) r();
+      else peer.once("exit", r);
+    });
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
+  }
+});
+
+test("a claim directory that is not the one we expect is still refused", async () => {
+  const { dir, claim } = await claimDir();
+  try {
+    // The gate must not be weakened into uselessness. An unrelated file is refused
+    // immediately, not waited on — waiting is only ever appropriate for the one
+    // transient name this code itself creates.
+    await fs.writeFile(path.join(claim, "stray.txt"), "x", { mode: 0o600 });
+    const started = Date.now();
+    assert.throws(
+      () => new FileBatchIdempotencyStore(claim),
+      (error: unknown) =>
+        error instanceof RemembraError && /unrelated files/.test(error.message) && !/outlived/.test(error.message),
+    );
+    assert.ok(Date.now() - started < 500, "refused immediately, not after the staging budget");
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
+  }
+});
+
+test("a staging file that outlives its publisher fails closed", async () => {
+  const { dir, claim } = await claimDir();
+  try {
+    // Nobody is going to remove this one. After the bounded wait the constructor must
+    // still refuse, with a message that says *why* it waited rather than reporting the
+    // generic symptom a peer would have reported.
+    await fs.writeFile(path.join(claim, `.claims.key.88888.cafe1234.tmp`), "x".repeat(32), { mode: 0o600 });
+    assert.throws(
+      () => new FileBatchIdempotencyStore(claim),
+      (error: unknown) =>
+        error instanceof RemembraError && /outlived its publisher/.test(error.message),
+    );
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch(() => undefined);
   }
 });
