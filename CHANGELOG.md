@@ -9,6 +9,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **V6 policy model and evaluator (V6-T02), the first V6 code.** `src/v6-policy.ts`
+  implements the ten decisions frozen and approved in
+  [`docs/v6-decisions.md`](docs/v6-decisions.md): a closed sensitivity order, four
+  independent policy axes, a fixed six-layer precedence, and a bounded decision
+  result with a closed effect/reason vocabulary. Contract in
+  [`docs/v6-policy.md`](docs/v6-policy.md).
+
+  Nothing calls it yet. The evaluator defines the decision; wiring it into the
+  request path is V6-T04 through V6-T07, the cross-axis evaluator is V6-T05, and
+  audit emission is V6-T08. No V5 route, schema, or default changes — the module
+  is additive and unreferenced, so the V5 surface is untouched.
+
+  Fail-closed is the property under test rather than a stated intent: 19
+  mutations, all caught. Three survived the first pass and were gaps in the tests,
+  not defects in the evaluator — nothing pinned that an absent clearance is
+  fail-closed rather than unrestricted, nothing pinned that a missing capability
+  denies, and a determinism test that asserted two evaluations agreed, which a
+  wall clock also satisfies.
+
+  One deviation from the architecture spec, recorded rather than silently applied:
+  spec §4.2 proposed a `restricted` band, and the approved decision replaces it
+  with `secret`. `restricted` read as a mode rather than a level, so restricted
+  *handling* is now the `quarantine` effect — somewhere a decision can act on it.
+  V6 stores are new, so no V5 record carries the old spelling and nothing
+  migrates.
+
+### Fixed
+
+- **Two mutation runs that overlapped on the same source file were discarded and
+  re-run.** Both were left running concurrently, so a mutation reported as caught
+  in the second run may have been caught by the first run's mutant still on disk.
+  The serial re-run found two mutations the overlapping run had reported as
+  caught. Both runs also now verify their anchors before mutating anything and
+  prove the source is byte-identical to its snapshot after every revert.
+
 ## [5.7.1] — 2026-09-30
 
 Three fixes, all found by installing 5.7.0 from the registry and using it rather than

@@ -40,10 +40,40 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
     that remains open, and it is T02's, not T01's — T01's acceptance is the
     approval, which is taken.
 
-- [ ] **V6-T02 — Define versioned policy and decision schemas**
+- [x] **V6-T02 — Define versioned policy and decision schemas**
   - Acceptance: versioned bounded policy documents, closed decision effects/reasons, deterministic precedence, and fail-closed validation.
   - Verify: unit/property policy tests, invalid/unknown/version-mismatch fixtures, build/typecheck.
   - Depends on: V6-T01.
+  - **Delivered 2026-09-30.** `src/v6-policy.ts` (358 lines) implements the approved
+    decisions; `docs/v6-policy.md` is the contract; `src/test/v6-policy.test.ts`
+    holds 25 decision fixtures. Suite 942 → 967.
+  - **19 mutations, all caught.** Three survived the first pass and were test
+    holes, not code defects — and they were the three most consequential defaults
+    in the module: nothing pinned that an *absent* clearance is fail-closed rather
+    than unrestricted; nothing pinned that a *missing* capability denies (every
+    test granted the one its operation needed); and the determinism test asserted
+    two calls agree, which a wall clock also satisfies. Now `V6-DEC-022` through
+    `V6-DEC-025`.
+  - **A real ordering bug in my own first implementation.** `provider_transmit`
+    with low clearance returned `sensitivity_denied` instead of
+    `provider_not_permitted` — true, but the wrong cause, and it made the egress
+    rule unreachable in exactly the case it exists for. The check moved above the
+    sensitivity comparison; the reason now says what the caller needs to know.
+  - **A deviation from the architecture spec, recorded rather than silently
+    applied.** Spec §4.2 proposes `public | internal | confidential | restricted`;
+    ADR §1 approved `public | internal | confidential | secret`. The ADR wins,
+    `restricted` is retired (it read as a mode, not a level), and restricted
+    *handling* moves to the `quarantine` effect where a decision can act on it. V6
+    stores are new, so nothing migrates. `V6-DEC-016` pins the four bands.
+  - **Two earlier mutation runs were discarded, not reported.** Two harnesses were
+    left running against the same file concurrently, so a "caught" in the second
+    could have been the first's mutant still on disk; both were killed and the set
+    re-run serially, with the source proved identical to its snapshot after every
+    revert. Separately, one mutation failed to compile and so produced no verdict
+    at all — reported as unmeasurable, then replaced with a behavioural equivalent.
+  - `docs/v6-policy.md` records what is *not* here: nothing calls `evaluatePolicy`
+    yet. Wiring it into the request path is T04–T07, the cross-axis evaluator is
+    T05, and audit emission is T08.
 
 - [ ] **V6-T03 — Define V6 memory metadata and schema contract**
   - Acceptance: trust/sensitivity/expiration/retention/policy fields have defaults, validation, serialization, redaction, indexing, and migration rules; V5 records are classified explicitly.
