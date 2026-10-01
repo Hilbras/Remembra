@@ -112,11 +112,17 @@ one.
 | `npm audit --audit-level=high` | 0 vulnerabilities |
 | Node | 18.20.8 |
 
-**Every one of these is run by hand.** `scripts/release-gate.mjs` wires them
-together and exits non-zero on failure, but nothing invokes it automatically —
-recorded under the V5.7 T08 checkpoint and unchanged by this roadmap. This is the
-single highest-leverage gap in the release process: a documented gate nobody
-triggers is a script, not a guarantee.
+**All of these now run in CI.** `.github/workflows/ci.yml` was added 2026-09-30
+with three jobs: `gate` on Node 18 (the pinned gate runtime), `smoke` on Node 22
+(`continue-on-error`, so a runtime change is visible without reddening main for
+something the project has deliberately pinned away), and `package`, which installs
+the *published* tarball and resolves every declared subpath.
+
+Until then they were run by hand, which made this the single highest-leverage gap
+in the release process — a documented gate nobody triggers is a script, not a
+guarantee. `scripts/release-gate.mjs` still exists as the single local command
+for a full pre-release run; CI and it now cover the same stages, in the same
+order, deliberately.
 
 ---
 
@@ -203,9 +209,6 @@ rather than code.
 The V7.0.0 acceptance criteria in the original roadmap are sound and are kept
 as the target. One structural addition this repo's history argues for:
 
-- **A CI workflow.** Every gate in 0.4 is currently manual. V7.0.0's
-  "architecture maturity" claim cannot be evidenced by a process nobody runs
-  automatically.
 - **A decision record per phase, not only per milestone.** Ten decisions were
   needed for V6.0.0's contracts alone; the later phases carry policy questions of
   the same weight.

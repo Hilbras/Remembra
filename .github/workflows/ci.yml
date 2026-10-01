@@ -1,0 +1,164 @@
+name: ci
+
+# Every gate here is one the release process already depends on and that a human
+# has been running by hand. This workflow does not add checks; it stops the
+# existing ones from being skippable.
+#
+# Two deliberate decisions:
+#
+#  - **Node 18 is the gate runtime, and it is not negotiable by a matrix entry.**
+#    Node 24 aborts under sustained write load in better-sqlite3's native
+#    teardown (`RemoveEnvironmentCleanupHook`), reproducibly enough that the
+#    project pins 18 for its gate; see docs/troubleshooting.md. Node 22 runs as
+#    a separate, non-blocking smoke job so a future runtime regression is visible
+#    without a red main branch for something the project has already decided to
+#    pin away.
+#
+#  - **`npm run test:raw` is never used.** It bypasses the bounded re-run that
+#    turns a native abort into a `[run-tests]` note rather than a red build. That
+#    protection is the reason the suite is reliable at all.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# A superseded run says nothing about the commit under test, and a red main while
+# someone pushes a fix is noise that trains people to ignore the badge.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: gate (node 18)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18.20.8
+          cache: npm
+
+      - name: Install
+        # better-sqlite3 compiles a native addon; a cached prebuilt from another
+        # runtime is worse than none, so the build step is not skipped here.
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Tests
+        run: npm test
+
+      # Before the security matrix on purpose: a retrieval regression is a
+      # correctness problem, and the benchmark gate is the only stage that can
+      # see one. Same ordering as scripts/release-gate.mjs.
+      - name: Retrieval benchmark gate
+        run: npm run bench:gate
+
+      - name: Security matrix
+        run: npm run security:check
+
+      - name: Recovery matrix
+        run: npm run recovery:check
+
+      - name: Documentation
+        run: npm run docs:check
+
+      - name: Audit
+        run: npm audit --audit-level=high
+
+      - name: Package contents
+        # Guards the property that keeps test fixtures and key-shaped strings out
+        # of the published tarball: `files` excludes dist/test. If a future
+        # change to `files` widens what ships, this fails before publish rather
+        # than after.
+        run: |
+          npm pack --dry-run --json > pack.json
+          node -e "
+            const files = require('./pack.json')[0].files.map(f => f.path);
+            const leaked = files.filter(f => f.includes('test') || f.startsWith('src/'));
+            if (leaked.length) {
+              console.error('tarball would ship test/source files:', leaked.slice(0, 10));
+              process.exit(1);
+            }
+            console.log('tarball ok:', files.length, 'files, no tests or sources');
+          "
+
+      - name: Python SDK
+        run: npm run python:test
+
+  smoke:
+    name: smoke (node 22)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Informational. Node 24 aborts in better-sqlite3's native teardown under
+    # sustained load, which is why the gate pins 18; this job exists so a change
+    # in that picture is noticed, not to hold the main branch hostage to it.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  package:
+    name: package (published artifact)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18.20.8
+          cache: npm
+      - run: npm ci
+
+      # Installs the *published* package rather than the working tree, so this
+      # is evidence about what a consumer actually gets. The subpath list is read
+      # from the package's own `exports` map rather than written out here: a
+      # hardcoded list is a second copy that drifts, and the first version of this
+      # step named ten paths of which six did not exist.
+      - name: Verify the published package installs and every declared subpath resolves
+        run: |
+          set -euo pipefail
+          npm pack
+          mkdir -p /tmp/verify && cd /tmp/verify
+          npm init -y >/dev/null
+          npm install "$OLDPWD"/hilbras-remembra-*.tgz
+          # The script lives INSIDE the project on purpose: node resolves
+          # node_modules relative to the importing file, so a script in /tmp
+          # reports all 20 subpaths as missing while the package is fine. That
+          # mistake was made and caught by running this step locally first.
+          cat > check-subpaths.mjs <<'EOF'
+          import { createRequire } from 'node:module';
+          const require = createRequire(process.cwd() + '/');
+          const pkg = require('@hilbras/remembra/package.json');
+          let failed = 0, checked = 0;
+          for (const key of Object.keys(pkg.exports)) {
+            if (key === './package.json') continue;
+            checked++;
+            const specifier = key === '.' ? '@hilbras/remembra' : '@hilbras/remembra/' + key.slice(2);
+            try { await import(specifier); }
+            catch (error) {
+              failed++;
+              console.error('FAILED ' + specifier + ': ' + String(error.message).split('\n')[0]);
+            }
+          }
+          console.log('installed ' + pkg.version + ', ' + checked + ' subpaths checked, ' + failed + ' failed');
+          // Explicit exit: importing the library can leave sqlite handles and
+          // timers open, so the event loop does not necessarily drain on its own.
+          process.exit(failed ? 1 : 0);
+          EOF
+          node check-subpaths.mjs
