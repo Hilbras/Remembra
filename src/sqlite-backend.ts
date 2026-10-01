@@ -249,6 +249,20 @@ export interface SqliteOptions {
   beforeMutation?: (operation: string, memoryId?: string) => void;
 }
 
+/**
+ * How long a statement waits for a concurrent writer before failing.
+ *
+ * SQLite's default is 0, which is "fail immediately", not "try again" — and in
+ * WAL mode a reader and a writer are the *normal* shape for two processes sharing
+ * one store. The batch idempotency store has always used 5000ms; this keeps the
+ * two halves of one store on the same policy.
+ *
+ * Not configurable: a caller who needs a different wait has a contention problem
+ * this value is intended to absorb, and exposing the knob would make the
+ * resulting failures depend on configuration rather than on load.
+ */
+export const SQLITE_BUSY_TIMEOUT_MS = 5_000;
+
 export class SqliteBackend implements MemoryBackend {
   readonly tenantCapable = true;
   protected readonly db: Database.Database;
@@ -288,6 +302,18 @@ export class SqliteBackend implements MemoryBackend {
   constructor(opts: SqliteOptions = {}) {
     const dbPath = opts.dbPath ?? path.join(opts.root ?? ".remembra", "data.sqlite");
     this.db = new Database(dbPath, { readonly: false, fileMustExist: false });
+    // Set the busy timeout FIRST, before journal_mode.
+    //
+    // Ordering is load-bearing and was wrong twice here. `busy_timeout` defaults to
+    // 0, which means "fail immediately" rather than "try again" — so every
+    // statement before this line runs with no wait at all. And `journal_mode = WAL`
+    // needs a brief exclusive lock, which is precisely what returns SQLITE_BUSY.
+    // With the timeout set afterwards, the WAL pragma is still unprotected.
+    //
+    // Found by CI: MATRIX-03 failed on the first workflow run with `database is
+    // locked`, then still failed 1-in-4 under four concurrent runs after busy_timeout
+    // was added in the wrong position.
+    this.db.pragma(`busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
     const dbSchemaVersion = Number(this.db.pragma("user_version", { simple: true }));
     if (dbSchemaVersion > SCHEMA_VERSION) {
       this.db.close();

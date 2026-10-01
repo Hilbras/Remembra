@@ -538,9 +538,13 @@ export class FileBatchIdempotencyStore implements BatchIdempotencyStore {
     assertSafeFileSync(this.databasePath);
     try {
       this.db = new Database(this.databasePath, { readonly: false, fileMustExist: false });
+      // busy_timeout BEFORE journal_mode, for the reason given in
+      // src/sqlite-backend.ts: the WAL pragma takes a brief exclusive lock, so
+      // setting the timeout after it leaves the one statement most likely to hit
+      // SQLITE_BUSY unprotected. Found via MATRIX-03 under concurrent runs.
+      this.db.pragma("busy_timeout = 5000");
       this.db.pragma("journal_mode = WAL");
       this.db.pragma("synchronous = FULL");
-      this.db.pragma("busy_timeout = 5000");
       let tableNames = new Set<string>();
       let metaPresent = false;
       if (this.newLedger) {

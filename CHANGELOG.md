@@ -61,6 +61,37 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **SQLite had no busy timeout, and the two halves of one store used different
+  policies.** `SqliteBackend` never set `busy_timeout`, so it ran on SQLite's
+  default of 0 — which means "fail immediately", not "try again" — while
+  `FileBatchIdempotencyStore` already waited 5000ms. In WAL mode a reader and a
+  writer are the normal shape for two processes on one store, so ordinary
+  concurrency could surface as `database is locked`.
+
+  The timeout also has to be set **before** `journal_mode = WAL`, because the WAL
+  pragma takes a brief exclusive lock — which is exactly what returns
+  `SQLITE_BUSY`. The batch store had the same ordering, so both are corrected: a
+  timeout set after the WAL pragma leaves the statement most likely to hit
+  contention unprotected.
+
+  Found by the first CI run: `MATRIX-03 concurrent migration` failed with
+  `Command failed: ... matrix-peer.js migration-gate ... database is locked`, i.e.
+  the peer process died instead of returning a decision. MATRIX-03 is one of the
+  two §30 matrix rows documented as load-dependent; it had been failing roughly
+  once in three suite runs and is now clean across repeated concurrent runs.
+
+  A note on what was *not* concluded: at eight concurrent matrix runs a different
+  failure appears — `shared_state.unreachable` under disk pressure from the load
+  itself. That is a property of over-subscribing one machine, not of this change,
+  and it is recorded rather than fixed, because "make it pass at any concurrency"
+  is not the same as "not fail under normal load".
+
+- **The published-artifact CI job packed an empty tarball.** `dist/` is gitignored
+  and untracked, so a fresh checkout has no `dist/` at all and `npm pack` produced
+  a package containing only `package.json`. Every subpath check then failed with
+  `Cannot find module .../dist/index.js`, which reads like a packaging bug in the
+  library rather than a missing build. The job now builds first.
+
 - **Two mutation runs that overlapped on the same source file were discarded and
   re-run.** Both were left running concurrently, so a mutation reported as caught
   in the second run may have been caught by the first run's mutant still on disk.

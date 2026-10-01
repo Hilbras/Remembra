@@ -140,6 +140,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 make g++
       - run: npm ci
 
+      # Required, and the first run proved it: dist/ is gitignored and untracked,
+      # so a fresh checkout has no dist at all. Without this the job packs an
+      # artifact containing only package.json and every subpath check fails with
+      # "Cannot find module .../dist/index.js" — which reads like a packaging bug
+      # in the library rather than a missing build.
+      - name: Build
+        run: npm run build
+
       # Installs the *published* package rather than the working tree, so this
       # is evidence about what a consumer actually gets. The subpath list is read
       # from the package's own `exports` map rather than written out here: a
