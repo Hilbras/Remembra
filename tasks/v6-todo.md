@@ -1,11 +1,25 @@
 # V6.0.0 Task List
 
-Status: **Phase 0 in progress.** V6-T01 is approved (2026-09-30) and the ten
-architecture decisions it freezes are recorded in
-[`docs/v6-decisions.md`](../docs/v6-decisions.md). V6-T02 onward is not yet
-authorized: it waits on the capability-map approval and the maintainer review in
-the [definition of done](#definition-of-done-for-the-planning-phase), both of
-which are maintainer acts rather than engineering ones.
+Status: **in progress.** V6-T01, T02 and T03 are done (2026-09-30); the ten
+architecture decisions the milestone freezes are recorded in
+[`docs/v6-decisions.md`](../docs/v6-decisions.md).
+
+**Scope change, 2026-09-30.** A V5.7.1 to V7.0.0 roadmap was supplied and
+proposed its own V6.0.0 "core architecture" phase after V5.8.0 through V5.14.0.
+Two plans cannot own one version slot, so the maintainer folded V5.8 through
+V5.14 into this plan as its Phases 1 through 5, and kept the later phases
+(V6.1 through V7.0.0) as named-but-unplanned version commitments. Nothing
+approved is retired: T01 through T03 stand, and the V5.x version numbers do not
+survive, because a V5.9.0 that "formalizes tenants" would be a breaking change
+wearing a minor release's clothes.
+
+The umbrella document is [`docs/v7-roadmap.md`](../docs/v7-roadmap.md). It records
+*why* the fold happened and carries the Phase 0 baseline audit; this file remains
+the authoritative task list.
+
+Phase 1 is scoped as **guards before moves**: a dependency-direction test must be
+green and mutation-verified before any module is relocated. A refactor whose
+safety is argued is not the same proposition as one a guard can prove.
 
 Source plan: [`v6-plan.md`](v6-plan.md)
 Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-spec.md)
