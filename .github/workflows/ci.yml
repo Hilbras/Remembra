@@ -46,9 +46,16 @@ jobs:
           node-version: 18.20.8
           cache: npm
 
+      # better-sqlite3 11.10.0 publishes no prebuilt .node assets, and its install
+      # script is `prebuild-install || node-gyp rebuild --release` — so every job
+      # here compiles the native addon from source. These are the packages
+      # node-gyp needs, installed explicitly rather than assumed to be present on
+      # the runner image. Without them `npm ci` fails on every job with a
+      # node-gyp error that looks nothing like a missing toolchain.
+      - name: Native build toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 make g++
+
       - name: Install
-        # better-sqlite3 compiles a native addon; a cached prebuilt from another
-        # runtime is worse than none, so the build step is not skipped here.
         run: npm ci
 
       - name: Build
@@ -109,6 +116,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # See the gate job: better-sqlite3 11.10.0 ships no prebuilt binary, so this
+      # job compiles the native addon too.
+      - name: Native build toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 make g++
       - run: npm ci
       - run: npm run build
       - run: npm test
@@ -123,6 +134,10 @@ jobs:
         with:
           node-version: 18.20.8
           cache: npm
+      # See the gate job: better-sqlite3 11.10.0 ships no prebuilt binary, so this
+      # job compiles the native addon too.
+      - name: Native build toolchain
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3 make g++
       - run: npm ci
 
       # Installs the *published* package rather than the working tree, so this
