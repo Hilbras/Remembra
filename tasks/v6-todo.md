@@ -75,10 +75,49 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
     yet. Wiring it into the request path is T04–T07, the cross-axis evaluator is
     T05, and audit emission is T08.
 
-- [ ] **V6-T03 — Define V6 memory metadata and schema contract**
-  - Acceptance: trust/sensitivity/expiration/retention/policy fields have defaults, validation, serialization, redaction, indexing, and migration rules; V5 records are classified explicitly.
-  - Verify: eleven-type round trips, compatibility/downgrade fixtures, tenant/reference validation.
+- [x] **V6-T03 — Define V6 memory metadata and schema contract**
+  - Acceptance: every new field has type, default, owner, validation, serialization, redaction, indexing, and migration behavior.
+  - Verify: round-trip fixtures cover all eleven memory types and policy states.
   - Depends on: V6-T01, V6-T02.
+  - **Delivered 2026-09-30.** `src/v6-schema.ts` (320 lines) is the persisted V6
+    record; `src/test/v6-schema.test.ts` holds 28 contract fixtures. Suite 967 → 995.
+    Every field carries a stated owner in the module, which is the acceptance
+    criterion most easily lost — a field nobody owns is one nobody migrates or bounds.
+  - **A real security gap found by mutation, invisible to the compiler.** The tenant
+    field validated against V5's `TENANT_ID_RE` alone, which bounds character set and
+    length but accepts `"."` and `".."` — V5's `isValidTenantId` adds the traversal
+    check on top. So a V6 record could carry `organizationId: "."`, a path segment
+    rather than a tenant. The compiler cannot catch this: the type is still `string`.
+    Now uses the predicate, not the regex.
+  - **Lifecycle states are flags, not an enum on the record.** Expired, archived,
+    superseded and deleted can all be true of one record at once; collapsing them
+    would force a choice between truths. `lifecycleStateOf` derives the one reported
+    state with an explicit precedence — `deleted > expired > superseded > archived >
+    active` — where `deleted` is terminal, so a tombstone cannot be resurrected by a
+    reader that treats expiry as "still retained".
+  - **Downgrade refuses rather than drops.** A `confidential` or `secret` record has
+    no V5 representation, and a projection that discarded the label would write it
+    into a store whose readers have no idea it is sensitive. `internal` and below do
+    project — deliberately asymmetric, because V5 treats everything as
+    `internal`-or-below, so those lose nothing V5 could have enforced.
+  - **A V5 record never classifies as `migrated`.** That is a claim about provenance
+    only the migration tool may make. Classification says what a record *is*; it does
+    not assert a transformation happened.
+  - **25 mutations, 23 caught.** Two were harness artifacts rather than code
+    defects, and are recorded as such rather than as passes: S13's mutation supplied
+    a *present-but-invalid* field (`""`), which is a different property from an
+    absent one and is now pinned separately as `V6-SCH-025b`; and S17 did not
+    compile. Eight survivors in the first pass were real test gaps — chiefly four
+    tests that asserted "it was refused" without asserting *what the refusal said*, so
+    a refusal for the wrong reason counted.
+  - **Deviation from the plan's file list, recorded:** the plan names `types.ts`,
+    `backend.ts`, `store.ts` and `sqlite-backend.ts`. None is touched. The file
+    backend, the SQLite schema and durable storage are T19–T21; touching them here
+    would have meant implementing storage before the contract it must satisfy was
+    reviewed.
+  - **Still ahead of T03's own scope, and named rather than skipped:** the SQLite
+    column/index mapping, the file-backend serialization format, and the migration
+    path itself. The contract is complete; the persistence of it is not.
 
 ### Checkpoint: Contracts
 

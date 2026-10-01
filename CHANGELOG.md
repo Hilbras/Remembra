@@ -37,6 +37,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   V6 stores are new, so no V5 record carries the old spelling and nothing
   migrates.
 
+- **V6 memory metadata and schema contract (V6-T03).** `src/v6-schema.ts` defines
+  the persisted V6 record: the eleven V5 memory types unchanged, four independent
+  policy axes, tenant binding required, bounded content, and lifecycle markers that
+  are *distinct flags* rather than an enum — expired, archived, superseded and
+  deleted can all be true of one record at once, and `lifecycleStateOf` derives the
+  single reported state with an explicit precedence where `deleted` is terminal.
+
+  **A real security gap, found by mutation and invisible to the compiler.** The
+  tenant field validated against V5's `TENANT_ID_RE` alone, which bounds character
+  set and length but accepts `"."` and `".."` — V5's `isValidTenantId` adds the
+  traversal check on top. A V6 record could therefore carry `organizationId: "."`,
+  a path segment rather than a tenant. The type is still `string`, so no compiler
+  could have flagged it. The field now uses the predicate.
+
+  Downgrade refuses rather than drops: a `confidential` or `secret` record has no V5
+  representation, and a projection that discarded the label would write it into a
+  store whose readers have no idea it is sensitive. A V5 record is never classified
+  as `migrated` — that is a claim about provenance only the migration tool may make.
+
+  Additive and unreferenced, like V6-T02: no V5 route, schema or default changes,
+  and nothing imports the module yet.
+
 ### Fixed
 
 - **Two mutation runs that overlapped on the same source file were discarded and
