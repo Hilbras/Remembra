@@ -59,6 +59,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   Additive and unreferenced, like V6-T02: no V5 route, schema or default changes,
   and nothing imports the module yet.
 
+### Added
+
+- **V6 request context: identity, operation, policy version, deadline and replay
+  identity (V6-T04).** `src/v6-request-context.ts` is the first stage of the V6
+  request pipeline, and the one everything downstream reads its inputs from. A
+  context can only be minted by trusted host code: a private symbol brands it, the
+  context and its principal are frozen, and unknown fields are refused rather than
+  stripped, so an injected `isAdmin` cannot ride along unnoticed. The minting input
+  has no `role` and no tenant claim at all — a field that could grant authority is
+  absent rather than validated.
+
+  Replay identity is scoped to tenant plus operation class and deliberately excludes
+  the principal: the scope partitions *records*, so the two collisions that would
+  produce a wrong replayed response — a different operation, a different tenant —
+  cannot happen. Mutating operations require a caller-supplied key; a key shaped
+  like a credential is refused, because a payload-derived key would dedupe two
+  genuinely different requests that hash alike.
+
+  Reuses V5's `TENANT_REQUIRED` (already 403, already meaning "a trusted context is
+  required") rather than adding a V6-only code to an error surface callers switch on.
+  19 mutations, all caught. Additive and unreferenced, like T02 and T03.
+
 ### Fixed
 
 - **SQLite had no busy timeout, and the two halves of one store used different

@@ -142,10 +142,49 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
 
 ## Phase 1: Request security and policy enforcement
 
-- [ ] **V6-T04 — Implement identity, authorization, and replay context**
-  - Acceptance: trusted immutable request context, explicit operation classes, bounded scoped idempotency keys, and fail-closed expiry/replay handling.
-  - Verify: forged identity, stale membership, operation mismatch, expiry, duplicate request, and secret-key tests.
+- [x] **V6-T04 — Implement identity, authorization, and replay context**
+  - Acceptance: identity and tenant are resolved by trusted host code only.
+  - Verify: unit tests for forged identity, stale membership, operation mismatch, expiry, duplicate requests, and secret-bearing keys.
   - Depends on: V6-T02, V6-T03.
+  - **Delivered 2026-09-30.** `src/v6-request-context.ts` (363 lines); 22 fixtures in
+    `src/test/v6-request-security.test.ts`. Suite 995 → 1017.
+  - **Three mechanisms carry "a payload cannot widen a context", and each is the
+    stronger version of the obvious one.** A private symbol brands the context, so a
+    reconstruction is refused; the context and its principal are frozen, so a caller
+    cannot widen capabilities mid-request; and unknown fields are *refused* rather
+    than stripped, so an injected `isAdmin` cannot ride along unnoticed. This
+    extends V5's existing `TENANT_CONTEXT` brand in `tenant.ts` rather than
+    introducing a second idea.
+  - **The minting input has no `role`, no `isAdmin`, no tenant claim at all.** A
+    field that could grant authority is absent, so a payload cannot supply one —
+    an adapter's job is to *resolve* identity, not forward what it was given.
+  - **Replay scope is tenant + operation class, deliberately excluding the
+    principal.** The scope partitions *records*: two principals in one tenant
+    sharing an operation share a scope, which is correct, and the two collisions
+    that would produce a wrong replayed response — a different operation, a
+    different tenant — cannot happen. `policy_admin` deliberately requires a
+    capability V5 has no equivalent for, so administrative authority is not implied
+    by `tenant:admin`.
+  - **`TENANT_REQUIRED` reused rather than a new code.** It is already mapped to 403
+    and already means "a trusted context is required". Adding a V6-only code would
+    put an unmapped identifier into the V5 error surface callers switch on.
+  - **19 mutations, 19 caught.** Six survived the first pass and five were missing
+    rules rather than missing tests: nothing pinned mint-time expiry, the deadline,
+    that *every* mutating class needs a replay key, the scoped-principal rule, or the
+    organization-wide read floor. Now `V6-SEC-018`–`022`.
+  - **The brand test was wrong twice before it tested anything, and the mutation is
+    what proved it.** `{...ctx}` was assumed to drop the symbol; it does not — a
+    spread copies symbol keys but drops frozen-ness, so `isRequestContext` rejected
+    the forgery on the frozen check and the brand was never exercised. Asserting a
+    precondition (symbols copied; not frozen) and testing a *reconstruction* —
+    which is what an attacker builds — is what made R1 observable. The lesson is
+    the recurring one: a passing test that asserts nothing is worse than no test,
+    because it is mistaken for evidence.
+  - **A stray `Remebra/` directory was created and removed.** A mistyped path put
+    the test file in a sibling directory outside the repo, so `npm run build`
+    silently did nothing for it and the first run reported no test file at all.
+    Caught by noticing `dist/test/v6-request-security.test.js` was absent while the
+    build reported success. Moved into the repo; the empty directory removed.
 
 - [ ] **V6-T05 — Implement the policy evaluator**
   - Acceptance: deterministic side-effect-free evaluator for authorization, sensitivity, trust, retention, expiration, and provider/export constraints; deny wins.
