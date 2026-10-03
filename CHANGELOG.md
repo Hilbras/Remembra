@@ -81,6 +81,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   required") rather than adding a V6-only code to an error surface callers switch on.
   19 mutations, all caught. Additive and unreferenced, like T02 and T03.
 
+- **V6 policy evaluator (V6-T05).** `src/v6-policy-evaluator.ts` composes every
+  policy axis into one decision: side-effect free, with the clock injected rather
+  than read, so the same input always yields the same decision and an audit event
+  can be replayed and still make sense. Explicit deny wins; missing or conflicting
+  policy fails closed; expiry is evaluated before trust so a stale memory reports
+  `expired` rather than being misattributed to trust; provider egress is evaluated
+  before sensitivity so a low-clearance caller learns a third party was involved.
+  The result carries only an effect, a reason and a policy version — `.strict()`,
+  so a decision that somehow acquired content fails validation instead of being
+  written to an audit event.
+
+  20 mutations, 19 caught; the twentieth is an equivalent mutant (removing the
+  early return for an explicit deny layer is indistinguishable from the final
+  narrowing step, verified by measurement). Additive and unreferenced, like T02–T04.
+
 ### Fixed
 
 - **SQLite had no busy timeout, and the two halves of one store used different

@@ -186,10 +186,49 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
     Caught by noticing `dist/test/v6-request-security.test.js` was absent while the
     build reported success. Moved into the repo; the empty directory removed.
 
-- [ ] **V6-T05 — Implement the policy evaluator**
-  - Acceptance: deterministic side-effect-free evaluator for authorization, sensitivity, trust, retention, expiration, and provider/export constraints; deny wins.
-  - Verify: table/property tests for every axis/conflict, malformed input never allows, stable redacted explanations.
+- [x] **V6-T05 — Implement the policy evaluator**
+  - Acceptance: evaluator is side-effect free and deterministic for a fixed policy/input.
+  - Verify: table-driven tests for every policy axis and conflict pair.
   - Depends on: V6-T02, V6-T04.
+  - **Delivered 2026-09-30.** `src/v6-policy-evaluator.ts` (238 lines) composes every
+    axis into one decision; 20 fixtures in `src/test/v6-policy-evaluator.test.ts`.
+    Suite 1017 → 1037.
+  - **A real bug in my first implementation, and the hardest kind to notice.**
+    Validation of the principal's clearance used
+    `Object.prototype.hasOwnProperty.call(SENSITIVITY_ORDER, clearance)` — an
+    array's own keys are *indices*, so no value in it ever matches. Every request
+    therefore denied with `policy_invalid`. It is fail-closed, which is exactly why
+    it survived: every test asserting a *refusal* passed, and only the one test
+    asserting an allow failed.
+  - **Two orderings are counter-intuitive and documented at the call site.**
+    Expiration precedes trust, so a stale memory reports `expired` rather than
+    `trust_restricted` — otherwise an operator chases a trust problem for a memory
+    that is simply old. Provider egress precedes sensitivity, so a low-clearance
+    caller asking to transmit reports `provider_not_permitted` and learns a third
+    party was involved; the weakest rule is unchanged, so this changes which reason
+    is reported and never whether the operation is permitted.
+  - **20 mutations, 19 caught, and the 20th is an equivalent mutant.** E8 removes the
+    early-return for an explicit `deny` layer, and the suite cannot notice — because
+    the final narrowing step (`if (layer) return layer`) yields the identical
+    decision. Verified rather than assumed: with the branch deleted, every layer
+    still produced `effect=deny reason=policy_invalid`. That is a property of the
+    code's redundancy, not a missing test, and no test could distinguish the two.
+  - **Eleven survivors in the first pass were two whole untested surfaces**, not a
+    scattering of gaps: the *entire* malformed-input path (no test ever passed an
+    invalid value, so all five fail-closed checks were unobserved) and the *entire*
+    layer-resolution path (no test had two layers disagreeing, so deny-wins,
+    most-restrictive and precedence were all unobserved). `V6-POL-013`–`020` now
+    cover both.
+  - **E10 was the same trap as T02's DEC-003, in the same shape**: with a deny and
+    an allow, restriction alone decides the answer, so deleting the precedence sort
+    changed nothing. The fix is the same too — two layers of equal effect with
+    different reasons, which only ordering can decide.
+  - **One property test was tautological.** The first version of POL-008 computed a
+    predicate that was true on every iteration, so it asserted only "no allow
+    leaked for these inputs" — trivially satisfied while the *fixture* was wrong.
+    A second version spread the defect before the sweep's own memory, so the sweep
+    silently replaced the defect and every case was really testing the allow path.
+    Both now assert preconditions (the sweep size, the defect applied last).
 
 - [ ] **V6-T06 — Enforce policy on direct memory operations**
   - Acceptance: CRUD, update, lifecycle, history, relations, batches, and snapshots cannot bypass identity/authorization/tenant/policy.
