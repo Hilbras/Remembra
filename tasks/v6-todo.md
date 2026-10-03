@@ -230,10 +230,58 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
     silently replaced the defect and every case was really testing the allow path.
     Both now assert preconditions (the sweep size, the defect applied last).
 
-- [ ] **V6-T06 — Enforce policy on direct memory operations**
-  - Acceptance: CRUD, update, lifecycle, history, relations, batches, and snapshots cannot bypass identity/authorization/tenant/policy.
-  - Verify: cross-tenant/project/sensitivity/expiration/privilege tests, normalized not-found, V5 regression tests.
+- [x] **V6-T06 — Enforce policy on direct memory operations**
+  - Acceptance: no direct CRUD path bypasses identity, authorization, tenant, and policy.
+  - Verify: cross-tenant, cross-project, sensitivity, expiration, and privilege escalation tests for every direct operation.
   - Depends on: V6-T04, V6-T05.
+  - **Delivered 2026-09-30.** `src/v6-service-policy.ts` (371 lines) is the choke
+    point; 16 fixtures in `src/test/v6-service-policy.test.ts`. Suite 1037 → 1053.
+  - **The acceptance criterion is a negative claim, so it is checked structurally.**
+    "No path bypasses" cannot be verified by testing the paths that work.
+    `DIRECT_OPERATIONS` declares what a direct operation *is*, every one routes
+    through `#guard`, and `V6-DIR-002` asserts that **no public method exists
+    outside that set** — so adding an unguarded method is a test failure. The
+    mutation that adds such a method is caught by that test, which is the criterion
+    demonstrated rather than asserted.
+  - **Two real existence leaks, both found by the tests and fixed in the implementation.**
+    1. An absent record returned a **synthetic row** on the operations that do not
+       normalize to `NOT_FOUND`, so a batch containing a missing id reported that item
+       as `ok: true` — the mirror image of the leak it was meant to prevent.
+    2. Per-item batch failures forwarded the underlying error code, so an absent item
+       reported `NOT_FOUND` and a foreign one `TENANT_REQUIRED`. A caller could then
+       enumerate ids by reading the code. Every multi-record item now reports one
+       code and reason; the policy reason goes to the audit event, where it is safe.
+  - **A third defect was a design flaw the tests exposed:** `#guard` fetched the
+    record *before* deciding, so a denied read still touched storage. The guard now
+    refuses on the context alone before any fetch where it can, and the tests assert
+    write-freedom rather than the impossible "a read never fetches" — a read must
+    see the record to evaluate its sensitivity and expiry.
+  - **A fourth: multi-record operations report per-item outcomes and must not throw.**
+    Failing the whole batch because one id is unauthorized would make them unusable
+    for mixed sets. The first version expected a rejection, which no correct
+    implementation produces.
+  - **10 mutations, 9 caught; the tenth is an equivalent mutant.** S1 removes the
+    explicit brand check in `#guard`, and `assertFreshContext` performs the same check
+    internally with the same message — verified, not assumed: it refuses an unminted
+    context with `TENANT_REQUIRED: not a minted request context`. The duplication is
+    deliberate belt-and-braces, and no test can separate the two paths.
+  - **Two survivors in the first pass were the identity checks themselves.** The brand
+    check and the freshness check were called but never observed failing, which for a
+    security guard is the difference between "the call is there" and "the call does
+    anything". `V6-DIR-015`/`016` now use a forged context and an expired-but-otherwise-
+    authorized one, and assert storage was never touched.
+  - **One mutation was unmeasurable, not passing.** The first S9 deleted the
+    `policyVersion` schema field, which does not compile — reported as a build failure
+    and replaced with a behavioural equivalent that stops passing the version through.
+  - **Two mistakes of my own, both the sync/async class.** `codeFor` called `s.read()`
+    without `await` inside a `try`, so the rejection escaped after the block had already
+    returned "no error" — and the existence-leak test passed on two identical
+    non-errors. Separately, indexing `svc[op]` where `op` is a union of differently
+    shaped methods resolves to an *intersection* of signatures that TypeScript rejects
+    for every call; naming the parameter in a small helper removed the union.
+  - **V5 legacy behaviour is untouched.** Nothing in `service.ts`, `store.ts` or
+    `backend.ts` is modified by this task; the V6 guard is a separate, unreferenced
+    type. Wiring it into V5's request path is not this task's scope and is not claimed.
 
 - [ ] **V6-T07 — Enforce policy before retrieval candidates and ranking**
   - Acceptance: tenant/sensitivity/expiration predicates precede SQL/file limits, joins, counts, ranking, relations, caches, and context selection.

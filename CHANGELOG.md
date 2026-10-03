@@ -96,6 +96,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   early return for an explicit deny layer is indistinguishable from the final
   narrowing step, verified by measurement). Additive and unreferenced, like T02–T04.
 
+- **V6 direct-operation policy enforcement (V6-T06).** `src/v6-service-policy.ts` is
+  the single choke point every direct memory operation passes through, composing the
+  T04 identity check with the T05 decision before storage. The acceptance criterion
+  is a *negative* claim — no path bypasses — so it is checked structurally: the set of
+  direct operations is declared once, and a test asserts that no public method exists
+  outside it, which makes an unguarded method a test failure rather than a review
+  question.
+
+  Two existence leaks were found by the tests and fixed. An absent record returned a
+  synthetic row on the paths that do not normalize to `NOT_FOUND`, so a batch
+  containing a missing id reported that item as a success; and per-item batch failures
+  forwarded the underlying error code, so a caller could distinguish "foreign" from
+  "absent" and enumerate ids. Multi-record operations now report one code and reason
+  for every refusal, with the policy reason going to the audit event where it is safe.
+
+  10 mutations, 9 caught; the tenth is an equivalent mutant (the explicit brand check
+  duplicates one `assertFreshContext` performs internally, verified by measurement).
+  V5 behaviour is untouched — nothing in `service.ts`, `store.ts` or `backend.ts` is
+  modified, and the V6 guard is not yet wired into any request path.
+
 ### Fixed
 
 - **SQLite had no busy timeout, and the two halves of one store used different
