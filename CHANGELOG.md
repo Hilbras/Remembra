@@ -248,6 +248,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Corrected an earlier diagnosis of the Node 22 `sqlite: history snapshots` failure:
+  it was never a snapshot-ordering bug.** History ordering is correct — 12 updates in a
+  single millisecond return newest-first — so no monotonic-column migration is needed.
+  The real cause is `ERR_DLOPEN_FAILED`: `better-sqlite3`'s native binary is compiled
+  for Node 18's ABI (`compiled against NODE_MODULE_VERSION 108 … requires 137`), so
+  *every* SQLite test fails on another runtime, not just the snapshot one. Measured over
+  14 consecutive runs each: Node 18.20.8 12/12 pass, Node 22.23.3 0/12, Node 24.21.0
+  0/12. Not flaky on any version, and already handled in CI by rebuilding the native
+  module per job.
+
+  Worth recording as a measurement lesson: an early Node-24 probe reported *zero*
+  failures, because the run aborts at module load and prints no `not ok` lines, so
+  `grep -c '^not ok'` returns zero. A grep count of zero is not a pass count.
+
 - **SQLite had no busy timeout, and the two halves of one store used different
   policies.** `SqliteBackend` never set `busy_timeout`, so it ran on SQLite's
   default of 0 — which means "fail immediately", not "try again" — while

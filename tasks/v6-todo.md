@@ -465,17 +465,27 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
   - **CORRECTION 2026-10-04: the `sqlite: history snapshots` Node-22 failure is NOT a
     snapshot-ordering bug, and not a code defect.** I chased it as one and was wrong.
     - Verified history ordering is correct: 12 updates in one millisecond return
-      `[v11 … v0]`, newest first, because `ORDER BY created_at DESC` plus the
-      history-includes-original semantics are right. No monotonic-column migration is
-      needed.
+      `[v11 … v0]`, newest first. `ORDER BY created_at DESC` plus the
+      history-includes-original semantics are right, so **no monotonic-column migration
+      is needed** and the earlier T21 framing was unfounded.
     - The real cause is `ERR_DLOPEN_FAILED`: `better-sqlite3`'s native binary in
-      `node_modules` is compiled for **Node 18's ABI**, so on Node 22 *every* SQLite
-      test fails — measured 0 pass / 12 fail across 14 of 14 runs. Not flaky, and not
-      specific to the snapshot test.
-    - This is expected and already handled in CI: every job runs
-      `npm rebuild better-sqlite3` for its own Node version. A single `node_modules`
-      shared across Node versions cannot serve two ABIs, which is what my local
-      invocation did.
+      `node_modules` is compiled for **Node 18's ABI**. The error states it exactly —
+      `compiled against NODE_MODULE_VERSION 108 … requires 137`. Every SQLite test
+      then fails, not just the snapshot one.
+    - **Measured on both runtimes, 14 consecutive runs each:**
+      | Node | pass | fail |
+      |---|---|---|
+      | v18.20.8 | 12 | 0 |
+      | v22.23.3 | 0 | 12 |
+      | v24.21.0 | 0 | 12 |
+      Not flaky on any version.
+    - A caution about how that number was first read: an early Node-24 probe reported
+      `0` failures, because the run aborts at module load and prints no `not ok` lines,
+      so `grep -c '^not ok'` returns zero. **A grep count of zero is not a pass count** —
+      read `# pass` / `# fail`, or the run may be reporting nothing at all.
+    - Expected, and already handled in CI: every job rebuilds `better-sqlite3` for its
+      own Node version. One `node_modules` cannot serve two ABIs, which is what a local
+      cross-version invocation does.
 
 - [x] **V6-T11 — Implement expiration and lifecycle orchestration**
   - Acceptance: explicit clock and timezone semantics; expired content excluded by
