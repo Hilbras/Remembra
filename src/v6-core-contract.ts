@@ -146,6 +146,24 @@ export class ProviderRegistry {
     this.#providers.set(id, provider as ProviderRegistration);
   }
 
+  /**
+   * A reportable view of what is registered.
+   *
+   * Exposes ids and declared metadata only. There is no field here a credential could
+   * occupy, which is why the service can publish this without a redaction step.
+   */
+  describe(): Array<{
+    id: string;
+    capabilities: readonly AnyCapability[];
+    metadata: ProviderMetadata;
+  }> {
+    return [...this.#providers.values()].map((p) => ({
+      id: p.id,
+      capabilities: [...p.capabilities] as readonly AnyCapability[],
+      metadata: p.metadata,
+    }));
+  }
+
   has(capability: string): boolean {
     return [...this.#providers.values()].some((p) => (p.capabilities as readonly string[]).includes(capability));
   }

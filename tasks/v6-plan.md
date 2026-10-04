@@ -526,6 +526,42 @@ modules are in the path.
     isolated runs with zero failures, confirming the single earlier failure was the
     known load-sensitive race rather than this change.
 
+- [x] **W-03 — Wire T09's provider registry into the service**
+  - **Delivered 2026-10-04.** The service resolved providers as bare strings
+    (`this.embeddingName = embeddingAdapter?.id ?? emb`), so nothing could ask "may this
+    provider receive confidential content?" before a call. T12 needs exactly that, and
+    needs it derived from the providers actually in use.
+  - `MemoryService.providerRegistry` is built in the constructor by
+    `buildProviderRegistry` (`src/provider-registry-wiring.ts`), from the same adapter
+    objects that drive `embedFn`. Derived rather than separately configured, so
+    `/health/provider` and the registry cannot disagree.
+  - **Privacy is derived from how the provider is constructed, not from its name.** An
+    injected adapter is in-process and therefore `local`; a name resolved from the
+    environment is a network provider and therefore `external`. Defaulting either way
+    would be the reassuring lie — an operator reading `local` concludes content stays on
+    the host.
+  - **A real bug the first full-suite run caught.** The default configuration resolves
+    BOTH embeddings and the LLM to `"openai"`, and the builder registered that id twice,
+    which throws by design. **Service construction failed on the default
+    configuration**; STRESS-006 and the maintain backfill caught it, neither of which
+    touches the registry. Now accumulated by id and registered once carrying all its
+    capabilities, and local wins over external when one path to a provider is
+    in-process. `V6-W03-011`/`012` are the regression tests.
+  - **A test premise of mine was wrong and is recorded as such.** My first "providerless
+    service" fixture asserted the whole registry was empty. `resolveLlmProvider()`
+    defaults to `"openai"`, so a service with nothing configured still has a real LLM
+    provider — the fixture asserted a fiction. Only embeddings can be switched off, and
+    the test now says exactly that.
+  - `providerHealth()` is untouched: the same five fields with the same meanings.
+  - **13 mutations: 8 caught, 2 survived and are now covered, 3 unmeasurable.**
+    - R11/R12 survived: the duplicate-id guard and `describe()`'s projection were only
+      tested inside T09's own file, never through the service a caller can reach.
+      `V6-W03-013`/`014` close them.
+    - R2/R3/R4/R8/R13 **failed to compile** — `tsc` rejects a dead branch, so they are
+      unmeasured rather than passing, and are reported that way. A build-failed mutation
+      is not coverage.
+  - Suite 1202 → 1216. `providerHealth()` shape and meaning asserted unchanged.
+
 ### Phase 3: Provider boundary
 
 #### V6-T12: Add provider capability and privacy metadata

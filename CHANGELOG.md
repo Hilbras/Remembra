@@ -248,6 +248,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **The provider registry is now owned by the service (W-03).** `MemoryService` resolved
+  providers as bare strings, so nothing could ask whether a provider may receive
+  confidential content before a call. It now builds a V6 `ProviderRegistry` from the same
+  adapter objects that drive `embedFn`, carrying capability and **data-handling
+  metadata** so a later caller can gate transmission.
+
+  Privacy is derived from *how a provider is constructed*, not from its name: an injected
+  adapter is in-process and therefore `local`; a name resolved from the environment is a
+  network provider and therefore `external`. It is derived rather than separately
+  configured so `/health/provider` and the registry cannot disagree. The shipped
+  `providerHealth()` payload is unchanged — same five fields, same meanings.
+
+### Fixed
+
+- **Service construction failed on the default configuration.** Embeddings and the LLM
+  both resolve to `"openai"`, and the registry registered that id twice — which is
+  refused by design, since a shadowed provider makes negotiation unpredictable. Providers
+  are now accumulated by id and registered once carrying every capability they serve, with
+  a local path taking precedence over a remote one.
+
+### Added
+
 - **V6 retrieval policy wired to real columns (W-02).** The V6 predicate emitted
   `expires_at`, `sensitivity_rank` and `legal_hold` — none of which existed, so the
   clause had never been executed. `sensitivity` and `legal_hold` are now real columns,

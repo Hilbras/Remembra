@@ -22,6 +22,8 @@ import {
 } from "./embeddings.js";
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
+import { buildProviderRegistry } from "./provider-registry-wiring.js";
+import type { ProviderRegistry } from "./v6-core-contract.js";
 import { VERSION } from "./version.js";
 import { performance } from "node:perf_hooks";
 import { redact, redactTags, redactionEnabled, RedactionKind } from "./redact.js";
@@ -414,6 +416,16 @@ export class MemoryService {
   private readonly llmName: string;
   /** Resolved embedding provider, reported by `/health/provider` (V5.1.0). */
   private readonly embeddingName: string;
+  /**
+   * W-03: the V6 provider registry, built from the providers THIS service resolved.
+   *
+   * Derived rather than configured separately, and that is the whole point: a second
+   * source of truth could disagree with `/health/provider`, and "the health endpoint
+   * says embeddings are off while the registry advertises embedding" is exactly the
+   * bug this prevents. Everything it reports is inert -- nothing about core behaviour
+   * changes because it exists.
+   */
+  readonly providerRegistry: ProviderRegistry;
   /** Set once a graceful shutdown starts; liveness reports it (V5.1.0). */
   private shuttingDown = false;
   /** Injected adapters retained only so shutdown can close them. */
@@ -454,6 +466,12 @@ export class MemoryService {
     this.sensitiveDetector = new SensitiveDataDetector(this.policy.sensitiveData.action);
     this.llmName = llmAdapter?.id ?? llm;
     this.embeddingName = embeddingAdapter?.id ?? emb;
+    this.providerRegistry = buildProviderRegistry({
+      embeddingAdapter,
+      embeddingName: this.embeddingName,
+      llmAdapter,
+      llmName: this.llmName,
+    });
     this.tokenCounter = deps.tokenCounter ?? defaultTokenCounter;
 
     this.embedFn =
