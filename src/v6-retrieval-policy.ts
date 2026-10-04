@@ -78,8 +78,14 @@ export interface V6Predicate {
 }
 
 export interface PredicateOptions {
-  /** Evaluation clock. Injected, so the predicate is deterministic. */
+  /** Evaluation clock, in epoch milliseconds. Injected, so the predicate is deterministic. */
   readonly now: number;
+  /**
+   * The same clock as an ISO-8601 instant. SQLite's `julianday()` takes a timestamp
+   * string, not a number, so the expiry comparison needs this form. Derived from
+   * `now` when omitted; declared explicitly so a caller can keep the two in step.
+   */
+  readonly nowIso?: string;
   /** Which operation is asking. Decides the legal-hold behaviour. */
   readonly forOperation?: V6OperationClass;
   /** Ceiling on candidates. Applied by the caller, after the predicate. */
@@ -112,29 +118,37 @@ export function buildV6Predicate(context: V6RequestContext, options: PredicateOp
 
   // 1. Tenant + project binding. Exact dimensions, so a project-scoped principal
   //    cannot see an organization-wide row and vice versa.
-  sql = "tenant_id = ?";
+  sql = "m.tenant_id = ?";
   params.push(p.organizationId);
   if (p.projectId !== undefined) {
-    sql += " AND project_id = ?";
+    sql += " AND m.project_id = ?";
     params.push(p.projectId);
   } else {
-    sql += " AND project_id IS NULL";
+    sql += " AND m.project_id IS NULL";
   }
 
-  // 2. Sensitivity ceiling. `sensitivity_rank <= clearance_rank` over the ordered
-  //    band, so the comparison is a range and not an enumerated list — an
-  //    enumerated list would need rewriting every time a band is added.
-  sql += " AND sensitivity_rank <= ?";
-  params.push(String(Math.max(0, SENSITIVITY_ORDER.indexOf(p.clearance ?? "public"))));
+  // 2. Sensitivity ceiling, as a set membership over the closed band vocabulary.
+  //    W-02: the column stores the BAND NAME, not a derived rank. A derived integer
+  //    can drift from the vocabulary and then nothing can detect it; the band name is
+  //    constrained by the schema and readable in an audit. The membership list is
+  //    rewritten when a band is added, which is one line here and one in the schema.
+  const clearance = SENSITIVITY_ORDER.indexOf(p.clearance ?? "public");
+  const reachable = SENSITIVITY_ORDER.slice(0, Math.max(0, clearance) + 1);
+  sql += ` AND m.sensitivity IN (${reachable.map(() => "?").join(", ")})`;
+  params.push(...reachable);
 
   // 3. Expiration: usable while unexpired OR never expiring.
-  sql += " AND (expires_at IS NULL OR expires_at > ?)";
-  params.push(String(options.now));
+  //    W-02: the column is `valid_until`, the one that already existed. `expires_at`
+  //    would be a second source of truth for retention, and expiry is exactly what
+  //    T11 requires not to be confusable. A malformed value is excluded rather than
+  //    read as "never expires" -- the defect W-01 fixed.
+  sql += " AND (m.valid_until IS NULL OR (julianday(m.valid_until) IS NOT NULL AND julianday(m.valid_until) > julianday(?)))";
+  params.push(options.nowIso ?? new Date(options.now).toISOString());
 
   const excludesHeld = options.forOperation === undefined
     ? true
     : CANDIDATE_OPERATIONS.has(options.forOperation);
-  if (excludesHeld) sql += " AND legal_hold = 0";
+  if (excludesHeld) sql += " AND m.legal_hold = 0";
 
   return { sql, params, allowUnfilteredFallback: false, excludesHeld };
 }

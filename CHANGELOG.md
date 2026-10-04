@@ -246,7 +246,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   excess-property checking either — so that property is additionally asserted
   structurally at runtime.
 
+### Added
+
+- **V6 retrieval policy wired to real columns (W-02).** The V6 predicate emitted
+  `expires_at`, `sensitivity_rank` and `legal_hold` — none of which existed, so the
+  clause had never been executed. `sensitivity` and `legal_hold` are now real columns,
+  and the predicate compares `valid_until` rather than a second expiry column:
+  duplicating retention would be the "cannot be confused" criterion failing at the
+  schema level.
+
+  Sensitivity stores the **band name**, not a derived integer rank — a rank can drift
+  from the vocabulary with nothing able to detect it. Both columns are indexed, and the
+  indexes are created *after* the additive migration rather than in the schema
+  constant, which re-runs on every open and would otherwise fail against exactly the
+  pre-migration database the migration exists to repair.
+
+  The defaults are the load-bearing part: `sensitivity` defaults to `public` and
+  `legal_hold` to `0` in the schema, in the migration, and in the read mapping. A
+  stricter default would silently hide a tenant's entire corpus on upgrade, and the
+  failure would look like data loss rather than a migration bug.
+
 ### Fixed
+
+- **Tenant migration verification failed on every record after adding a column.**
+  `memoryChecksum` normalises fields a backend materialises during import — `retention`
+  already did. The two new columns were not in that list, so every migration verified
+  as failed (`migration verification missing record 0`). A false alarm, but one that
+  would have made the migration path unusable.
 
 - **A malformed `validUntil` silently meant "never expires".** The SQLite candidate
   filter read expiry as

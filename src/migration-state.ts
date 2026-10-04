@@ -59,6 +59,13 @@ function memoryChecksum(memory: Memory): string {
   const normalized: Record<string, unknown> = {
     ...memory,
     retention: memory.retention ?? "decaying",
+    // W-02: the SQLite read path materialises these two from column defaults, so a
+    // record written without them reads back with them set. The plan's destination
+    // record has neither. Normalising here is the same repair as `retention` above --
+    // without it every migration verifies as failed, which is a false alarm rather
+    // than a data problem.
+    sensitivity: memory.sensitivity ?? "public",
+    legalHold: memory.legalHold ?? false,
   };
   for (const [key, value] of Object.entries(normalized)) {
     if (value === undefined) delete normalized[key];

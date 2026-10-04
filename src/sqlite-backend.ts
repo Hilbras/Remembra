@@ -35,6 +35,7 @@ import {
   isValidTenantId,
   MemoryAccess,
   MemoryOwner,
+  SensitivityBand,
 } from "./types.js";
 import { defaultAccess, defaultOwner } from "./agent.js";
 import { memoryBelongsToTenant, type TenantFilter } from "./tenant.js";
@@ -211,6 +212,10 @@ CREATE TABLE IF NOT EXISTS memories (
   observed_at       TEXT,
   superseded_by     TEXT,
   meta              TEXT,
+  sensitivity       TEXT NOT NULL DEFAULT 'public' CHECK (sensitivity IN (
+                      'public','internal','confidential','secret'
+                    )),
+  legal_hold        INTEGER NOT NULL DEFAULT 0 CHECK (legal_hold IN (0,1)),
   retention         TEXT NOT NULL DEFAULT 'decaying' CHECK (retention IN (
                       'pinned','persistent','ephemeral','decaying','neverExpire'
                     )),
@@ -380,9 +385,9 @@ export class SqliteBackend implements MemoryBackend {
       INSERT INTO memories (
         id, type, content, scope, tenant_id, project_id, user_id, agent_id, tags, importance, confidence, trust,
         provenance, owner, access, valid_from, valid_until, observed_at, superseded_by, meta,
-        retention, relations, version, created_at, updated_at,
+        sensitivity, legal_hold, retention, relations, version, created_at, updated_at,
         last_seen, archived_at, embedding
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.lastInsertRowidStatement = this.prepare("SELECT last_insert_rowid() AS rowid");
     this.insertFtsStatement = this.ftsEnabled
@@ -518,7 +523,18 @@ export class SqliteBackend implements MemoryBackend {
     if (!names.has("access")) {
       this.db.exec("ALTER TABLE memories ADD COLUMN access TEXT NOT NULL DEFAULT 'global'");
     }
+    // W-02. `sensitivity` and `legal_hold` are genuinely new policy columns.
+    //
+    // The DEFAULT is the load-bearing decision: an existing row must not become
+    // invisible to a principal whose clearance does not reach it, so sensitivity
+    // defaults to the most permissive band and legal_hold to 0. A stricter default
+    // would silently hide a tenant's entire corpus on upgrade.
+    //
+    // Deliberately NOT added: `expires_at`. `valid_until` is already the expiry
+    // column; a second one would be two sources of truth for retention.
     for (const [name, definition] of [
+      ["sensitivity", "TEXT NOT NULL DEFAULT 'public'"],
+      ["legal_hold", "INTEGER NOT NULL DEFAULT 0"],
       ["valid_from", "TEXT"],
       ["valid_until", "TEXT"],
       ["observed_at", "TEXT"],
@@ -531,6 +547,14 @@ export class SqliteBackend implements MemoryBackend {
     ] as const) {
       if (!names.has(name)) this.db.exec(`ALTER TABLE memories ADD COLUMN ${name} ${definition}`);
     }
+
+    // W-02: the indexes are created HERE, not in SQLITE_SCHEMA_SQL. That constant is
+    // re-executed on every open, so an index over a not-yet-migrated column would fail
+    // against an existing pre-W-02 database -- and the schema is what the migration is
+    // supposed to be repairing. Indexing both columns matters because the V6 retrieval
+    // predicate filters on them for every candidate query.
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_sensitivity ON memories(sensitivity)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_legal_hold ON memories(legal_hold)");
   }
 
   private ensureTenantAuxColumns(): void {
@@ -601,6 +625,8 @@ export class SqliteBackend implements MemoryBackend {
         owner: input.owner ?? defaultOwner(provenance),
         access: input.access ?? defaultAccess(),
         retention: input.retention,
+        ...(input.sensitivity ? { sensitivity: input.sensitivity } : {}),
+        ...(input.legalHold === true ? { legalHold: true } : {}),
         ...(input.validFrom ? { validFrom: input.validFrom } : {}),
         ...(input.validUntil ? { validUntil: input.validUntil } : {}),
         ...(input.observedAt ? { observedAt: input.observedAt } : {}),
@@ -1080,6 +1106,8 @@ export class SqliteBackend implements MemoryBackend {
       m.observedAt ?? null,
       m.supersededBy ?? null,
       jsonStr(m.meta),
+      m.sensitivity ?? "public",
+      m.legalHold === true ? 1 : 0,
       m.retention ?? "decaying",
       jsonStr(m.relations ?? []),
       m.version,
@@ -1399,6 +1427,15 @@ function rowToMemory(row: Record<string, unknown>): Memory | null {
     ? (retentionRaw as RetentionMode)
     : undefined;
 
+  // W-02. A row written before these columns existed reads NULL, and a NULL must mean
+  // the permissive value — otherwise an upgrade would silently hide a tenant's whole
+  // corpus. The schema default covers new rows; this covers old ones.
+  const sensitivityRaw = asStr(row.sensitivity);
+  const sensitivity = SensitivityBand.options.includes(sensitivityRaw as SensitivityBand)
+    ? (sensitivityRaw as SensitivityBand)
+    : "public";
+  const legalHoldRow = Number(row.legal_hold ?? 0) === 1 ? 1 : 0;
+
   const ownerRaw = asStr(row.owner);
   const owner = MemoryOwner.options.includes(ownerRaw as MemoryOwner)
     ? (ownerRaw as MemoryOwner)
@@ -1447,6 +1484,8 @@ function rowToMemory(row: Record<string, unknown>): Memory | null {
     ...(observedAt ? { observedAt } : {}),
     ...(supersededBy ? { supersededBy } : {}),
     ...(memoryMeta ? { meta: memoryMeta } : {}),
+    sensitivity,
+    legalHold: legalHoldRow === 1,
     retention,
     relations,
     version,
@@ -1575,6 +1614,15 @@ async function parseLegacyFile(file: string): Promise<Memory | null> {
     meta.meta && typeof meta.meta === "object" && !Array.isArray(meta.meta)
       ? (meta.meta as Memory["meta"])
       : undefined;
+
+  // W-02: same permissive fallback as the SQL read path. A legacy frontmatter file
+  // has neither field, and defaulting to anything but `public` would hide a migrated
+  // corpus from principals whose clearance does not reach it.
+  const sensitivityRaw = meta.sensitivity === undefined ? "public" : String(meta.sensitivity);
+  const sensitivity = SensitivityBand.options.includes(sensitivityRaw as SensitivityBand)
+    ? (sensitivityRaw as SensitivityBand)
+    : "public";
+  const legalHoldRow = meta.legalHold === true ? 1 : 0;
   const embeddingRaw = meta.embedding;
   const embedding: number[] | undefined =
     typeof embeddingRaw === "string" && embeddingRaw.length > 0
@@ -1604,6 +1652,8 @@ async function parseLegacyFile(file: string): Promise<Memory | null> {
     ...(observedAt ? { observedAt } : {}),
     ...(supersededBy ? { supersededBy } : {}),
     ...(memoryMeta ? { meta: memoryMeta } : {}),
+    sensitivity,
+    legalHold: legalHoldRow === 1,
     retention,
     relations,
     version: revision,

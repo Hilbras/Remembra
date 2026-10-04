@@ -60,6 +60,16 @@ const IsoInstant = z
     message: "must be a parseable timestamp",
   });
 
+/**
+ * V6 sensitivity bands, ordered least to most sensitive.
+ *
+ * A closed vocabulary rather than a free string, because the retrieval predicate
+ * compares against it and a typo would otherwise be a memory nobody can see. The
+ * order is the policy: a principal sees a band at or below its own clearance.
+ */
+export const SensitivityBand = z.enum(["public", "internal", "confidential", "secret"]);
+export type SensitivityBand = z.infer<typeof SensitivityBand>;
+
 export const SourceType = z.enum(["manual", "conversation", "agent", "import", "system"]);
 export type SourceType = z.infer<typeof SourceType>;
 
@@ -186,6 +196,18 @@ export interface Memory extends MemoryMetadata {
   relations?: Relation[];
   /** Decay protection (plan §4.8); absent = decaying (default clocks). */
   retention?: RetentionMode;
+  /**
+   * V6 sensitivity band. Absent means `public` — the most permissive — so a row
+   * written before this field existed is never silently invisible to a principal
+   * whose clearance does not reach it.
+   */
+  sensitivity?: SensitivityBand;
+  /**
+   * V6 legal hold. Blocks **destruction** (delete, archive), not visibility: a held
+   * memory stays readable by id and is excluded from retrieval candidates, because
+   * hiding it from the operators who must see what is held defeats the purpose.
+   */
+  legalHold?: boolean;
   /** Set when archived; archived memories are out of search until revived. */
   archivedAt?: string;
   /** Cached embedding vector (REMEMBRA_EMBEDDINGS≠none); serialized in frontmatter. */
@@ -306,6 +328,8 @@ export const storeInputShape = {
     .optional()
     .describe("V4.4/V4.5: security, lifecycle, and compression metadata"),
   /** V4.5: temporal bounds for time-sensitive memories. */
+  sensitivity: SensitivityBand.optional().describe("V6 sensitivity band; defaults to the most permissive"),
+  legalHold: z.boolean().optional().describe("V6: a legal hold blocks destruction, not visibility"),
   validFrom: IsoInstant.optional().describe("ISO timestamp when this claim becomes valid"),
   validUntil: IsoInstant.optional().describe("ISO timestamp when this claim ceases to be valid"),
   observedAt: IsoInstant.optional().describe("ISO timestamp of the original observation (for backfills)"),

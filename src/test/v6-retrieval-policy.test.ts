@@ -62,11 +62,17 @@ test("V6-RET-001: the predicate is tenant, then policy, with every axis present"
 
 test("V6-RET-002: expiration is a range predicate, not a post-hoc filter", () => {
   const p = buildV6Predicate(at(1_000), { now: 1_000 });
+  // W-02: the column is `valid_until` -- the one that already existed. A second
+  // `expires_at` column would be two sources of truth for retention.
+  assert.equal(p.sql.includes("expires_at"), false, "expiry is valid_until, and only valid_until");
+  assert.match(p.sql, /valid_until IS NULL/);
   // A memory is usable while it is unexpired OR has no expiry at all. Both halves
   // must be present, and as SQL rather than in JavaScript.
-  assert.match(p.sql, /expires_at IS NULL/);
-  assert.match(p.sql, /expires_at/);
-  assert.ok(p.params.includes("1000"), "the clock is a bound parameter, not interpolated");
+  assert.ok(p.sql.includes("OR"), "the OR half is what keeps never-expiring rows");
+  // W-01: a malformed value must not satisfy the clause and read as never-expiring.
+  assert.match(p.sql, /julianday\(m\.valid_until\) IS NOT NULL/);
+  assert.ok(p.params.includes("1000") || p.params.some((x) => String(x).startsWith("1970-01-01T00:00:01")),
+    "the clock is a bound parameter, not interpolated");
 });
 
 test("V6-RET-003: a legal hold is excluded from candidate selection entirely", () => {
@@ -220,19 +226,28 @@ test("V6-RET-014: the compiled query actually carries the limit", () => {
 });
 
 test("V6-RET-015: the sensitivity ceiling admits what the clearance covers and no more", () => {
-  // R6 survived: inverting `<=` to `>=` leaves the clause present and the test passes.
-  // So the clause is evaluated against real bands rather than matched as text.
-  const rankOf = (clause: string) => Number(/sensitivity_rank (\S+) \?/.exec(clause)?.[1] === "<=" ? 1 : -1);
+  // W-02: the clause is a membership over the closed band vocabulary, not a comparison
+  // against a derived rank column. Evaluated against the real bands, because the
+  // original version only matched text and a `>=` inversion passed it.
   for (const clearance of SENSITIVITY_ORDER) {
     const p = buildV6Predicate(context({ principal: { ...context().principal, clearance } }), { now: 1_000 });
-    assert.ok(/sensitivity_rank <= \?/.test(p.sql), `${clearance} must use a ceiling, not a floor`);
-    assert.equal(rankOf(p.sql), 1);
-    assert.ok(p.params.includes(String(SENSITIVITY_ORDER.indexOf(clearance))),
-      `${clearance} must bind its own rank, got ${p.params.join(",")}`);
+    assert.ok(/m\.sensitivity IN \(/.test(p.sql), `${clearance} filters on the band column`);
+    const reachable = SENSITIVITY_ORDER.slice(0, SENSITIVITY_ORDER.indexOf(clearance) + 1);
+    // Every band at or below the clearance is bound, and nothing above it is.
+    for (const band of reachable) {
+      assert.ok(p.params.includes(band), `${clearance} must admit ${band}`);
+    }
+    for (const band of SENSITIVITY_ORDER.slice(SENSITIVITY_ORDER.indexOf(clearance) + 1)) {
+      assert.equal(p.params.includes(band), false, `${clearance} must NOT admit ${band}`);
+    }
   }
   // An absent clearance is the most restrictive reading available, not the loosest.
   const none = buildV6Predicate(context({ principal: { ...context().principal, clearance: undefined } }), { now: 1_000 });
-  assert.ok(none.params.includes("0"), "an absent clearance binds rank 0, not the top band");
+  assert.deepEqual(
+    none.params.filter((x) => (SENSITIVITY_ORDER as readonly string[]).includes(x)),
+    ["public"],
+    "an absent clearance admits only the most permissive band",
+  );
 });
 
 test("V6-RET-016: the expiration clause keeps unexpired memories", () => {
@@ -240,12 +255,14 @@ test("V6-RET-016: the expiration clause keeps unexpired memories", () => {
   // matching `/expires_at/`, so the presence assertion passed while the query now
   // drops every memory that never expires — the majority, usually.
   const p = buildV6Predicate(at(1_000), { now: 1_000 });
-  assert.match(p.sql, /expires_at IS NULL OR expires_at > \?/, "both halves are present");
+  assert.match(p.sql, /valid_until IS NULL OR \(julianday\(m\.valid_until\) IS NOT NULL AND julianday\(m\.valid_until\) > julianday\(\?\)\)/,
+    "both halves are present, on the real column");
   assert.ok(p.sql.includes("OR"), "an OR is what keeps unexpired rows; dropping it drops them");
 
   // And the boundary is exclusive: a memory expiring exactly now is expired, so the
   // comparison must be strictly greater-than. R8 survived for the same reason.
-  assert.ok(!/expires_at >= \?/.test(p.sql), "the comparison is exclusive, so `now` itself counts as expired");
+  assert.ok(!/julianday\(m\.valid_until\) >= julianday/.test(p.sql),
+    "the comparison is exclusive, so `now` itself counts as expired");
 
   // Behavioural counterpart, through the candidate guard where the same rule lives.
   const boundary = guardCandidateSet(

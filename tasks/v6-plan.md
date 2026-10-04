@@ -483,13 +483,48 @@ modules are in the path.
   - Suite 1175 → 1187, no V5 regression: `includeExpired`, expired-row exclusion and
     live-row inclusion all unchanged.
 
-- [ ] **W-02 — Decide the V6 expiry column: reuse `validUntil` or add `expires_at`**
-  - Blocking. T07's `buildV6Predicate` emits `expires_at`, `sensitivity_rank` and
-    `legal_hold`, and **none of those columns exist** (`grep -c` returns 0). Wiring it
-    as written would introduce a *second* source of truth for expiry alongside
-    `valid_until` — the "cannot be confused" criterion failing at the schema level.
-  - Reusing `valid_until` is almost certainly right, which means T07's predicate needs
-    rewriting against the existing column rather than its own.
+- [x] **W-02 — Wire V6's retrieval predicate to real columns**
+  - **Delivered 2026-10-04.** T07's `buildV6Predicate` emitted `expires_at`,
+    `sensitivity_rank` and `legal_hold`, and **none of those columns existed**
+    (`grep -c` returned 0) — the clause had never once been executed.
+  - **Decision, as recommended: reuse `valid_until`.** Adding `expires_at` would create
+    a second source of truth for retention, which is T11's "cannot be confused"
+    criterion failing at the schema level. The predicate now compares
+    `valid_until` with `julianday()`, carrying over W-01's parseable check so a
+    malformed value is not read as never-expiring.
+  - **`sensitivity` and `legal_hold` added as genuinely new columns.** Sensitivity stores
+    the BAND NAME rather than a derived integer rank: a rank can drift from the
+    vocabulary with nothing able to detect it, while the band name is constrained by the
+    schema and readable in an audit. Both are indexed, because the predicate filters on
+    them for every candidate query.
+  - **The defaults are the load-bearing part.** `sensitivity` defaults to `public` and
+    `legal_hold` to `0`, in the schema, in the `ALTER TABLE` migration, and in the read
+    mapping. A stricter default would silently hide a tenant's entire corpus on upgrade,
+    and the failure looks like data loss rather than a migration bug.
+  - **The indexes are created after the migration, not in `SQLITE_SCHEMA_SQL`** — that
+    constant re-runs on every open, so an index over a not-yet-migrated column fails
+    against exactly the pre-migration database the migration exists to repair.
+  - **Two real regressions found and fixed by this task**, both invisible to a text
+    assertion:
+    - `memoryChecksum` in `migration-state.ts` normalises fields a backend materialises
+      during import. The two new columns were not in that list, so *every* tenant
+      migration verified as failed (`migration verification missing record 0`) —
+      a false alarm that would have made the migration path unusable. Confirmed
+      pre-existing-clean by building HEAD in a scratch tree and running the same files.
+    - Three of T07's own tests asserted the old `sensitivity_rank` / `expires_at` shape.
+      Rewritten against the real columns, preserving their intent rather than deleted.
+  - **14 mutations, 14 caught.** The three first-pass survivors were all the same
+    contract — a column DEFAULT — and one of them was the most dangerous mutation in
+    the set: `sensitivity` defaulting to `secret`, which hides every existing row and
+    looks like data loss. `V6-W02-012`-`015` read the default from `PRAGMA table_info`
+    and exercise the pre-migration path, because a fixture that goes through `store()`
+    never touches the column default at all.
+  - One mutation initially "survived" because my fixture wrote a NULL, which cannot
+    happen: the column is `NOT NULL`. The reachable case is an out-of-vocabulary value
+    (`PRAGMA ignore_check_constraints`), and that is what the test now exercises.
+  - Suite 1187 → 1202. MATRIX-03 measured across 4 consecutive full-suite runs and 8
+    isolated runs with zero failures, confirming the single earlier failure was the
+    known load-sensitive race rather than this change.
 
 ### Phase 3: Provider boundary
 
