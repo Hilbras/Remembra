@@ -163,6 +163,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
   In-process ring buffer; durable storage is a later task and is not claimed.
 
+- **V6 provider-neutral core capability contracts (V6-T09).** `src/v6-core-contract.ts`
+  separates durable core operations from optional intelligence capabilities. Provider
+  absence is a supported runtime state, not a startup error: durable memory keeps
+  working, degrading to lexical retrieval, because the premise of this package is
+  offline-first.
+
+  The boundary is a **projection, not a pass-through** — only the fields declared for a
+  capability cross it. A provider returning fourteen fields of plausible authority
+  state (`effect: "allow"`, a foreign principal, `tenant:admin`, a policy version, a
+  token) crosses with one, which is what stops a remote service escalating by
+  returning a richer object than the contract allows.
+
+  Core is never delegable: a provider claiming `storage` is refused at *registration*,
+  so no state exists in which the durable substrate looks remote. Provider metadata
+  requires all four axes (privacy, cost, latency, availability) and bounds them, since
+  an absent axis is a constraint nobody chose and an unbounded latency claim is not a
+  latency claim.
+
+  13 mutations: 9 caught, 2 survived (both now covered), and 2 that **failed to
+  compile** — `tsc` refuses to let the projection guard be removed, which is a
+  structural guarantee rather than a gap. A build-failed mutation is not coverage, and
+  is reported as unmeasured rather than counted.
+
+  `src/service.ts` is untouched; wiring the contracts to the service layer is a later
+  step.
+
 ### Fixed
 
 - **SQLite had no busy timeout, and the two halves of one store used different

@@ -367,10 +367,53 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
     and enforces the record's shape and the query boundary, and the SQL schema for
     `PolicyAuditLog` is not claimed.
 
-- [ ] **V6-T09 — Define provider-neutral core capability contracts**
-  - Acceptance: core storage/retrieval/context/policy/lifecycle/audit/snapshot contracts do not require provider types; capability negotiation is versioned.
-  - Verify: no-provider/local/failing-provider contract tests and dependency review.
+- [x] **V6-T09 — Define provider-neutral core capability contracts**
+  - Acceptance: core interfaces cover storage, retrieval, context, policy, lifecycle,
+    audit, snapshots without provider types; provider interfaces declare capability,
+    privacy, cost, latency, availability; provider absence is a supported runtime
+    state, not a startup error; provider output cannot mutate authorization or policy.
+  - Verify: contract tests with no provider, a local provider, and a failing remote
+    provider; dependency graph; public type/API compatibility.
   - Depends on: V6-T05, V6-T08.
+  - **Delivered 2026-09-30.** `src/v6-core-contract.ts` (253 lines); 20 fixtures in
+    `src/test/v6-core-contract.test.ts`. Suite 1088 → 1108.
+  - **Provider absence is a first-class state.** Constructing, registering and
+    negotiating with nothing are all valid, and negotiation names its misses so a
+    caller decides what to degrade rather than discovering an `undefined` at the point
+    of use. A missing optional capability is a typed catchable miss, not a `TypeError`.
+  - **The boundary is a projection, not a pass-through.** `invokeCapability` copies out
+    the fields declared for that capability and discards everything else. A provider
+    returning fourteen fields of plausible authority state — `effect: "allow"`, a
+    foreign principal, `tenant:admin`, a policy version, a token — crosses with one.
+    Each field is copied individually; a spread would reintroduce exactly what the
+    projection prevents.
+  - **Core is never delegable.** A provider claiming `storage` is refused at
+    *registration*, not at negotiation, so there is no state in which core looks
+    delegated. My first fixture asserted at negotiation and would have accepted a
+    registry that had briefly held the pretender — the fixture was wrong, not the code.
+  - **Metadata axes are required, not optional, and bounded.** An absent cost or
+    privacy is a constraint nobody chose; an unbounded latency claim is not a latency
+    claim, so `p95Ms` is capped and a negative cost refused.
+  - **The dependency-graph guard is proven to fire.** `V6-CC-011` reads the real
+    `src/` tree rather than an import map. A probe file importing `openai` was written
+    into `src/`, the test failed as it should, and the probe was removed — a guard
+    that has never fired is not evidence of anything.
+  - **13 mutations: 9 caught, 2 survived, 2 unmeasurable — and the classification
+    matters more than the count.**
+    - K8 survived: metadata tests validated the *schema* directly, so deleting the
+      check inside `register` was invisible. The schema being correct and the registry
+      enforcing it are two different claims. `V6-CC-017`.
+    - K12 survived: the id check was never exercised with an empty string.
+      `V6-CC-018`.
+    - K1/K3 **failed to compile** — `tsc` rejects removing the projection guard. A
+      build-failed mutation is not coverage. K1 was rewritten to compile and is now
+      caught by `V6-CC-009`/`010`; K3 cannot be removed at all without the compiler
+      refusing, which is a *structural* guarantee rather than a gap, and `V6-CC-019`
+      covers it behaviourally. I verified this by attempting a cast-based rewrite:
+      tsc rejected it too, and the source was restored byte-identical.
+  - **`src/service.ts` untouched.** The contracts and registry are new; wiring them to
+    the service layer is a later step and is not claimed. V5's provider handling is
+    unchanged.
 
 - [ ] **V6-T10 — Implement offline and degraded operation modes**
   - Acceptance: local CRUD/search/context/tenant/policy/snapshot/audit/recovery works offline; provider failures have documented operation-specific behavior.
