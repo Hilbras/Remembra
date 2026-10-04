@@ -189,6 +189,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `src/service.ts` is untouched; wiring the contracts to the service layer is a later
   step.
 
+- **V6 offline and degraded operation modes (V6-T10).** `src/v6-degraded.ts` makes
+  degradation a **value rather than an absence**. A retrieval path returning three
+  thin results because the embedding provider is down is indistinguishable from one
+  that found three good results; every degraded result now carries `degraded: true`,
+  a classified failure, a bounded reason naming the capability, and **no value** — so
+  the two cannot be confused in either direction.
+
+  Fail-open/fail-closed is declared **per capability, not per provider**, so behaviour
+  cannot depend on which provider happened to be registered. `embedding`, `reranking`
+  and `summarization` fail open: quality-affecting, not authority-affecting, and a
+  lexical answer is worse than a semantic one but still correct. `extraction` fails
+  closed (503) because it writes structured data — a partial extraction is a wrong
+  record, not a thinner one.
+
+  Cancellation is never converted into an answer: an aborted request was not
+  attempted, and reporting it as degraded would let it look like a completed call. The
+  mutation run found this was genuinely broken — detection relied on `instanceof
+  DOMException`, so an `AbortError` crossing a worker or library boundary fell through
+  to the generic class.
+
+  A provider fault clears pending tenant bindings and policy decisions whole, and a
+  decision cannot be committed without an evaluation in flight. Operational status
+  reports core and providers on two independent axes across three states
+  (`ok`/`degraded`/`unavailable`), and readiness is never claimed while core is down.
+
+  15 mutations, 15 caught. `src/service.ts` and the HTTP health endpoint are not yet
+  wired, and `docs/self-hosting.md` is not yet updated.
+
 ### Fixed
 
 - **SQLite had no busy timeout, and the two halves of one store used different

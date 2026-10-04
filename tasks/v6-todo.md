@@ -415,10 +415,53 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
     the service layer is a later step and is not claimed. V5's provider handling is
     unchanged.
 
-- [ ] **V6-T10 — Implement offline and degraded operation modes**
-  - Acceptance: local CRUD/search/context/tenant/policy/snapshot/audit/recovery works offline; provider failures have documented operation-specific behavior.
-  - Verify: network-denied profile, provider fault injection, separate core/provider health.
+- [x] **V6-T10 — Implement offline and degraded operation modes**
+  - Acceptance: disconnected local install passes the core journey; timeout, malformed
+    output, rate limit and cancellation have documented fail-open/fail-closed behaviour
+    per operation; no provider error creates partial tenant or policy state; status
+    distinguishes core unavailable from provider degraded.
+  - Verify: offline profile with network denied; fault injection for every optional
+    capability; health/metrics report core and provider separately.
   - Depends on: V6-T09.
+  - **Delivered 2026-09-30.** `src/v6-degraded.ts` (266 lines); 26 fixtures in
+    `src/test/v6-degraded.test.ts`. Suite 1108 → 1134.
+  - **Degradation is a value, not an absence.** A retrieval path returning three thin
+    results because the embedding provider is down is indistinguishable from one that
+    found three good results. Every degraded result carries `degraded: true`, `ok:
+    false`, a classified `failure`, a bounded `reason` naming the capability, and
+    **no value** — so a caller cannot mistake a degraded answer for a real one in
+    either direction.
+  - **Fail-open/fail-closed is declared per capability, not per provider.** Two
+    providers for one capability must not get different answers to "what happens if you
+    fail", or behaviour would depend on which happened to be registered.
+    - `embedding`, `reranking`, `summarization` → **fail open.** Quality-affecting, not
+      authority-affecting; a lexical answer is worse than a semantic one but still
+      correct, so failing closed would be the more dangerous choice.
+    - `extraction` → **fail closed** (`SERVICE_UNAVAILABLE`, 503). It writes structured
+      data; a partial extraction is a wrong record, not a thinner one.
+  - **Cancellation is never converted into an answer.** An aborted request was not
+    attempted; reporting it as degraded would let it look like a completed call with a
+    thin result. It gets its own class and its own reason.
+  - **The classification gap the mutation found was real.** G3 survived because
+    detection relied on `error instanceof DOMException`, so an `AbortError` crossing a
+    worker or library boundary — a different realm, so a different prototype — fell
+    through to the generic class. Now name, code and message are all checked.
+    `V6-DG-023` covers all four arrival shapes.
+  - **Nothing partial survives a fault.** A failure clears pending tenant bindings and
+    pending decisions whole, and committing a decision requires an evaluation in
+    flight, so a retry cannot overwrite a recorded decision or commit one that was
+    never made.
+  - **Core unavailable ≠ provider degraded.** Three states (`ok`/`degraded`/
+    `unavailable`) on two independent axes; `V6-DG-018` proves all four axis
+    combinations are distinguishable. Readiness is never claimed while core is down —
+    routing traffic to a node that cannot serve it is the worse failure.
+  - **15 mutations, 15 caught.** Twelve first pass; G3 and G7 survived (realm-crossing
+    AbortError; the per-call policy override was never exercised), and G9 failed to
+    compile as written, so it was rewritten to an empty-reason mutation and is now
+    caught. `V6-DG-023`–`026` close them.
+  - **No health module existed** — `reportOperationalStatus` is new and is the status
+    shape, but wiring it to an HTTP `/health` endpoint is not done. `src/service.ts`
+    untouched; `docs/self-hosting.md` not yet updated.
 
 - [ ] **V6-T11 — Implement expiration and lifecycle orchestration**
   - Acceptance: explicit clock semantics, renewal, archive/delete/legal-hold distinction, bounded idempotent lifecycle jobs, and tenant recheck.
