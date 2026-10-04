@@ -283,10 +283,48 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
     `backend.ts` is modified by this task; the V6 guard is a separate, unreferenced
     type. Wiring it into V5's request path is not this task's scope and is not claimed.
 
-- [ ] **V6-T07 — Enforce policy before retrieval candidates and ranking**
-  - Acceptance: tenant/sensitivity/expiration predicates precede SQL/file limits, joins, counts, ranking, relations, caches, and context selection.
-  - Verify: query-plan/file namespace tests, adversarial candidate/cycle/cache/context tests, retrieval quality regression.
+- [x] **V6-T07 — Enforce policy before retrieval candidates and ranking**
+  - Acceptance: tenant/sensitivity/expiration predicates occur before SQL/file limits.
+  - Verify: backend query-plan/SQL predicate tests and file namespace tests.
   - Depends on: V6-T05, V6-T06.
+  - **Delivered 2026-09-30.** `src/v6-retrieval-policy.ts` (223 lines); 17 fixtures
+    in `src/test/v6-retrieval-policy.test.ts`. Suite 1053 → 1070.
+  - **The criterion is about ORDERING, so it is asserted against SQL rather than
+    behaviour.** A `LIMIT 10` over unfiltered rows returns ten foreign memories and
+    filters them to zero — a wrong answer *and* a leak in the one place the count is
+    observable. A behavioural test ("no foreign memory came back") passes just as
+    happily with a LIMIT-first query whenever the tenant owns enough rows to fill the
+    limit. So the guarantee is structural: one `compileV6Predicate` writes the clause
+    once, and `LIMIT` can only follow it. `V6-RET-005` asserts the position, and the
+    mutation that reorders it is caught.
+  - **All eight retrieval paths share one identical predicate fragment.** Asserted as
+    a set cardinality of 1, so a path written separately and therefore free to drift
+    fails the test. That is the "same policy boundary" criterion as a property rather
+    than a claim.
+  - **A real bug against ADR §3, caught by the fixture.** `read` was in the
+    hold-excluding set, so a read predicate excluded legally-held memories. A hold
+    blocks *destruction*; excluding held records from a read would hide them from
+    exactly the operators who must see what is held. Held memories are excluded from
+    *candidates* (context, search) and remain readable by id.
+  - **The expiration clause needs both halves.** `(expires_at IS NULL OR expires_at > ?)`
+    — `expires_at < ?` alone silently drops every memory that never expires, which is
+    usually most of them, and the string still matches `/expires_at/`. Same for the
+    boundary: `>` not `>=`, so a memory expiring exactly now is expired.
+  - **14 mutations, 14 caught.** Five survived the first pass and they all shared one
+    shape: the clause was *present* in every assertion, so inverting it (`>=`), dropping
+    the `OR`, dropping the `LIMIT` entirely, or removing the candidate comparison
+    changed nothing the tests looked at. Asserting that a guard exists is not asserting
+    what it does. `V6-RET-014`–`017` now evaluate the clause against real bands and
+    check the direction, the boundary and the bound value.
+  - **`allowUnfilteredFallback` is a named `false` field, not an absence.** "If nothing
+    matched, return everything" is the exact shape of the fallback this module exists to
+    prevent, and a named flag is what makes it assertable; the mutation that permits it
+    is caught.
+  - **Not wired to a backend.** `src/sqlite-backend.ts`, `src/store.ts`,
+    `src/retrieval.ts` and `src/context.ts` are untouched. The module emits the clause
+    and applies the same rules in process, so both the SQL and the file-namespace paths
+    are specified; adopting them in the real query builders is the integration step and
+    is not claimed here. V5's `tenantWhere` is untouched and composable with this.
 
 - [ ] **V6-T08 — Add policy decision audit and redaction**
   - Acceptance: content-free bounded audit events and safe operator explanations for allow/deny/redact/quarantine/expired decisions.

@@ -116,6 +116,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   V5 behaviour is untouched — nothing in `service.ts`, `store.ts` or `backend.ts` is
   modified, and the V6 guard is not yet wired into any request path.
 
+- **V6 retrieval policy boundary (V6-T07).** `src/v6-retrieval-policy.ts` applies
+  tenant, sensitivity, expiration and hold predicates *before* candidate generation,
+  ranking and counts. The criterion is ordering, and it is asserted against emitted SQL
+  rather than behaviour: a `LIMIT 10` over unfiltered rows returns ten foreign
+  memories and filters them to zero, which is both a wrong answer and a leak where the
+  count is observable — and a behavioural test passes just as happily with a
+  LIMIT-first query whenever the tenant owns enough rows to fill it. All eight
+  retrieval paths carry one identical predicate fragment, asserted as a set cardinality
+  of one so a separately-written path fails.
+
+  14 mutations, 14 caught. Five survived the first pass and all shared a shape: the
+  clause was *present* in every assertion, so inverting it, dropping the `OR` half of
+  the expiration test, or removing the limit outright changed nothing the tests looked
+  at. Asserting a guard exists is not asserting what it does.
+
+  One real bug against the approved decision: a read excluded legally-held memories,
+  but a hold blocks destruction rather than visibility, and hiding held records from
+  an operator defeats the point of holding them. Held memories are excluded from
+  candidates and remain readable by id.
+
+  Not wired to a backend — `sqlite-backend.ts`, `store.ts`, `retrieval.ts` and
+  `context.ts` are untouched. The module specifies the boundary for both the SQL and
+  the file-namespace paths; adopting it in the real query builders is a later step and
+  is not claimed.
+
 ### Fixed
 
 - **SQLite had no busy timeout, and the two halves of one store used different
