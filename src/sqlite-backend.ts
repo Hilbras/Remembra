@@ -149,6 +149,32 @@ function tenantWhere(alias: string, tenant?: TenantFilter): { sql: string; param
   return { sql, params };
 }
 
+/**
+ * Refuse temporal bounds that cannot be trusted as instants.
+ *
+ * Deliberately fail closed rather than coerce: `Date.parse` returning `NaN` means the
+ * value is not a timestamp, and a query that cannot read it must not treat the row as
+ * "never expires". A naive local timestamp (no offset, no `Z`) is refused for the same
+ * reason V6-T11 refuses one — it resolves to a different instant on every machine, so
+ * the same data would expire at different times per deployment.
+ */
+function assertUsableInstants(input: { validFrom?: string; validUntil?: string; observedAt?: string }): void {
+  for (const [field, value] of [
+    ["validFrom", input.validFrom],
+    ["validUntil", input.validUntil],
+    ["observedAt", input.observedAt],
+  ] as const) {
+    if (value === undefined || value === null) continue;
+    const text = String(value).trim();
+    if (text === "" || !/(Z|[+-]\d{2}:?\d{2})$/.test(text) || Number.isNaN(Date.parse(text))) {
+      throw new RemembraError(
+        "INVALID_INPUT",
+        `${field} must be an ISO-8601 instant with an explicit UTC offset or Z; got "${text}"`,
+      );
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 //  Schema
 // ---------------------------------------------------------------------------
@@ -368,19 +394,29 @@ export class SqliteBackend implements MemoryBackend {
     this.auditStatement = this.prepare(
       "INSERT INTO memory_audit (memory_id, tenant_id, project_id, user_id, agent_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     );
+    // `julianday(x) IS NULL` is true for a value SQLite cannot parse, so a malformed
+    // valid_until used to satisfy the expiry clause and the row was returned by every
+    // search forever -- a typo silently became permanent retention. The predicates now
+    // require a PARSEABLE timestamp; only a genuinely absent column skips the check.
+    // Writes are guarded separately (`IsoInstant` in types.ts), because a row that
+    // predates this fix, or arrives via import, can still hold a bad value.
     const eligibleFilter = `
       (? = 1 OR m.archived_at IS NULL)
       AND (
         ? = 1
         OR m.valid_until IS NULL
-        OR julianday(m.valid_until) IS NULL
-        OR julianday(m.valid_until) >= julianday(?)
+        OR (
+          julianday(m.valid_until) IS NOT NULL
+          AND julianday(m.valid_until) >= julianday(?)
+        )
       )
       AND (
         ? = 1
         OR m.valid_from IS NULL
-        OR julianday(m.valid_from) IS NULL
-        OR julianday(m.valid_from) <= julianday(?)
+        OR (
+          julianday(m.valid_from) IS NOT NULL
+          AND julianday(m.valid_from) <= julianday(?)
+        )
       )
       AND (
         ? = 1
@@ -521,6 +557,12 @@ export class SqliteBackend implements MemoryBackend {
   // -------------------------------------------------------------------------
 
   async store(input: StoreInput, embedding?: number[], tenant?: TenantFilter): Promise<Memory> {
+    // Re-validate at the write boundary. `MemoryService` parses with `StoreInput`, but
+    // this backend is a public entry point too (tests, importers, the file backend's
+    // mirror), and a caller that hands us a pre-built object bypasses that. Validating
+    // only at the service boundary would make the guard depend on which door the data
+    // came through -- exactly the class of hole this exists to close.
+    assertUsableInstants(input);
     return this.withLock(async () => {
       const now = new Date().toISOString();
       const id = this.idGen();

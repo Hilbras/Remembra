@@ -454,6 +454,43 @@ deletion, legal-hold/operator override, and lifecycle audit behavior.
 - [ ] Lifecycle/expiration behavior is deterministic and auditable.
 - [ ] No V5 compatibility regression is present.
 
+### Wiring: putting T07-T11 into the real request path
+
+T07-T11 are specified and mutation-verified, but nothing in production code calls them
+yet. Wiring is where the real risk sits: a predicate that compiles but is never applied
+is exactly what the mutation work exists to catch, and none of it is proven until the
+modules are in the path.
+
+- [x] **W-01 — Fix the malformed-timestamp hole in the existing expiry filter**
+  - **Delivered 2026-10-04.** Found while assessing how large the rest of the wiring is.
+    `sqlite-backend.ts` read expiry with `OR julianday(m.valid_until) IS NULL`, and
+    `julianday()` returns NULL for anything it cannot parse — so a malformed
+    `validUntil` satisfied the clause and the row was returned by every search, forever.
+    A typo became permanent retention. The `validFrom` half had the identical defect.
+  - Fixed on both sides, because either alone leaves a hole: the query now requires a
+    *parseable* timestamp, and a new `IsoInstant` schema in `types.ts` plus a
+    re-validation in `SqliteBackend.store()` refuse malformed or zone-less values at the
+    write boundary.
+  - The write guard lives in the backend, not only in the service, because the backend is
+    a public entry point. A guard that depended on which door the data came through would
+    not be a guard.
+  - A **naive local timestamp is now refused**: it resolves to a different instant per
+    machine, so the same data would expire at different times per deployment. T11 already
+    refused these; the store disagreed, and now it does not.
+  - **10 mutations, 10 caught.** The four first-pass survivors were all one gap:
+    `validFrom` untested in both the schema and the query, and the zone rule duplicated
+    with only one copy tested.
+  - Suite 1175 → 1187, no V5 regression: `includeExpired`, expired-row exclusion and
+    live-row inclusion all unchanged.
+
+- [ ] **W-02 — Decide the V6 expiry column: reuse `validUntil` or add `expires_at`**
+  - Blocking. T07's `buildV6Predicate` emits `expires_at`, `sensitivity_rank` and
+    `legal_hold`, and **none of those columns exist** (`grep -c` returns 0). Wiring it
+    as written would introduce a *second* source of truth for expiry alongside
+    `valid_until` — the "cannot be confused" criterion failing at the schema level.
+  - Reusing `valid_until` is almost certainly right, which means T07's predicate needs
+    rewriting against the existing column rather than its own.
+
 ### Phase 3: Provider boundary
 
 #### V6-T12: Add provider capability and privacy metadata

@@ -39,6 +39,27 @@ export const TrustLevel = z.enum(["unverified", "trusted", "verified", "system"]
 export type TrustLevel = z.infer<typeof TrustLevel>;
 
 /** Where a memory came from (plan §4.3 provenance.sourceType). */
+/**
+ * An ISO-8601 instant with an explicit zone.
+ *
+ * `z.string()` alone accepted `"not-a-date"`, and the query layer treated an
+ * unparseable `valid_until` as **never expiring** -- so a typo silently became
+ * permanent retention. Requiring an explicit offset or `Z` also rejects a naive local
+ * timestamp, which resolves to a different instant per machine and would expire the
+ * same data at different times per deployment.
+ *
+ * Fail closed: an unusable timestamp is refused rather than coerced to `NaN` (which
+ * reads as "expired immediately") or `0` (which reads as "expires at the epoch").
+ */
+const IsoInstant = z
+  .string()
+  .refine((value) => /(Z|[+-]\d{2}:?\d{2})$/.test(value.trim()), {
+    message: "must be an ISO-8601 instant with an explicit UTC offset or Z",
+  })
+  .refine((value) => !Number.isNaN(Date.parse(value.trim())), {
+    message: "must be a parseable timestamp",
+  });
+
 export const SourceType = z.enum(["manual", "conversation", "agent", "import", "system"]);
 export type SourceType = z.infer<typeof SourceType>;
 
@@ -285,9 +306,9 @@ export const storeInputShape = {
     .optional()
     .describe("V4.4/V4.5: security, lifecycle, and compression metadata"),
   /** V4.5: temporal bounds for time-sensitive memories. */
-  validFrom: z.string().optional().describe("ISO timestamp when this claim becomes valid"),
-  validUntil: z.string().optional().describe("ISO timestamp when this claim ceases to be valid"),
-  observedAt: z.string().optional().describe("ISO timestamp of the original observation (for backfills)"),
+  validFrom: IsoInstant.optional().describe("ISO timestamp when this claim becomes valid"),
+  validUntil: IsoInstant.optional().describe("ISO timestamp when this claim ceases to be valid"),
+  observedAt: IsoInstant.optional().describe("ISO timestamp of the original observation (for backfills)"),
   supersededBy: z.string().optional().describe("ID of the memory that supersedes this one"),
 };
 export const StoreInput = z
@@ -756,9 +777,9 @@ export const SnapshotInput = z.object({
             compressionAt: z.string().optional(),
           })
           .optional(),
-        validFrom: z.string().optional(),
-        validUntil: z.string().optional(),
-        observedAt: z.string().optional(),
+        validFrom: IsoInstant.optional(),
+        validUntil: IsoInstant.optional(),
+        observedAt: IsoInstant.optional(),
         supersededBy: z.string().optional(),
         version: z.number().int().min(1).optional(),
         /** Typed edges (4.1.0+). */

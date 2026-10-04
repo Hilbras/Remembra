@@ -248,6 +248,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **A malformed `validUntil` silently meant "never expires".** The SQLite candidate
+  filter read expiry as
+  `OR julianday(m.valid_until) IS NULL OR julianday(m.valid_until) >= julianday(?)`.
+  `julianday()` returns NULL for a string it cannot parse, so that second clause matched
+  **every malformed timestamp**: a memory with `validUntil: "not-a-date"` — from a typo,
+  an import, or an older version — was returned by every search, forever. A typo became
+  permanent retention.
+
+  Fixed on both sides, because either alone leaves a hole:
+  - **Query** (`sqlite-backend.ts`): the predicates now require a *parseable* timestamp.
+    Only a genuinely absent column skips the check. The same defect existed on the
+    `validFrom` half and is fixed there too.
+  - **Write** (`types.ts` + `sqlite-backend.ts`): a new `IsoInstant` schema refuses a
+    malformed or zone-less timestamp, and `SqliteBackend.store()` re-validates at the
+    write boundary — `MemoryService` parses with `StoreInput`, but the backend is a
+    public entry point too, and a guard that depended on which door the data came
+    through would not be a guard.
+
+  A **naive local timestamp is now refused** as well: it resolves to a different instant
+  on every machine, so the same data would expire at different times per deployment. V6-T11
+  already refused these; the store disagreed, and now it does not.
+
+  10 mutations, 10 caught. Four survived the first pass and all four were one gap —
+  `validFrom` was never exercised in either the schema or the query, and the zone
+  requirement had two copies of the rule with only one of them tested.
+
+  No V5 regression: 1182/1182, and the existing `includeExpired` escape hatch, expired-row
+  exclusion and live-row inclusion all still behave exactly as before.
+
 - **Provider health axis, and the failure mode it deliberately does not have.**
   `src/health-status.ts` reports provider privacy, availability, capabilities and
   degradation alongside core readiness. `/health` stays a **two-state** contract
