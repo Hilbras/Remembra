@@ -462,20 +462,81 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
   - **No health module existed** — `reportOperationalStatus` is new and is the status
     shape, but wiring it to an HTTP `/health` endpoint is not done. `src/service.ts`
     untouched; `docs/self-hosting.md` not yet updated.
+  - **CORRECTION 2026-10-04: the `sqlite: history snapshots` Node-22 failure is NOT a
+    snapshot-ordering bug, and not a code defect.** I chased it as one and was wrong.
+    - Verified history ordering is correct: 12 updates in one millisecond return
+      `[v11 … v0]`, newest first, because `ORDER BY created_at DESC` plus the
+      history-includes-original semantics are right. No monotonic-column migration is
+      needed.
+    - The real cause is `ERR_DLOPEN_FAILED`: `better-sqlite3`'s native binary in
+      `node_modules` is compiled for **Node 18's ABI**, so on Node 22 *every* SQLite
+      test fails — measured 0 pass / 12 fail across 14 of 14 runs. Not flaky, and not
+      specific to the snapshot test.
+    - This is expected and already handled in CI: every job runs
+      `npm rebuild better-sqlite3` for its own Node version. A single `node_modules`
+      shared across Node versions cannot serve two ABIs, which is what my local
+      invocation did.
 
-- [ ] **V6-T11 — Implement expiration and lifecycle orchestration**
-  - Acceptance: explicit clock semantics, renewal, archive/delete/legal-hold distinction, bounded idempotent lifecycle jobs, and tenant recheck.
-  - Verify: boundary/concurrency/restart tests for expiration, archive, deletion, and supersession.
+- [x] **V6-T11 — Implement expiration and lifecycle orchestration**
+  - Acceptance: explicit clock and timezone semantics; expired content excluded by
+    default; retention, legal hold, archive, deletion and supersession cannot be
+    confused or silently overridden; jobs bounded, idempotent, tenant-aware, and
+    rechecking policy.
+  - Verify: boundary tests for now/future/past/skew/renewal/malformed; concurrent
+    lifecycle and retrieval; failure/restart proving no duplicate deletion or
+    resurrection.
   - Depends on: V6-T03, V6-T05, V6-T09.
-
-### Checkpoint: Core runtime
-
-- [ ] Offline core flow passes with no provider.
-- [ ] Provider absence/failure is explicit and tested.
-- [ ] Expiration/lifecycle behavior is deterministic and audited.
-- [ ] V5 regression suite remains green.
-
-## Phase 3: Provider boundary
+  - **Delivered 2026-10-04.** `src/v6-lifecycle.ts` (377 lines); 31 fixtures in
+    `src/test/v6-lifecycle.test.ts`. Suite 1134 → 1165.
+  - **Two real defects found and fixed, both destructive.**
+    - **The job never returned its effects.** `runLifecycleJob` counted deletions but
+      did not return the updated records, so a restarted job found the same expired
+      rows again and deleted them twice — exactly the duplication the idempotence
+      criterion forbids. It now returns `updated`, with the overflow and skipped rows
+      passed through so a caller persisting the result does not silently drop them.
+      Caught by `V6-LC-022`, proven by mutation L5.
+    - **`delete` did require expiry, but nothing tested that on a live record.** Every
+      existing delete fixture used an *expired* record, so the check was never the thing
+      under test. Mutation L4 — removing the expiry check so `delete` removes any record
+      at any time — survived the first pass. `V6-LC-028`–`030` now cover a future
+      expiry, a never-expiring record, and the exclusive boundary from both directions.
+  - **Expiry is an instant in UTC milliseconds; a local timestamp is refused.**
+    `parseExpiry` requires an explicit offset or `Z`, because a naive local timestamp
+    resolves differently per machine and so expires the same data at different instants
+    per deployment. A malformed timestamp is refused rather than coerced — `NaN` becomes
+    "expires immediately", `0` becomes "never expires", and both are silent corruption
+    of retention intent.
+  - **Expiry is exclusive** (`expiresInMs <= 0`): a record whose `expiresAt` equals `now`
+    is expired. Anything else makes "expires at T" mean "usable until T", the more
+    surprising reading. Skew widens an *announcement* (`expiring`), never the expiry.
+  - **The five dispositions are separate by construction.** Supersession does not
+    delete, archive does not delete, expiry is not deletion, and each returns a distinct
+    `disposition`. Four mutations confirm it (L12–L14, L4).
+  - **A legal hold is absolute, and there is deliberately no `force` flag.** An operator
+    override is a legitimate need, but it belongs in a separate, audited path; burying
+    a bypass in a job parameter is how holds stop meaning anything. `V6-LC-026` proves
+    passing one changes nothing.
+  - **A deleted record is terminal.** Resurrection is the restart failure mode: a crash
+    between the delete and the audit write must not leave it live again. Any later
+    action is refused with `already_deleted` (L3).
+  - **The job rechecks expiry rather than trusting the record.** A record claiming to be
+    expiring is not evidence; a corrupted or forged field must not drive a deletion.
+    Replaced the field read with `evaluateExpiration` (L20).
+  - **Renewal is bounded and renews from `now`, not from the old expiry** — extending
+    from the old expiry lets a long-expired record gain a future date without anyone
+    deciding to renew it (L16).
+  - **23 mutations: 22 caught, 1 compiler-enforced and also test-covered.** L22 (audit
+    entry gaining a `content` field) cannot be added without `tsc` rejecting it — and a
+    `as never` cast does not get past excess-property checking either. I verified both
+    and restored the source byte-identical. `V6-LC-031` catches it at runtime as well,
+    so this one is covered twice. **A build-failed mutation is not coverage**, and the
+    one property is asserted structurally instead: audit entry keys are enumerable and
+    none is content-shaped.
+  - **Reused the existing error vocabulary** — `INVALID_INPUT` and `NOT_FOUND` rather
+    than inventing `INVALID_TIMESTAMP`/`RECORD_NOT_FOUND`, which would have given the
+    same two situations two codes and left the HTTP layer with no mapping.
+  - **Not wired to storage.** `src/sqlite-backend.ts` and `src/service.ts` untouched;
+    `docs/lifecycle.md` not yet written; `job-queue.ts` not yet used.
 
 - [ ] **V6-T12 — Add provider capability and privacy metadata**
   - Acceptance: providers declare capability, privacy, cost, latency, retention, and sensitivity transmission rules; policy blocks disallowed transmission before network work.

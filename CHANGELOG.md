@@ -217,6 +217,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   15 mutations, 15 caught. `src/service.ts` and the HTTP health endpoint are not yet
   wired, and `docs/self-hosting.md` is not yet updated.
 
+- **V6 expiration and lifecycle orchestration (V6-T11).** `src/v6-lifecycle.ts` keeps
+  retention, legal hold, archive, deletion and supersession separate by construction.
+  These five all sound like "the memory is gone", and the failure mode is not a wrong
+  answer but a *destructive* wrong one — deleting under a retention policy when a legal
+  hold applied is unrecoverable, and no test inspecting a return value catches it.
+
+  **Two real defects fixed.** The lifecycle job counted deletions without returning the
+  updated records, so a restarted job deleted the same rows twice — precisely the
+  duplication the idempotence criterion forbids; it now returns `updated`, passing the
+  overflow and skipped rows through so a caller persisting the result cannot silently
+  drop them. And `delete` did require expiry, but no test exercised it on a *live*
+  record, so the check was never the thing under test.
+
+  Expiry is an instant in UTC milliseconds and a local timestamp is **refused**: a naive
+  local timestamp resolves differently per machine, expiring the same data at different
+  instants per deployment. A malformed timestamp is refused rather than coerced, since
+  `NaN` becomes "expires immediately" and `0` becomes "never expires". Expiry is
+  exclusive at the boundary, and clock skew widens an announcement, never the expiry.
+
+  A legal hold is absolute and there is deliberately **no `force` flag** — an operator
+  override belongs in a separate, audited path, not buried in a job parameter. A deleted
+  record is terminal, so no restart can resurrect it. The job rechecks expiry rather
+  than trusting the record's own fields.
+
+  23 mutations: 22 caught. One could not be introduced at all — an audit entry cannot
+  gain a `content` field without `tsc` rejecting it, and a cast does not get past
+  excess-property checking either — so that property is additionally asserted
+  structurally at runtime.
+
 ### Fixed
 
 - **SQLite had no busy timeout, and the two halves of one store used different
