@@ -141,6 +141,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the file-namespace paths; adopting it in the real query builders is a later step and
   is not claimed.
 
+- **V6 policy decision audit and redaction (V6-T08).** `src/v6-audit.ts` logs every
+  decision with tenant, actor, operation, policy version, effect and reason, and
+  nothing else. V5's `memory_audit` table is keyed by `memory_id`, so a decision log
+  built the same way leaks existence — "access denied to `secret-key-42`" is a
+  disclosure in a log a lower-privilege reader may see. This log is keyed by decision,
+  with no resource identifier at all: it records the *class* of resource, never which
+  resource. The schema is `.strict()`, so an added content field fails validation
+  instead of being silently accepted into a log.
+
+  Correlation ids get a credential-shape denylist, not just a length ceiling: 23
+  characters of a real key fit comfortably, and `sk-abc123def456ghi789jkl` is a legal
+  handle by charset. Retention reports `dropped` alongside `events`, because a
+  silently truncating audit log is worse than a short one — a reader trusts it.
+
+  14 mutations, 14 caught. Four survived the first pass, and the most serious was a
+  genuine cross-tenant hole: the mandatory organization filter on an audit query could
+  be deleted with no test failing, because every query passed an organizationId.
+  Without it an unqualified query returns every tenant's decisions — the audit surface
+  leaking more than the data plane does.
+
+  In-process ring buffer; durable storage is a later task and is not claimed.
+
 ### Fixed
 
 - **SQLite had no busy timeout, and the two halves of one store used different

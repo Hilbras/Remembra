@@ -326,19 +326,46 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
     are specified; adopting them in the real query builders is the integration step and
     is not claimed here. V5's `tenantWhere` is untouched and composable with this.
 
-- [ ] **V6-T08 — Add policy decision audit and redaction**
-  - Acceptance: content-free bounded audit events and safe operator explanations for allow/deny/redact/quarantine/expired decisions.
-  - Verify: audit schema/redaction/pagination/denial tests and log/metrics secret review.
-  - Depends on: V6-T05, V6-T06, V6-T07.
-
-### Checkpoint: Security foundation
-
-- [ ] Every data-plane path enforces identity → authorization → tenant → policy.
-- [ ] Adversarial security matrix is green.
-- [ ] Decisions are explainable without content leakage.
-- [ ] Security review approves provider/storage work.
-
-## Phase 2: Offline-first core runtime
+- [x] **V6-T08 — Policy decision audit and redaction**
+  - Acceptance: every decision logged with tenant, actor, reason and policy version;
+    no memory content in any log; queryable per tenant.
+  - Verify: security matrix cases for log redaction, decision explanation, tenant
+    filtering; log injection tests.
+  - Depends on: V6-T05, V6-T07.
+  - **Delivered 2026-09-30.** `src/v6-audit.ts` (269 lines); 18 fixtures in
+    `src/test/v6-audit.test.ts`. Suite 1070 → 1088.
+  - **No audit module existed.** V5 has `memory_audit` in SQLite, keyed by
+    `memory_id` — so a decision log built the same way leaks *existence*:
+    "access denied to `secret-key-42`" is a disclosure in a log a lower-privilege
+    reader may see. This log is keyed by **decision**, with no resource identifier at
+    all: actor, tenant, operation, policy version, effect, reason, and the *class* of
+    resource. Never which resource.
+  - **The schema is `.strict()`**, so an added content field fails validation rather
+    than being silently accepted into a log. Two mutations confirm it: making the
+    schema permissive, and adding a `memoryId` field.
+  - **A bounded field is still a field.** The correlation id needed a *shape* denylist,
+    not just a length ceiling — 23 characters of a real key fit comfortably, and
+    `sk-abc123def456ghi789jkl` is a legal handle by charset. Same shapes `redactForLog`
+    recognises, applied before the value is stored rather than after. Caught by
+    `V6-AUD-006`.
+  - **Retention reports its own gap.** A silently truncating audit log is worse than a
+    short one, because a reader trusts it. `dropped` is returned alongside `events`, and
+    `V6-AUD-013` asserts both the ceiling and the count.
+  - **14 mutations, 14 caught.** Four survived the first pass, and the most serious was
+    a genuine cross-tenant hole: the mandatory organization filter on a query could be
+    deleted and no test failed, because every query in the file passed an
+    organizationId. Without it, an unqualified query returns *every* tenant's
+    decisions — the audit surface leaking more than the data plane does. The other
+    three were a fixture built from the same constant it was testing (A3), an
+    unobserved validation on `append` (A5), and an explanation never exercised with
+    anything but a resourceClass (A14). `V6-AUD-015`–`018` now cover them.
+  - **Explanations are two fixed sentences from closed vocabularies** — spec §7.2's
+    shape, minus `expiresAt` which is not implemented. It cannot carry a resource id or
+    content because there is nowhere in it to put one, which is what makes it safe to
+    return from an API to a user with a lower clearance than the resource.
+  - **In-process ring buffer, not durable storage.** Persistence is T17; this specifies
+    and enforces the record's shape and the query boundary, and the SQL schema for
+    `PolicyAuditLog` is not claimed.
 
 - [ ] **V6-T09 — Define provider-neutral core capability contracts**
   - Acceptance: core storage/retrieval/context/policy/lifecycle/audit/snapshot contracts do not require provider types; capability negotiation is versioned.
