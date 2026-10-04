@@ -248,6 +248,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Provider health axis, and the failure mode it deliberately does not have.**
+  `src/health-status.ts` reports provider privacy, availability, capabilities and
+  degradation alongside core readiness. `/health` stays a **two-state** contract
+  (`ok` | `unready`): a degraded provider does **not** withdraw readiness, because core
+  is still serving from local storage and returning 503 would remove a healthy node from
+  load-balancer rotation — a worse failure than the one it reports. With no provider
+  configured the payload is unchanged, so an exact-match watcher keeps working. The
+  payload never carries the provider's API key or base URL, since it is typically
+  unauthenticated. 10 mutations, 10 caught; two survivors in the first pass were the
+  same mistake — asserting `status` while the mutation moved `ready`, and defaulting
+  privacy to the reassuring `local` instead of `unknown`.
+
 - **Corrected an earlier diagnosis of the Node 22 `sqlite: history snapshots` failure:
   it was never a snapshot-ordering bug.** History ordering is correct — 12 updates in a
   single millisecond return newest-first — so no monotonic-column migration is needed.

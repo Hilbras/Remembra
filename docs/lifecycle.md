@@ -104,3 +104,75 @@ default 20).
 └── .history/<id>/<epoch>-<seq>.md   # superseded pre-images (3.8.0)
     └── reasons.json                 # {reason, supersededAt} per snapshot (4.1.0)
 ```
+
+---
+
+## V6 expiration semantics
+
+The V6 lifecycle model (`src/v6-lifecycle.ts`) makes expiration, retention, legal hold,
+archive, deletion and supersession **separate dispositions**. They all sound like "the
+memory is gone", and conflating them is not a wrong answer but a *destructive* one:
+deleting under a retention policy when a legal hold applied cannot be undone.
+
+### The clock
+
+Expiry is an **instant in UTC milliseconds**, and every evaluation takes an explicit
+`now`. Nothing in the module reads the ambient clock, because a boundary is the only
+interesting part of an expiry and it cannot be tested without an injected clock.
+
+A timestamp **must carry an explicit offset or `Z`**. A naive local timestamp is
+refused: it resolves to a different instant on different machines, so the same data
+expires at different times depending on which machine evaluates it.
+
+A malformed timestamp is **refused, not coerced**. Coercing to `NaN` turns a typo into
+"expires immediately"; coercing to `0` turns it into "never expires". Both are silent
+corruption of retention intent, so both are errors.
+
+### Boundaries
+
+| Case | Result |
+|---|---|
+| `expiresAt` undefined | `never_expires` — distinct from `active`, because the two are different retention intents and must not look alike in an audit |
+| `expiresAt > now` | `active` |
+| `expiresAt == now` | **`expired`** — expiry is exclusive. The alternative makes "expires at T" mean "usable until T", which is the more surprising reading. |
+| `expiresAt < now` | `expired` |
+
+Clock skew widens an **announcement**, never the expiry: a record within
+`skewToleranceMs` of expiry reports `expiring` and stays retrievable. Skew must never
+make something expire early.
+
+### Actions
+
+| Action | Effect | Notes |
+|---|---|---|
+| `expire` | marks expirable | **not** a deletion; deleting is a separate, separately audited step |
+| `delete` | deletes | requires the record to actually be **expired** — retention is not a licence to delete early |
+| `archive` | archives | reversible; distinct from deletion |
+| `supersede` | records `supersededBy` | does **not** delete; the audit trail is the point |
+| `renew` | extends expiry from `now` | bounded by `maxRenewals` |
+
+Every action returns a new record and a `disposition` naming which one happened, or a
+`blockedBy` saying why it did not. Actions are idempotent: a repeated action is a no-op
+and the version does not move.
+
+### Legal hold
+
+A legal hold blocks **deletion and archive**, and is absolute. There is deliberately no
+`force` flag — an operator override is a legitimate need, but it belongs in a separate,
+audited path. Burying a bypass in a job parameter is how holds stop meaning anything.
+
+A hold does **not** block visibility. A held memory stays readable by id and appears in
+operator tooling; it is excluded from *retrieval candidates*, so it does not surface in
+search results or assembled context. (A hold blocks destruction, not visibility — see
+ADR §3.)
+
+### The job
+
+`runLifecycleJob` is bounded (`batchLimit`, with the overflow **reported** rather than
+silently dropped), tenant-scoped (foreign rows are counted as skipped and left
+untouched), and **rechecks** expiry itself rather than reading the record's field — a
+record claiming to be expiring is not evidence.
+
+It **returns its effects** in `updated`. This is load-bearing: a job that counts
+deletions without returning the updated records leaves a restarted job with nothing to
+skip, so it deletes the same rows twice.

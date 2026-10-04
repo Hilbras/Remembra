@@ -151,3 +151,82 @@ memory roots and backups access-controlled.
 Back up first, install the new package, build, run the test suite, and verify
 `/health` plus an authenticated store/search round trip. The V4.9 migration
 notes are in [migration-v4.9.md](migration-v4.9.md).
+
+---
+
+## Running with no provider at all (V6)
+
+Remembra is offline-first. A disconnected installation with **no provider configured**
+is a supported deployment, not a degraded one: local storage, local retrieval, tenant
+enforcement, policy, audit, snapshots and recovery all work, and retrieval falls back to
+lexical ranking.
+
+Optional (see architecture spec §6.4): remote vector database, remote LLM/embedding
+service, remote object storage, distributed queue, centralized identity provider, cloud
+secret manager, remote observability backend.
+
+Requesting an optional capability that no provider supplies returns a **typed miss**
+(`NOT_FOUND`, "capability X is not available"), not a crash and not a silent empty
+result. Handle it by degrading deliberately.
+
+## What happens when a provider fails
+
+Degradation is reported as a **value**, never as an absence:
+
+```ts
+const result = await executeWithDegradation("embedding", () => provider.embed(q), { now });
+// { degraded: true, ok: false, failure: "timeout",
+//   capability: "embedding", reason: "embedding is degraded (timeout); …" }
+```
+
+A retrieval path returning three thin results because the embedding provider is down is
+otherwise indistinguishable from one that found three good results. Check `degraded`
+before trusting a result.
+
+### Fail-open vs fail-closed, per capability
+
+| Capability | Policy | Why |
+|---|---|---|
+| `embedding`, `reranking`, `summarization` | **fail open** | Quality-affecting, not authority-affecting. A lexical answer is worse than a semantic one but still correct, so failing closed would be the more dangerous choice. |
+| `extraction` | **fail closed** (503) | It writes structured data. A partial extraction is a *wrong record*, not a thinner one. |
+
+The policy is attached to the **capability**, not the provider: two providers for one
+capability must not get different answers to "what happens if you fail", or behaviour
+would depend on which one happened to be registered.
+
+Fault classes: `timeout`, `rate_limited`, `malformed`, `cancelled`, `unavailable`, plus
+a conservative default for anything unrecognised. An unrecognised fault is never treated
+as success.
+
+**Cancellation is never converted into an answer.** An aborted request was not attempted,
+so it must not look like a completed call with a thin result.
+
+## Health and readiness
+
+`GET /health` remains a **two-state** contract (`ok` | `unready`) — load balancers and
+uptime probes read exactly that. A degraded provider does **not** withdraw readiness:
+core is still serving from local storage, and returning 503 would remove a healthy node
+from rotation, which is a worse failure than the one it reports.
+
+When a provider is configured, the payload gains one additional `providers` object:
+
+```json
+{
+  "status": "ok",
+  "ready": true,
+  "providers": {
+    "degraded": true,
+    "privacy": "external",
+    "availability": "remote",
+    "capabilities": ["embedding"],
+    "id": "openai-compatible"
+  }
+}
+```
+
+When no provider is configured the payload is **unchanged** — no new field appears, so a
+deployment watching for an exact V5 payload keeps working.
+
+`privacy` is worth watching: `external` means memory content leaves the host. The health
+payload never carries the provider's API key or base URL (it is typically
+unauthenticated), though the descriptive `id` is included.

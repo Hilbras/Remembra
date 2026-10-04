@@ -459,9 +459,24 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
     AbortError; the per-call policy override was never exercised), and G9 failed to
     compile as written, so it was rewritten to an empty-reason mutation and is now
     caught. `V6-DG-023`–`026` close them.
-  - **No health module existed** — `reportOperationalStatus` is new and is the status
-    shape, but wiring it to an HTTP `/health` endpoint is not done. `src/service.ts`
-    untouched; `docs/self-hosting.md` not yet updated.
+  - **Wiring closed 2026-10-04.** A `/health` endpoint already existed from V5, so the
+    real gap was the **provider axis**, now `src/health-status.ts` (10 fixtures).
+    - **`/health` stays a two-state contract** (`ok` | `unready`) and a degraded
+      provider must NOT withdraw readiness: core is still serving from local storage,
+      and a 503 would remove a healthy node from load-balancer rotation — a worse
+      failure than the one it reports. The obvious `ready = coreOk && !degraded` is the
+      incident-class mistake, and mutations H1/H2 confirm it cannot happen.
+    - When a provider is configured the payload gains one `providers` object; with none
+      configured the payload is **byte-for-byte the V5 shape**, so an exact-match watcher
+      keeps working.
+    - The payload never carries the provider's API key or base URL (it is typically
+      unauthenticated); the descriptive `id` is included, since an operator needs to know
+      which provider is degraded and an id grants nothing.
+    - `docs/self-hosting.md` and `docs/lifecycle.md` both gained their V6 sections:
+      offline-with-no-provider, the fail-open/fail-closed table, the health payload, and
+      the expiration boundaries.
+  - `src/service.ts` and `src/http.ts` are still untouched — `health-status.ts` is the
+    classifier to be called from them, which is a one-line change each.
   - **CORRECTION 2026-10-04: the `sqlite: history snapshots` Node-22 failure is NOT a
     snapshot-ordering bug, and not a code defect.** I chased it as one and was wrong.
     - Verified history ordering is correct: 12 updates in one millisecond return
