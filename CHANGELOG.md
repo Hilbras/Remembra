@@ -248,6 +248,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **V6 provider manifests and a transmission gate (T12).** `src/provider-boundary.ts`
+  makes "may this content go to this provider?" answerable **before** any network work —
+  a pure function of configuration, with no provider call. Once a request is on the wire
+  the content has left the host, and a refusal that arrives afterwards is a disclosure
+  with extra steps.
+
+  Two independent denials, in a fixed order so the reason is deterministic: the
+  provider's own sensitivity ceiling, then the tenant's external rule. The second applies
+  only to external providers — a local one transmits nothing, so refusing it would deny a
+  request involving no transmission.
+
+  Bands are compared **by position, never lexically**: `"internal" > "confidential"` is
+  false as strings and true as bands, so a lexical comparison permits the wrong direction
+  for most pairs, and in the permissive direction. An unrecognised band reads as the most
+  sensitive available, never the loosest.
+
+  Training is treated as a **separate consent** from transmission: a provider may be
+  permitted to process content and forbidden to train on it, so an `allow` still reports
+  it. A deny never carries warnings.
+
+  Credentials are prevented structurally — the manifest schema is strict and has no
+  credential field, so one cannot be stored, logged, or attached to an audit event.
+
+  22 mutations: 20 caught, 2 unmeasurable. The five first-pass survivors shared two
+  causes: an unknown sensitivity band was never exercised, and schema tests checked that
+  axes were *present* without checking what *values* they accept.
+
+### Added
+
 - **The provider registry is now owned by the service (W-03).** `MemoryService` resolved
   providers as bare strings, so nothing could ask whether a provider may receive
   confidential content before a call. It now builds a V6 `ProviderRegistry` from the same

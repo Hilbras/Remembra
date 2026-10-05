@@ -174,3 +174,90 @@ can never hang the service.
   memories.
 - **No keys configured** → MCP/HTTP servers run normally; only `memory_digest`
   errors if invoked.
+
+---
+
+## V6 provider manifests
+
+The sections above describe *which* provider is configured. A **manifest** describes what
+that provider may receive — so policy can decide **before** any network work happens.
+
+### What a manifest declares
+
+| Field | Meaning |
+|---|---|
+| `id` | Registered name. Descriptive, not authorising. |
+| `version` | Manifest schema version. A build only accepts the version it understands. |
+| `capabilities` | Which optional capabilities it supplies. |
+| `privacy` | `local` (in-process, content never leaves the host) or `external`. |
+| `regions` | Where content is processed. Empty for local-only providers. |
+| `dataClasses` | Which categories of data it may receive at all. |
+| `retention.training` | May content be used to train the provider's models? |
+| `retention.logDays` | How long content is retained after the request. |
+| `maxSensitivity` | The highest sensitivity band this provider may receive. |
+| `cost` / `latency` / `availability` | Bounds for negotiation. |
+
+Every axis is **required**. A manifest missing one is a manifest whose constraint nobody
+chose — the same failure as an unknown privacy value.
+
+### The transmission gate
+
+Policy must be able to **deny transmission before network work begins**. Not after, not by
+inspecting what came back: once a request is on the wire the content has left the host,
+and a refusal that arrives afterwards is a disclosure with extra steps.
+
+```ts
+const decision = evaluateTransmission({
+  manifest, sensitivity: "confidential", tenantAllowsExternal: true, now,
+});
+// { effect: "allow" } | { effect: "deny", reason: "provider_sensitivity_ceiling" }
+```
+
+It is a pure function of configuration — no provider call, no input beyond what is already
+known. Two independent denials, in a fixed order so the reason is deterministic:
+
+1. **The provider's ceiling.** Content above `maxSensitivity` is refused regardless of
+   what the tenant permits.
+2. **The tenant's external rule.** Applies only when `privacy` is `external`. A *local*
+   provider transmits nothing, so refusing it would deny a request involving no
+   transmission at all.
+
+Bands are compared **by position, never lexically** — `"internal" > "confidential"` is
+false as strings and true as bands, so a lexical comparison permits the wrong direction
+for most pairs, and in the permissive direction, which is the dangerous one. An
+unrecognised band is read as the **most sensitive** available, never the loosest.
+
+### Training is a separate consent
+
+A provider may be permitted to *process* content and forbidden to *train* on it. Those are
+different permissions, so an `allow` still reports them:
+
+```
+warnings: ["provider_trains_on_data", "provider_retains_content"]
+```
+
+A **deny** never carries warnings — a denial softened by a suggestion is a different, and
+worse, outcome.
+
+### Derived defaults
+
+A provider without an explicit policy gets a *derived* manifest rather than a per-call
+guess, so one provider cannot answer the transmission question differently on two
+requests:
+
+| | local | external |
+|---|---|---|
+| `maxSensitivity` | `secret` — content never leaves | `confidential` — `secret` refused |
+| `retention.training` | `false` | `false` |
+| `retention.logDays` | `0` | `0` |
+
+Training consent is never assumed, and retention beyond the request is never assumed.
+
+### Credentials
+
+A manifest has **no credential field** and the schema is strict, so a manifest carrying
+`apiKey` or `baseUrl` does not validate and cannot be stored, logged, or attached to an
+audit event. For paths that bypass the schema — a `notes` string, an error payload, an
+adapter description — use `assertNoCredentials(value)` (throws) and `redactManifest(value)`
+(replaces, for logging). Detection is deliberately broader than the schema: it also catches
+a secret *inside* a string named something innocuous.

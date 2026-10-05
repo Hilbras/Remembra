@@ -563,10 +563,60 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
   - **Not wired to storage.** `src/sqlite-backend.ts` and `src/service.ts` untouched;
     `docs/lifecycle.md` not yet written; `job-queue.ts` not yet used.
 
-- [ ] **V6-T12 — Add provider capability and privacy metadata**
-  - Acceptance: providers declare capability, privacy, cost, latency, retention, and sensitivity transmission rules; policy blocks disallowed transmission before network work.
-  - Verify: manifest validation, sensitive-content denial, secret/log redaction.
+- [x] **V6-T12 — Add provider capability and privacy metadata**
+  - Acceptance: every provider declares supported capabilities and data-handling limits;
+    policy can deny provider transmission based on sensitivity and tenant rules **before
+    network work begins**; provider configuration is versioned and validated;
+    credentials never enter memory records, audit events, or logs.
+  - Verify: manifest schema and validation tests; sensitive-content transmission denial
+    tests; secret/log redaction tests.
   - Depends on: V6-T09, V6-T10.
+  - **Delivered 2026-10-04.** `src/provider-boundary.ts` (245 lines); 21 fixtures in
+    `src/test/provider-boundary.test.ts`. Suite 1216 → 1237.
+  - **The gate is a pure function of configuration.** `evaluateTransmission` answers
+    "may this content go to this provider?" with no provider call and no input beyond
+    what is already known — which is what makes "before network work begins" true rather
+    than aspirational. Once a request is on the wire the content has left the host, and a
+    refusal that arrives afterwards is a disclosure with extra steps.
+  - **Two independent denials, in a fixed order** so the reason is deterministic:
+    the provider's own `maxSensitivity` ceiling, then the tenant's external rule. The
+    second applies only when `privacy` is `external` — a local provider transmits
+    nothing, so refusing it would deny a request involving no transmission.
+  - **Bands compared by position, never lexically.** `"internal" > "confidential"` is
+    false as strings and true as bands, so a lexical comparison permits the wrong
+    direction for most pairs — and in the *permissive* direction, which is the dangerous
+    one. An unrecognised band reads as the most sensitive available, never the loosest.
+  - **Training is a separate consent from transmission.** A provider may be permitted to
+    process content and forbidden to train on it, so an `allow` still reports
+    `provider_trains_on_data` / `provider_retains_content`. A **deny never carries
+    warnings** — a denial softened by a suggestion is a different, worse outcome.
+  - **The version is `z.literal(MANIFEST_VERSION)`, not a regex.** My first version used
+    `/^\d+\.\d+\.\d+$/`, which accepted `99.0.0` — precisely the case that must be
+    refused, because the axes we enforce today may not be the axes a future manifest
+    declares. Caught by `V6-PB-003` before the mutation run.
+  - **Credentials are prevented structurally.** The manifest schema is `.strict()` and
+    has no credential field, so a manifest carrying `apiKey` or `baseUrl` does not
+    validate. For paths that bypass the schema (a `notes` string, an error payload), the
+    detection is deliberately broader and catches a secret *inside* an innocuously-named
+    string.
+  - **22 mutations: 20 caught, 2 unmeasurable.** Five survived the first pass and shared
+    two causes:
+    - **An unknown band was never exercised** (B3/B4). Every fixture passed a declared
+      band, so `bandIndex` returning -1 was unobserved — and reading an unknown band as
+      `public` would send content at an unrecognised sensitivity to every provider.
+      `V6-PB-017`/`018`.
+    - **Schema tests checked that axes were PRESENT, not what VALUES they accept**
+      (B16/B17/B20). Deleting `retention` wholesale left its inner bounds untested, so a
+      negative `logDays`, an unconstrained `training`, and a derived manifest assuming
+      `training: true` all passed. `V6-PB-019`–`021` check every numeric axis at both
+      ends.
+    - B5 (lexical comparison) and B14 (axis made optional) **failed to compile** —
+      `tsc` rejects both. Unmeasured, not passing.
+  - **`docs/providers.md` extended, not replaced.** The V5 configuration and adapter
+    contract are unchanged; the V6 manifest and transmission-gate sections are appended.
+  - **Not yet wired.** `evaluateTransmission` is not called from the digest or embed
+    paths; `service.ts` and `provider-adapters.ts` are untouched. The gate is specified
+    and mutation-proven, and adopting it before a provider call is the integration step.
 
 - [ ] **V6-T13 — Add local and remote intelligence adapters**
   - Acceptance: optional local/remote embeddings, classification, summarization, and consolidation adapters are bounded, cancellable, schema-validated, and unable to grant trust/access.
