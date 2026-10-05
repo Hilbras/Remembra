@@ -1157,11 +1157,35 @@ export class MemoryService {
     }
   }
 
-  private async maybeEmbed(text: string, signal?: AbortSignal, cachePartition?: string): Promise<number[] | undefined> {
+  /**
+   * Embed, gating on policy first.
+   *
+   * W-05. This function is deliberately fail-OPEN, and that is right for a *provider
+   * failure*: the provider is down, nothing was sent, and keyword fallback still answers.
+   *
+   * It is wrong for a *policy refusal*, and conflating the two is a real failure: a
+   * silently skipped embedding returns a successful store, leaves the memory with no
+   * vector, and reports success. The caller then believes content was sent to a
+   * policy-approved provider when in fact it was not — and the memory is invisible to
+   * semantic search for a reason nobody was told about.
+   *
+   * So the gate runs first and THROWS, outside the try/catch, and only a genuine
+   * provider failure degrades.
+   */
+  private async maybeEmbed(
+    text: string,
+    signal?: AbortSignal,
+    cachePartition?: string,
+    sensitivity: Sensitivity = "internal",
+  ): Promise<number[] | undefined> {
     if (!this.embedFn) return undefined;
+    // BEFORE the provider is called. A refusal here has sent nothing.
+    this.#assertMayTransmit(sensitivity);
     try {
       return await this.embedFn(text, { signal, ...(cachePartition ? { cachePartition } : {}) });
     } catch (err) {
+      // A gate error must not be absorbed by the fail-open path above.
+      if (err instanceof RemembraError && err.code === "TENANT_REQUIRED") throw err;
       const msg = err instanceof Error ? err.message : String(err);
       logEvent("warn", "embedding_failed", { error: msg.slice(0, 200) }, `Remembra: embedding failed (${msg.slice(0, 200)}); continuing without`);
       return undefined;
