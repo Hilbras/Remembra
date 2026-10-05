@@ -23,6 +23,12 @@ import {
 import { logEvent } from "./log.js";
 import { metrics } from "./metrics.js";
 import { buildProviderRegistry } from "./provider-registry-wiring.js";
+import {
+  defaultManifestFor,
+  evaluateTransmission,
+  type ProviderManifest,
+} from "./provider-boundary.js";
+import type { Sensitivity } from "./v6-policy.js";
 import type { ProviderRegistry } from "./v6-core-contract.js";
 import { VERSION } from "./version.js";
 import { performance } from "node:perf_hooks";
@@ -119,6 +125,14 @@ export interface ServiceDeps {
   llmProvider?: LlmProvider;
   /** Optional vendor-neutral LLM adapter; takes precedence over the legacy name. */
   llmAdapter?: LlmAdapter;
+  /**
+   * W-04: whether this deployment permits content to leave the host. Defaults to true,
+   * so existing behaviour is unchanged; a deployment that forbids external
+   * transmission sets it false and the gate refuses before any call.
+   */
+  tenantAllowsExternal?: boolean;
+  /** W-04: an explicit provider manifest, overriding the derived default. */
+  providerManifest?: ProviderManifest;
   /** Token counter used by the V5 context API. */
   tokenCounter?: TokenCounter;
   /** Validated V5 policy; loaded once from trusted configuration when omitted. */
@@ -426,6 +440,42 @@ export class MemoryService {
    * changes because it exists.
    */
   readonly providerRegistry: ProviderRegistry;
+
+  /**
+   * W-04: the manifest consulted before any provider call, and the tenant's rule.
+   *
+   * Mutable and evaluated PER REQUEST rather than cached into a verdict, so tightening
+   * a ceiling takes effect on the next call instead of after a restart.
+   */
+  providerManifest: ProviderManifest;
+
+  /** W-04: whether this deployment permits content to leave the host at all. */
+  readonly tenantAllowsExternal: boolean;
+
+  /**
+   * The transmission gate.
+   *
+   * This MUST run before the provider is invoked, not after inspecting what came back:
+   * once the request is on the wire the content has left the host, and a refusal that
+   * arrives afterwards is a disclosure with extra steps.
+   *
+   * Throws rather than returning a flag, so a caller cannot forget to check.
+   */
+  #assertMayTransmit(sensitivity: Sensitivity): void {
+    const decision = evaluateTransmission({
+      manifest: this.providerManifest,
+      sensitivity,
+      tenantAllowsExternal: this.tenantAllowsExternal,
+      now: Date.now(),
+    });
+    if (decision.effect === "deny") {
+      throw new RemembraError(
+        "TENANT_REQUIRED",
+        `provider ${this.providerManifest.id} refused this transmission: ${decision.reason}`,
+      );
+    }
+    for (const warning of decision.warnings ?? []) metrics.inc("remembra_provider_warning_total", { warning });
+  }
   /** Set once a graceful shutdown starts; liveness reports it (V5.1.0). */
   private shuttingDown = false;
   /** Injected adapters retained only so shutdown can close them. */
@@ -472,6 +522,18 @@ export class MemoryService {
       llmAdapter,
       llmName: this.llmName,
     });
+    // W-04: the manifest is DERIVED from the same wiring rather than configured
+    // separately, so the gate cannot describe a provider the service is not using. An
+    // explicit manifest may be assigned afterwards (tests and advanced deployments do
+    // exactly that) and is consulted per request.
+    this.providerManifest = deps.providerManifest ?? defaultManifestFor({
+      id: this.llmName,
+      capabilities: ["summarization"],
+      privacy: llmAdapter ? "local" : "external",
+    });
+    // A local deployment transmits nothing, so external transmission is permitted by
+    // default. A deployment that configures a remote provider is expected to say so.
+    this.tenantAllowsExternal = deps.tenantAllowsExternal ?? true;
     this.tokenCounter = deps.tokenCounter ?? defaultTokenCounter;
 
     this.embedFn =
@@ -2343,6 +2405,9 @@ export class MemoryService {
   } & AgentReadOptions): Promise<DigestResult> {
     const tenant = await this.freshTenantFilter(opts, "write");
     let extracted: ExtractedMemory[];
+    // W-04: BEFORE the provider is called. A digest sends a whole transcript, so this
+    // is the point at which refusing is still cheap.
+    this.#assertMayTransmit("internal");
     try {
       extracted = await this.extractFn(opts.transcript, { signal: opts.signal });
     } catch (err) {
