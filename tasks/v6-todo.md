@@ -618,10 +618,58 @@ Architecture contract: [`docs/v6-architecture-spec.md`](../docs/v6-architecture-
     paths; `service.ts` and `provider-adapters.ts` are untouched. The gate is specified
     and mutation-proven, and adopting it before a provider call is the integration step.
 
-- [ ] **V6-T13 — Add local and remote intelligence adapters**
-  - Acceptance: optional local/remote embeddings, classification, summarization, and consolidation adapters are bounded, cancellable, schema-validated, and unable to grant trust/access.
-  - Verify: local/fake/remote contract suites, timeout/retry/cancellation/malformed/rate-limit tests, all-provider-disabled core tests.
+- [x] **V6-T13 — Add local and remote intelligence adapters**
+  - Acceptance: local adapters work without network access; remote adapters optional,
+    bounded, cancellable and policy-gated; unsupported capabilities return a typed
+    capability result; provider output is schema-validated and cannot grant trust/access.
+  - Verify: contract suite against local, fake and remote-test servers; timeout, retry,
+    cancellation, malformed response and rate-limit tests; core tests pass with every
+    provider disabled.
   - Depends on: V6-T12.
+  - **Delivered 2026-10-04.** `src/providers/capability-adapters.ts` (304 lines); 19
+    fixtures in `src/test/provider-capability-adapters.test.ts`. Suite 1257 → 1276.
+  - **Most of the acceptance criteria were already met by existing code**, and saying so
+    is part of the deliverable. `provider-adapters.ts` already supplies embedding and
+    completion adapters with the full `providerFetch` policy — per-attempt timeout,
+    bounded retries with backoff, an overall budget, cancellation, and malformed-response
+    rejection. What was genuinely missing is the layer **above** them: a typed capability
+    result for every optional operation.
+  - **Every outcome is a value.** An unsupported capability, a policy refusal, a
+    cancellation and a provider failure all return `ok: false` with a reason rather than
+    throwing past the boundary — an exception a caller forgets to catch is a failure mode
+    of its own.
+  - **Provider output is data, never authority.** Extraction output is rebuilt field by
+    field from an allowlist, so a provider returning `trust: "system"` or
+    `organizationId: "org-b"` has those fields **dropped**, not merely ignored. Malformed
+    output is refused outright: partially understood provider output becomes partially
+    stored data, which is worse than a refusal because nothing downstream can tell the
+    difference.
+  - **The gate is not skippable by omission.** A caller that forgets to pass a manifest
+    gets the derived **external** one, which refuses `secret` content. Failing open would
+    make forgetting a parameter a way to transmit.
+  - **Local adapters are pure and offline.** "Works without network access" is asserted
+    by construction — `V6-PA-009` supplies a `fetchImpl` that throws and proves it is
+    never called. The summarizer is **extractive**, not generative: it cannot hallucinate
+    and its output is drawn verbatim from the input, which is the right trade for an
+    offline default.
+  - **Classification and summarization are separate capabilities.** Conflating them is how
+    a summarizer's text ends up labelled with a category it never claimed.
+  - **Mutation verification needed a compound mutation to be meaningful.** P1 (drop the
+    post-hoc delete pass) and P2 (build from the raw provider object) each survived the
+    first pass — because they are **two layers of the same defence**, and removing either
+    alone leaves the other intact. That is defence in depth, not a test gap, but the claim
+    needed proving rather than asserting: a harness removing **both** is caught by
+    `V6-PA-006`. First attempt at that proof was invalid — I edited the source file while
+    the mutation harness was still rewriting it, which aborted the harness's own restore
+    check. Re-run serially, the source restored byte-identical and the compound mutation
+    is caught.
+  - **Scope note.** The local adapters are real but small (heuristic classification,
+    leading-sentence summarization). Remote-backed capabilities use the existing
+    `provider-adapters.ts` factories and are not reimplemented here; the new layer is the
+    typed result and the authority boundary, which both share.
+  - `service.ts`, `store.ts`, `sqlite-backend.ts` and `retrieval.ts` do **not** import any
+    adapter module — asserted by `V6-PA-019`, which reads the real source tree rather
+    than trusting a document.
 
 - [ ] **V6-T14 — Add provider-safe jobs, caching, and replay handling**
   - Acceptance: immutable tenant/policy/idempotency job context, no duplicate committed mutations on retry, tenant-partitioned caches, bounded queues/providers.

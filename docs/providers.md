@@ -261,3 +261,48 @@ audit event. For paths that bypass the schema — a `notes` string, an error pay
 adapter description — use `assertNoCredentials(value)` (throws) and `redactManifest(value)`
 (replaces, for logging). Detection is deliberately broader than the schema: it also catches
 a secret *inside* a string named something innocuous.
+
+### Capability adapters (T13)
+
+`provider-adapters.ts` supplies embedding and completion adapters with the full
+timeout/retry/cancellation policy. The **capability adapters** sit above them and add
+the two things a caller needs from an *optional* operation:
+
+- **A typed result for every outcome.** An unsupported capability, a policy refusal, a
+  cancellation and a provider failure all return `ok: false` with a reason, rather than
+  throwing past the boundary. An exception a caller forgets to catch is a failure mode of
+  its own.
+
+```ts
+const result = await adapter.invoke("summarization", text, { sensitivity: "internal" });
+if (!result.ok) {
+  // result.reason says which of the four happened
+  return;
+}
+result.value; // the declared payload
+```
+
+- **Provider output as data, never authority.** Extraction output is rebuilt field by
+  field from an allowlist, so a provider returning `trust: "system"` or
+  `organizationId: "org-b"` has those fields **dropped**, not merely ignored. Malformed
+  output is refused outright rather than half-parsed — partially understood provider
+  output becomes partially stored data, which is worse than a refusal because nothing
+  downstream can tell the difference.
+
+#### Local adapters
+
+`createLocalClassificationAdapter()` and `createLocalSummarizationAdapter()` are pure and
+offline. "Local adapters work without network access" is asserted by construction: a
+local adapter never calls `fetch`, even when one is supplied to its context.
+
+The summarizer is **extractive** (the leading sentence, bounded), not generative. That is
+the right trade for an offline default: it cannot hallucinate, and its output is drawn
+verbatim from the input.
+
+#### The gate is not skippable
+
+An omitted manifest becomes the derived **external** one, which refuses `secret` content.
+Forgetting a parameter must not be a way to transmit. `V6-PA-015` pins that.
+
+Classification and summarization are separate capabilities: an adapter that does not
+implement a capability says so rather than silently serving it.

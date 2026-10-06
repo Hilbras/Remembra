@@ -248,6 +248,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **V6 capability adapters (T13).** `src/providers/capability-adapters.ts` adds the layer
+  above the existing embedding and completion adapters: a **typed result for every
+  optional operation**, so an unsupported capability, a policy refusal, a cancellation and
+  a provider failure are all values with a reason rather than exceptions a caller might
+  forget to catch.
+
+  Provider output is treated as **data, never authority** — extraction output is rebuilt
+  field by field from an allowlist, so a provider returning `trust: "system"` or a
+  foreign `organizationId` has those fields dropped. Malformed output is refused rather
+  than half-parsed, because partially understood output becomes partially stored data.
+
+  The transmission gate is not skippable by omission: a caller that forgets to pass a
+  manifest gets the conservative derived external one, which refuses `secret` content.
+  Local adapters are pure and offline — the summarizer is extractive, so it cannot
+  hallucinate.
+
+  Mutation verification required a **compound** mutation to be meaningful: removing either
+  of the two allowlist layers alone is invisible because the other compensates, so the
+  harness removes both and the authority test then fails. Defence in depth, proven rather
+  than asserted.
+
+### Added
+
 - **V6 provider manifests and a transmission gate (T12).** `src/provider-boundary.ts`
   makes "may this content go to this provider?" answerable **before** any network work —
   a pure function of configuration, with no provider call. Once a request is on the wire
